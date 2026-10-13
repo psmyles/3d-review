@@ -146,14 +146,14 @@ void apply_deform(uint4 lane, inout float3 position, inout float3 normal, inout 
         _237.r0 = asfloat(_232.Load4(_222.entry * 48 + 0));
         _237.r1 = asfloat(_232.Load4(_222.entry * 48 + 16));
         _237.r2 = asfloat(_232.Load4(_222.entry * 48 + 32));
-        PaletteEntry _700 = { _237.r0, _237.r1, _237.r2 };
-        PaletteEntry param = _700;
+        PaletteEntry _707 = { _237.r0, _237.r1, _237.r2 };
+        PaletteEntry param = _707;
         float3 param_1 = position;
         blended_position += (palette_point(param, param_1) * _222.weight);
-        PaletteEntry param_2 = _700;
+        PaletteEntry param_2 = _707;
         float3 param_3 = normal;
         blended_normal += (palette_direction(param_2, param_3) * _222.weight);
-        PaletteEntry param_4 = _700;
+        PaletteEntry param_4 = _707;
         float3 param_5 = tangent;
         blended_tangent += (palette_direction(param_4, param_5) * _222.weight);
         total += _222.weight;
@@ -273,10 +273,10 @@ void emit_line_quad(inout float4 first, inout float4 second, uint corner_index)
     float4 _579 = float4(_578.x ? first.x : second.x, _578.y ? first.y : second.y, _578.z ? first.z : second.z, _578.w ? first.w : second.w);
     float _585 = _445.y * _565;
     float2 _601 = _579.xy + ((((float2(-_541.y, _541.x) * _585) + (_541 * (((_568 * 2.0f) - 1.0f) * _565))) / _511) * _579.w);
-    float4 _738 = _579;
-    _738.x = _601.x;
-    _738.y = _601.y;
-    gl_Position = _738;
+    float4 _745 = _579;
+    _745.x = _601.x;
+    _745.y = _601.y;
+    gl_Position = _745;
     float _615;
     if (_574)
     {
@@ -301,6 +301,7 @@ void vert_main()
     uint param_4 = _632 - (_635 * 6u);
     emit_line_quad(param_2, param_3, param_4);
     v_color = su_selection_color;
+    v_color.w *= lu_params.w;
 }
 
 SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)

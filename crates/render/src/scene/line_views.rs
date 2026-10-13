@@ -11,16 +11,17 @@ use review_model::{Bounds, ModelData};
 use crate::geometry::{
     BoneTint, audit_lines, bounding_box_lines, face_normal_lines, group_triangles, heat_vertices,
     model_pivot, pivot_half_extent, pivot_lines, skeleton_fill_triangles, skeleton_lines,
-    skin_weight_vertices, uv_seam_lines, vertex_normal_lines, wireframe_edge_indices,
+    skin_weight_vertices, trajectory_geometry, trajectory_node_colors, uv_seam_lines,
+    vertex_normal_lines, wireframe_edge_indices,
 };
 use crate::rhi::{GpuResult, StorageBuffer, VertexBuffer};
 use crate::selection::{Selection, selection_bounds};
-use crate::{ActiveMaterial, BoundingBoxScope, SceneDebugOptions, ShadingMode};
+use crate::{ActiveMaterial, BoundingBoxScope, SceneDebugOptions, ShadingMode, TrajectoryOverlay};
 
 use super::gpu::SceneGpu;
 use super::slot::{
     BoundingBoxParams, DerivedViews, NormalParams, PivotParams, SKELETON_FILL_ALPHA,
-    SkeletonParams, SkinWeightParams, UvSeamParams,
+    SkeletonParams, SkinWeightParams, TrajectoryParams, UvSeamParams,
 };
 use crate::rhi::IndexBuffer;
 
@@ -431,6 +432,10 @@ impl SceneGpu {
     /// from a uniform. That means an Outliner click rebuilds these buffers — the
     /// same trade `sync_selection` makes, and cheap here: a 72-bone rig is a few
     /// thousand vertices.
+    ///
+    /// While the animation curves are on, each bone with a shown curve is tinted
+    /// to match it, so the curves are in the key too: narrowing them with a
+    /// selection recolours the bones that lost theirs.
     pub(super) fn sync_skeleton(
         &mut self,
         model: &ModelData,
@@ -438,6 +443,7 @@ impl SceneGpu {
         debug: SceneDebugOptions,
         selected_bones: &[u32],
         hovered_bone: Option<u32>,
+        trajectories: Option<&TrajectoryOverlay<'_>>,
     ) -> GpuResult<()> {
         let on = debug.show_skeleton;
         // Drift check against the borrowed inputs — no per-frame key allocation.
@@ -451,6 +457,11 @@ impl SceneGpu {
                     && params.color == debug.skeleton_color
                     && params.selected_color == debug.skeleton_selected_color
                     && params.hover_color == debug.skeleton_hover_color
+                    && match (&params.curves, trajectories) {
+                        (None, None) => true,
+                        (Some(baked), Some(overlay)) => baked.matches(overlay),
+                        _ => false,
+                    }
             }
             _ => false,
         };
@@ -458,12 +469,16 @@ impl SceneGpu {
             return Ok(());
         }
         if on {
+            let curves = trajectories
+                .map(|overlay| trajectory_node_colors(model, overlay))
+                .unwrap_or_default();
             let tint = BoneTint {
                 selected: selected_bones,
                 hovered: hovered_bone,
                 color: debug.skeleton_color,
                 selected_color: debug.skeleton_selected_color,
                 hover_color: debug.skeleton_hover_color,
+                curves: &curves,
             };
             self.active.views.skeleton_fill_buf =
                 optional_vertex_buffer(&skeleton_fill_triangles(
@@ -486,7 +501,40 @@ impl SceneGpu {
             color: debug.skeleton_color,
             selected_color: debug.skeleton_selected_color,
             hover_color: debug.skeleton_hover_color,
+            curves: trajectories.map(TrajectoryParams::of),
         });
+        Ok(())
+    }
+
+    /// Build (or free) the animation curves: the shown paths, their frame dots
+    /// and the current-frame markers, rebuilt when the paths or the selection
+    /// narrowing them change and dropped the moment the overlay goes away
+    /// (invariant 3). Playback rebuilds nothing — the markers ride the pose on
+    /// the GPU.
+    pub(super) fn sync_trajectories(
+        &mut self,
+        model: &ModelData,
+        trajectories: Option<&TrajectoryOverlay<'_>>,
+    ) -> GpuResult<()> {
+        let unchanged = match (&self.active.views.trajectory_baked, trajectories) {
+            (None, None) => true,
+            (Some(baked), Some(overlay)) => baked.matches(overlay),
+            _ => false,
+        };
+        if unchanged {
+            return Ok(());
+        }
+        let geometry = trajectories
+            .map(|overlay| {
+                let deforms = self.active.deform_layout.is_some();
+                trajectory_geometry(model, overlay, deforms)
+            })
+            .unwrap_or_default();
+        let views = &mut self.active.views;
+        views.trajectory_line_buf = optional_line_buffer(&geometry.lines)?;
+        views.trajectory_dot_buf = optional_line_buffer(&geometry.dots)?;
+        views.trajectory_marker_buf = optional_line_buffer(&geometry.markers)?;
+        views.trajectory_baked = trajectories.map(TrajectoryParams::of);
         Ok(())
     }
 }

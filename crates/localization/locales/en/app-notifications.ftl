@@ -8,8 +8,29 @@
 ## Loading
 
 app-notifications-loading = Loading { $file }...
+app-notifications-loading-files = Loading { $count } files...
 app-notifications-loaded = Loaded { $file } in { $seconds }s
 app-notifications-couldnt-load = Couldn't load { $file }: { $detail }
+
+# Animation files attached to the model on screen, so their clips play on it.
+app-notifications-attached = { $clips ->
+        [one] Added one animation from { $file }
+       *[other] Added { $clips } animations from { $file }
+    }
+app-notifications-attached-files = Added { $clips } animations from { $count } files
+# An attached animation file that does not line up with the model everywhere, as
+# the title of a card listing what differs.
+app-notifications-attached-mismatch = { $file } does not fully match { $model }
+
+# Files opened together that were left out, as the title of a card listing them.
+app-notifications-not-loaded = { $count ->
+        [one] One file was not loaded
+       *[other] { $count } files were not loaded
+    }
+app-notifications-not-loaded-second-model =
+    { $file } is a second model. Only one model is shown at a time, so open it on its own
+    to look at it.
+app-notifications-not-loaded-no-match = Nothing in { $file } matches { $model }.
 # The model itself is fine and already on screen; what failed is the capture the
 # exporter writes back, so the notice has to say that rather than read as a load
 # failure.

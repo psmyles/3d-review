@@ -302,6 +302,13 @@ typedef struct review_import_scene {
     size_t anim_scalar_key_count;
     /* `ufbx_scene_settings.frames_per_second`; 0 when the file declared none. */
     double frames_per_second;
+    /* `ufbx_scene_settings.axes` as `ufbx_coordinate_axis` codes: which of the
+       file's axes point right, up and toward the front. Import converts units
+       but not axes, so these say how every coordinate above is to be read.
+       UFBX_COORDINATE_AXIS_UNKNOWN when the file declared none. */
+    uint32_t axis_right;
+    uint32_t axis_up;
+    uint32_t axis_front;
 } review_import_scene;
 
 typedef struct review_import_error {

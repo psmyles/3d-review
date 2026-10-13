@@ -250,11 +250,13 @@ impl SceneGpu {
     /// that this slot built while it was the solid one, is dropped.
     fn sync_ghost(&mut self, scene: &SceneFrame<'_>) -> GpuResult<()> {
         self.sync_unique_parts(scene.model, scene.model_revision, scene.debug.material_mode);
+        // The ghost is drawn in its bind pose: no pose is ever handed over for it.
         self.sync_mesh(
             scene.model,
             scene.model_revision,
             scene.debug.uv_channel,
             scene.debug.material_mode,
+            false,
         )?;
         let ghost_wireframe = (
             self.active.ghost_wireframe_edges.take(),

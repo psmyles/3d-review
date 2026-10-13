@@ -38,7 +38,7 @@ use review_optimize::{ExportOptions, ProcessedResult, preset};
 
 use crate::events::UserEvent;
 use crate::keys;
-use crate::loading::TEXTURE_EXTENSIONS;
+use crate::loading::{OpenIntent, TEXTURE_EXTENSIONS};
 use crate::{App, prof};
 
 /// A dialog to open, carrying whatever its answer will act on.
@@ -49,9 +49,12 @@ use crate::{App, prof};
 /// however large the model.
 #[derive(Debug)]
 pub(crate) enum Dialog {
-    /// Pick one FBX to open (`Ctrl+O`, the toolbar, a double-click on the empty
-    /// viewport).
+    /// Pick the FBX files to open as a new session (`Ctrl+O`, the toolbar, a
+    /// double-click on the empty viewport): a model, and any animation files to
+    /// play on it.
     OpenModel,
+    /// Pick animation files to attach to the model on screen.
+    AddAnimations,
     /// Pick any number of images to add to the scene texture pool.
     ImportTextures,
     /// Choose where to write the Opt workspace's LOD chain.
@@ -87,7 +90,8 @@ pub(crate) enum Dialog {
 /// the path(s) they chose. A cancelled dialog produces no answer at all.
 #[derive(Debug)]
 pub(crate) enum DialogAnswer {
-    OpenModel(PathBuf),
+    OpenModel(Vec<PathBuf>),
+    AddAnimations(Vec<PathBuf>),
     ImportTextures(Vec<PathBuf>),
     ExportOpt {
         path: PathBuf,
@@ -118,6 +122,7 @@ impl Dialog {
     fn thread_name(&self) -> &'static str {
         match self {
             Dialog::OpenModel => "dialog-open-model",
+            Dialog::AddAnimations => "dialog-add-animations",
             Dialog::ImportTextures => "dialog-import-textures",
             Dialog::ExportOpt { .. } => "dialog-export",
             Dialog::SavePreset { .. } => "dialog-save-preset",
@@ -138,8 +143,16 @@ impl Dialog {
                     &["fbx"],
                 )
                 .set_title(review_localization::tr(keys::app_dialogs::OPEN_MODEL))
-                .pick_file()
+                .pick_files()
                 .map(DialogAnswer::OpenModel),
+            Dialog::AddAnimations => rfd::FileDialog::new()
+                .add_filter(
+                    review_localization::tr(keys::app_dialogs::FILTER_FBX),
+                    &["fbx"],
+                )
+                .set_title(review_localization::tr(keys::app_dialogs::ADD_ANIMATIONS))
+                .pick_files()
+                .map(DialogAnswer::AddAnimations),
             Dialog::ImportTextures => rfd::FileDialog::new()
                 .add_filter(
                     review_localization::tr(keys::app_dialogs::FILTER_IMAGE),
@@ -278,7 +291,8 @@ impl App {
             return;
         };
         match *answer {
-            DialogAnswer::OpenModel(path) => self.open_model_from_path(&path),
+            DialogAnswer::OpenModel(paths) => self.open_files(paths, OpenIntent::NewSession),
+            DialogAnswer::AddAnimations(paths) => self.open_files(paths, OpenIntent::Attach),
             DialogAnswer::ImportTextures(files) => {
                 for path in files {
                     self.import_texture_path(path);

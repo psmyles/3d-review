@@ -91,6 +91,19 @@ Keep the two halves in step: `corner_moves` mirrors `deform_corner`'s three
 sources, and a new deform source added to one must be added to the other, or its
 vertices will be measured at rest and the clip's envelope will come out too small.
 
+### A golden-ratio palette keyed on the node table gives a chain one colour
+
+Stepping hues by the golden-ratio conjugate spreads *consecutive* indices well,
+and the worst case is the Fibonacci distances: 5, 8 or 13 apart lands within a
+few percent of the wheel. ufbx lays a rig out breadth-first, so a chain's bones
+sit as many entries apart as there are chains beside it — on the dog fixture the
+front-left knee, ankle and foot were 5 and 8 apart and came out the same
+yellow-green. The animation curves therefore key each node's colour on its
+depth-first rank in the hierarchy (`geometry/trajectory.rs`'s `hierarchy_ranks`),
+which puts a bone next to its parent and sends it to the far side of the wheel.
+`a_chain_laid_out_breadth_first_gets_distinct_hues` pins it. Any other per-node
+palette should do the same.
+
 ### `ufbx_bake_anim` facts
 
 - Linear keys are kept as authored; only cubic segments resample.
@@ -102,6 +115,76 @@ vertices will be measured at rest and the clip's envelope will come out too smal
   100), and ufbx folds the channel weight into per-keyframe *effective* weights
   (`channel_effective_weights` is a verbatim port). Do not multiply the channel
   weight in again.
+
+### "No vertices" does not mean "no model"
+
+An animation file saved apart from its character is a skeleton and its clips, with
+no mesh, and it imports as exactly that. So an empty vertex buffer is no longer
+the empty start state: ask `ModelData::is_empty()` for that (no geometry *and* no
+nodes), and `has_geometry()` for "is there a triangle to draw". Two places tested
+`vertices.is_empty()` before this — the double-click-to-open and the fly-in on
+replacing a model — and would have opened a file dialog on a click at the
+skeleton.
+
+The same file is why the GPU deform tables live on `ModelSlot` beside
+`deform_layout`, not inside `MeshBuffers`: a meshless skeleton still poses its
+overlay through the palette, and with the tables hung off the mesh it drew frozen
+at rest. And it is why `posed_bounds` / `clip_bounds` / `recompute_bounds` fall
+back to the bone joints when there is no mesh — they would otherwise measure
+nothing and leave the model unframed.
+
+### A clip is timed at its own frame rate, never the model's
+
+`AnimationClip::frame_rate` is the rate the clip was baked at, and every
+frame-numbering method reads it; none takes a rate from the caller. A clip can be
+played on a model from another file, and the two disagree in practice — the Eve
+rig is saved at 24 fps and its animations at 30 — so a caller-supplied rate was a
+standing invitation to number one file's clip by the other's. `ModelData::
+frame_rate` is still there, but only as the scene setting a re-export declares.
+
+### A drop of several files is several events
+
+winit delivers a multi-file drop as one `DroppedFile` per file, back to back.
+Opening each as it arrived made every file supersede the one before it, so a
+rig and its animations dropped together loaded only the last of them. The paths
+are gathered in `LoadQueue::dropped` and opened as one request from
+`about_to_wait`, by which point the whole drop has been delivered.
+
+### Name matching takes exact names first, across the whole file
+
+`Binding` lets each model node be driven by one source node at most, so the
+order the source is walked in decides who gets a contested node. Matching in
+file order with exact-then-stripped preference *per node* let `Eve:Hip`, earlier
+in the file, claim the rig's `Hip` before the exact `Hip` was reached. The exact
+pass therefore runs over the whole file before the namespace-stripped one
+(`a_model_node_is_driven_by_one_source_node_at_most` pins it).
+
+### A rigid model gets its deform path only once a pose arrives
+
+A model with no skin, no blend shapes and no clips of its own builds no deform
+layout — its per-corner lanes would be memory for nothing. Clips attached from
+another file can still move it, so `app` evaluates a pose whenever *any* clip is
+on offer, and `sync_mesh` builds the layout the first frame a pose is handed over
+for such a model, then keeps it for the model's lifetime so a workspace switch
+does not rebuild the mesh. The derived views copied the old, empty lanes, so the
+same rebuild resets `views_revision` to make them follow.
+
+### A file's unit lives in its root, not in its keys
+
+Import normalizes every file to meters with ufbx's default space conversion,
+which puts the scale on the scene **root**'s transform. Every other node's local
+translation — rest and keys alike — stays in its own file's unit: the Eve rig's
+spine sits `7.37` from its hip, in centimeters. Played on its own that is
+invisible, since the root scales it back. Attached to a model in another unit it
+is not: the model's root applies the model's factor to the file's numbers, and a
+meter file's clip moves a hundredth as far on a centimeter rig. So
+`attach::convert` scales every translation key by the file's unit over the
+model's, and the bone-offset check reads both sides through their own unit
+before comparing. Import does not convert axes at all, so a Z-up file's
+top-level nodes are written in Z-up coordinates and their keys are turned into
+the model's axes; nodes below them are written in their parent's frame and are
+left alone. `crates/import/tests/attach_checks.rs` pins both through the real
+importer, with a meter Z-up file played on a centimeter Y-up rig.
 
 ---
 

@@ -107,6 +107,7 @@ pub(crate) fn measured_stats(
         bone_count: source.stats.bone_count,
         clip_count: model.animations.len(),
         source_unit_meters: source.stats.source_unit_meters,
+        source_axes: source.stats.source_axes,
     }
 }
 

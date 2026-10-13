@@ -4,6 +4,12 @@
 //! counts — `ufbx_bake_anim` can place keys past the stack range, and the
 //! evaluator holds the end values outside them. A clip's *motion envelope* is
 //! not here: it is measured after the model is drawn and lives in the UI.
+//!
+//! **The frame rate is the clip's own**, not the model's. A clip can be played
+//! on a model loaded from another file, and the two routinely disagree — a rig
+//! saved at 24 fps beside animations baked at 30 — so every frame-numbering
+//! method here reads [`AnimationClip::frame_rate`] and none takes a rate from the
+//! caller, which is what makes timing a clip by the wrong file's rate impossible.
 
 use glam::{Quat, Vec3};
 
@@ -49,6 +55,11 @@ pub struct AnimationClip {
     /// simply held there.
     pub time_begin: f64,
     pub time_end: f64,
+    /// The rate this clip was baked at — its source file's declared frame rate,
+    /// `0.0` when the file declared none (see
+    /// [`AnimationClip::frame_rate_or_default`]). The clip's own rather than the
+    /// model's: see the module docs.
+    pub frame_rate: f64,
     pub tracks: Vec<NodeTrack>,
     pub morph_tracks: Vec<MorphTrack>,
 }
@@ -58,41 +69,46 @@ impl AnimationClip {
         (self.time_end - self.time_begin).max(0.0)
     }
 
-    /// The number of frames the transport steps through at `fps`: the range
-    /// rounded to whole frames, plus the frame at `time_begin` itself, capped at
-    /// [`MAX_CLIP_FRAMES`].
+    /// The clip's frame rate, or [`DEFAULT_FRAME_RATE`] when its file declared
+    /// none.
+    pub fn frame_rate_or_default(&self) -> f64 {
+        frame_rate_or_default(self.frame_rate)
+    }
+
+    /// The number of frames the transport steps through: the range rounded to
+    /// whole frames at the clip's own rate, plus the frame at `time_begin`
+    /// itself, capped at [`MAX_CLIP_FRAMES`].
     ///
     /// The range and the rate both come from the file, so their product can be any
     /// finite number at all: the cap is what keeps the `+ 1` from overflowing and
     /// every per-frame walk (the transport, [`crate::anim::clip_bounds`]) bounded.
-    pub fn frame_count(&self, fps: f64) -> usize {
-        let fps = frame_rate_or_default(fps);
+    pub fn frame_count(&self) -> usize {
+        let fps = self.frame_rate_or_default();
         // `as` saturates (and maps NaN to 0), so this is total before the cap.
         let span = (self.duration() * fps).round().max(0.0) as usize;
         span.min(MAX_CLIP_FRAMES - 1) + 1
     }
 
-    /// The time of frame `frame` (0-based) at `fps`, clamped into the clip.
-    pub fn frame_time(&self, frame: usize, fps: f64) -> f64 {
-        let fps = frame_rate_or_default(fps);
-        self.clamp_time(self.time_begin + frame as f64 / fps)
+    /// The time of frame `frame` (0-based), clamped into the clip.
+    pub fn frame_time(&self, frame: usize) -> f64 {
+        self.clamp_time(self.time_begin + frame as f64 / self.frame_rate_or_default())
     }
 
-    /// The frame `time` falls on at `fps` (nearest, 0-based, within the clip).
-    pub fn frame_at(&self, time: f64, fps: f64) -> usize {
-        let fps = frame_rate_or_default(fps);
+    /// The frame `time` falls on (nearest, 0-based, within the clip).
+    pub fn frame_at(&self, time: f64) -> usize {
+        let fps = self.frame_rate_or_default();
         let frame = ((time - self.time_begin) * fps).round().max(0.0) as usize;
-        frame.min(self.frame_count(fps) - 1)
+        frame.min(self.frame_count() - 1)
     }
 
     /// The time `delta` whole frames from the frame `time` falls on, clamped
     /// into the clip — one step of the transport's frame buttons / `,` `.` keys.
-    pub fn step_frame_time(&self, time: f64, delta: i64, fps: f64) -> f64 {
+    pub fn step_frame_time(&self, time: f64, delta: i64) -> f64 {
         // `frame_count` is at least 1 and at most MAX_CLIP_FRAMES, so `last` is a
         // valid clamp bound and both casts are lossless.
-        let last = self.frame_count(fps) as i64 - 1;
-        let frame = (self.frame_at(time, fps) as i64).saturating_add(delta);
-        self.frame_time(frame.clamp(0, last) as usize, fps)
+        let last = self.frame_count() as i64 - 1;
+        let frame = (self.frame_at(time) as i64).saturating_add(delta);
+        self.frame_time(frame.clamp(0, last) as usize)
     }
 
     /// `time` clamped into the clip's range.
@@ -187,6 +203,8 @@ pub fn frame_rate_or_default(fps: f64) -> f64 {
 /// The file's own frame rate, or the fallback.
 impl ModelData {
     /// The file's frame rate, or [`DEFAULT_FRAME_RATE`] when it declared none.
+    /// A scene setting — what a re-export declares — and never what a clip is
+    /// timed by: that is [`AnimationClip::frame_rate_or_default`].
     pub fn frame_rate_or_default(&self) -> f64 {
         frame_rate_or_default(self.frame_rate)
     }
@@ -206,6 +224,7 @@ mod tests {
             name: "walk".to_owned(),
             time_begin: 0.0,
             time_end: 1.0,
+            frame_rate: 30.0,
             tracks: vec![NodeTrack {
                 node: 1,
                 translation: vec![key(0.0, Vec3::ZERO), key(1.0, Vec3::X)],
@@ -275,5 +294,37 @@ mod tests {
         let mut weight = clip();
         weight.morph_tracks[0].keys[0].value = f32::NAN;
         assert!(validate(&weight).is_err());
+    }
+
+    #[test]
+    fn frames_are_numbered_at_the_clips_own_rate() {
+        // One second at 30 fps is 31 frames (both ends); the same second baked at
+        // 24 fps is 25, wherever the model it plays on came from.
+        let thirty = clip();
+        assert_eq!(thirty.frame_count(), 31);
+        assert_eq!(thirty.frame_at(0.5), 15);
+
+        let twenty_four = AnimationClip {
+            frame_rate: 24.0,
+            ..clip()
+        };
+        assert_eq!(twenty_four.frame_count(), 25);
+        assert_eq!(twenty_four.frame_at(0.5), 12);
+        assert_eq!(twenty_four.frame_time(6), 0.25);
+        assert_eq!(twenty_four.step_frame_time(0.25, 1), 7.0 / 24.0);
+    }
+
+    #[test]
+    fn a_clip_with_no_declared_rate_is_timed_at_the_default() {
+        let undeclared = AnimationClip {
+            frame_rate: 0.0,
+            ..clip()
+        };
+        assert_eq!(undeclared.frame_rate_or_default(), DEFAULT_FRAME_RATE);
+        assert_eq!(
+            undeclared.frame_count(),
+            DEFAULT_FRAME_RATE as usize + 1,
+            "one second at the default rate"
+        );
     }
 }

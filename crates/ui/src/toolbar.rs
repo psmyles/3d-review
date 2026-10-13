@@ -238,13 +238,29 @@ fn draw_menu_group(ui: &mut egui::Ui, state: &mut UiState, output: &mut UiOutput
     });
 }
 
-/// File: open, open recent, close, exit.
+/// File: open, add animations, open recent, close, exit.
 fn file_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
     let modifier = crate::primary_modifier().into_owned();
     let open_file = egui::Button::new(keys::ui_toolbar::MENU_OPEN_FILE)
         .shortcut_text(keys::ui_toolbar::menu_open_file_shortcut(modifier.clone()));
     if ui.add(open_file).clicked() {
         output.menu = Some(MenuIntent::OpenFile);
+    }
+    // Something to add them to only once a model is loaded, which is exactly when
+    // `bounds` is `Some`.
+    let add_animations = ui.add_enabled(
+        state.bounds.is_some(),
+        egui::Button::new(keys::ui_toolbar::MENU_ADD_ANIMATIONS),
+    );
+    if tip(
+        add_animations,
+        Tip::new(keys::ui_toolbar::MENU_ADD_ANIMATIONS)
+            .describe(keys::ui_toolbar::MENU_ADD_ANIMATIONS_DESCRIPTION)
+            .page(Page::Animation),
+    )
+    .clicked()
+    {
+        output.menu = Some(MenuIntent::AddAnimations);
     }
     // Greyed out rather than hidden while there is no history, so the menu keeps
     // its shape.

@@ -227,11 +227,11 @@ fn draw_transport(
     right_rect: egui::Rect,
     group_height: f32,
 ) {
-    let Some(clip) = state
-        .animation
-        .selected_clip
-        .and_then(|index| model.animations.get(index))
-    else {
+    // The attached files are cloned (a few `Arc`s) so the clip can be held while
+    // the transport edits the playback state beside it.
+    let attached = state.attached_animations.clone();
+    let clips = review_model::Clips::new(model, &attached);
+    let Some(clip) = state.animation.selected_clip.and_then(|id| clips.get(id)) else {
         return;
     };
     let spacing = size::TOOLBAR_GROUP_SPACING;
@@ -247,9 +247,8 @@ fn draw_transport(
         left_rect.center().y,
     );
     let rect = egui::Rect::from_center_size(centre, egui::vec2(width, group_height));
-    let fps = model.frame_rate_or_default();
     bar_group_scope(ui, rect, group_height, |ui| {
-        transport::transport_row(ui, state, clip, fps);
+        transport::transport_row(ui, state, clip);
     });
 }
 

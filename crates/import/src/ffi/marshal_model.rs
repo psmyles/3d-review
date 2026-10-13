@@ -15,10 +15,10 @@ use std::path::Path;
 
 use glam::{DMat4, Mat4, Quat, Vec2, Vec3, Vec4};
 use review_model::{
-    AnimContext, AnimationClip, BoneInfo, Key, LocalTransform, MaterialImportDefaults, ModelData,
-    ModelStats, MorphChannel, MorphData, MorphKeyframe, MorphShape, MorphTrack, NodeKind,
-    NodeTrack, SceneNode, SkinCluster, SkinData, SkinDeformerInfo, SkinningMethod, TopologyFace,
-    TriangleData, Vertex, anim,
+    AnimContext, AnimationClip, BoneInfo, CoordinateAxes, Key, LocalTransform,
+    MaterialImportDefaults, ModelData, ModelStats, MorphChannel, MorphData, MorphKeyframe,
+    MorphShape, MorphTrack, NodeKind, NodeTrack, SceneNode, SkinCluster, SkinData,
+    SkinDeformerInfo, SkinningMethod, TopologyFace, TriangleData, Vertex, anim,
 };
 
 use crate::ImportError;
@@ -348,6 +348,9 @@ pub(super) fn marshal_animations(
                 name: stack.name().unwrap_or_default(),
                 time_begin: stack.time_begin,
                 time_end: stack.time_end,
+                // The rate the bridge baked every stack at; its 30 fps fallback
+                // for an undeclared rate is the model's DEFAULT_FRAME_RATE.
+                frame_rate: scene.frames_per_second,
                 tracks,
                 morph_tracks,
             })
@@ -435,6 +438,11 @@ pub(super) fn model_from_bridge_scene(
             bone_count,
             clip_count,
             source_unit_meters: scene.source_unit_meters,
+            source_axes: CoordinateAxes::from_codes(
+                scene.axis_right,
+                scene.axis_up,
+                scene.axis_front,
+            ),
         },
         materials,
         corner_to_logical,

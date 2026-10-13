@@ -213,6 +213,10 @@ pub(super) struct ReviewImportScene {
     pub(super) anim_scalar_keys: *mut ReviewImportScalarKey,
     pub(super) anim_scalar_key_count: usize,
     pub(super) frames_per_second: f64,
+    /// `ufbx_coordinate_axis` codes for the file's right / up / front axes.
+    pub(super) axis_right: u32,
+    pub(super) axis_up: u32,
+    pub(super) axis_front: u32,
 }
 
 #[repr(C)]

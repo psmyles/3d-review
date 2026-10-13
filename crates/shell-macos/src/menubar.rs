@@ -43,6 +43,7 @@ mod keys {
 const ID_ABOUT: &str = "review.about";
 const ID_REMEMBER_SETTINGS: &str = "review.remember-settings";
 const ID_OPEN: &str = "review.open";
+const ID_ADD_ANIMATIONS: &str = "review.add-animations";
 const ID_NEW: &str = "review.new";
 const ID_CLEAR_RECENT: &str = "review.clear-recent";
 const ID_VIEW_LOG: &str = "review.view-log";
@@ -170,6 +171,10 @@ pub(crate) fn install(
                 true,
                 accelerator(Code::KeyO),
             ),
+            &item(
+                ID_ADD_ANIMATIONS,
+                &review_localization::tr(keys::menu::ADD_ANIMATIONS),
+            ),
             &open_recent,
         ],
     )
@@ -258,6 +263,7 @@ fn command_for(id: &MenuId) -> Option<MenuCommand> {
         ID_ABOUT => MenuCommand::About,
         ID_REMEMBER_SETTINGS => MenuCommand::ToggleRememberSettings,
         ID_OPEN => MenuCommand::Open,
+        ID_ADD_ANIMATIONS => MenuCommand::AddAnimations,
         ID_NEW => MenuCommand::New,
         ID_CLEAR_RECENT => MenuCommand::ClearRecentFiles,
         ID_VIEW_LOG => MenuCommand::ViewLog,
@@ -306,6 +312,7 @@ mod tests {
             (ID_ABOUT, MenuCommand::About),
             (ID_REMEMBER_SETTINGS, MenuCommand::ToggleRememberSettings),
             (ID_OPEN, MenuCommand::Open),
+            (ID_ADD_ANIMATIONS, MenuCommand::AddAnimations),
             (ID_NEW, MenuCommand::New),
             (ID_CLEAR_RECENT, MenuCommand::ClearRecentFiles),
             (ID_VIEW_LOG, MenuCommand::ViewLog),

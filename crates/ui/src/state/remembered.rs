@@ -19,7 +19,7 @@ use review_render::{
     TonemapOperator, VertexColorMode, ViewportBackground,
 };
 
-use super::{BoundsScope, UiState, range};
+use super::{BoundsScope, CurveShape, UiState, range};
 
 /// One remembered value: its key in the file, how to write it, and how to read it
 /// back. A read that returns `None` leaves the state untouched.
@@ -85,6 +85,11 @@ enum_codec!(bounds_scope_id, bounds_scope_from, BoundsScope {
     BoundsScope::AllMeshes => "all_meshes",
     BoundsScope::OnlySelection => "only_selection",
     BoundsScope::VisibleOnly => "visible_only",
+});
+
+enum_codec!(curve_shape_id, curve_shape_from, CurveShape {
+    CurveShape::Smooth => "smooth",
+    CurveShape::Straight => "straight",
 });
 
 enum_codec!(msaa_id, msaa_from, MsaaSamples {
@@ -278,6 +283,42 @@ const ENTRIES: &[Entry] = &[
         key: "skeleton.color",
         save: |s| color_text(s.skeleton.color),
         load: |s, v| set(&mut s.skeleton.color, color_from(v)),
+    },
+    // Animation Curves
+    Entry {
+        key: "curves.shape",
+        save: |s| curve_shape_id(s.curves.shape),
+        load: |s, v| set(&mut s.curves.shape, curve_shape_from(v)),
+    },
+    Entry {
+        key: "curves.width",
+        save: |s| f32_text(s.curves.width),
+        load: |s, v| {
+            set(
+                &mut s.curves.width,
+                f32_in(v, range::CURVE_WIDTH_MIN, range::CURVE_WIDTH_MAX),
+            )
+        },
+    },
+    Entry {
+        key: "curves.opacity",
+        save: |s| f32_text(s.curves.opacity),
+        load: |s, v| {
+            set(
+                &mut s.curves.opacity,
+                f32_in(v, range::CURVE_OPACITY_MIN, range::CURVE_OPACITY_MAX),
+            )
+        },
+    },
+    Entry {
+        key: "curves.dot_size",
+        save: |s| f32_text(s.curves.dot_size),
+        load: |s, v| {
+            set(
+                &mut s.curves.dot_size,
+                f32_in(v, range::CURVE_DOT_SIZE_MIN, range::CURVE_DOT_SIZE_MAX),
+            )
+        },
     },
     // Vertex Colors
     Entry {
@@ -486,6 +527,10 @@ mod tests {
         state.uv_seams.color = Color32::from_rgb(13, 14, 15);
         state.skeleton.scale = 2.5;
         state.skeleton.color = Color32::from_rgb(16, 17, 18);
+        state.curves.shape = CurveShape::Smooth;
+        state.curves.width = 3.25;
+        state.curves.opacity = 0.4;
+        state.curves.dot_size = 7.5;
         state.vertex_colors.mode = VertexColorMode::RgbAlpha;
         state.camera.orbit_speed = 0.5;
         state.camera.zoom_speed = 2.25;

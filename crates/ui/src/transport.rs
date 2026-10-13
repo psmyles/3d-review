@@ -2,10 +2,10 @@
 //! a clip is selected in the 3D workspace.
 //!
 //! Go-to-start · step back · play/pause · step forward · a frame scrubber · the
-//! "frame / total   seconds" readout · loop · speed. Everything it edits is the
-//! plain [`crate::state::AnimationUiState`] the Outliner's Animations tab also
-//! writes; `app` runs the clock off it (invariant 6) and paces the redraw loop
-//! while it plays.
+//! "frame / total   seconds" readout · loop · speed · animation curves.
+//! Everything it edits is the plain [`crate::state::AnimationUiState`] the
+//! Outliner's Animations tab also writes; `app` runs the clock off it (invariant
+//! 6) and paces the redraw loop while it plays.
 //!
 //! **It used to float over the viewport**, on the same centred overlay card as
 //! the Opt legend, at a fixed 610pt that was never clamped to the space
@@ -22,7 +22,7 @@ use review_model::AnimationClip;
 use crate::assets::{self, AppIcon};
 use crate::docs::Page;
 use crate::keys;
-use crate::state::{PlaybackSpeed, UiState};
+use crate::state::{OptionPanel, PlaybackSpeed, UiState};
 use crate::theme::{color, font, size};
 use crate::widgets;
 use crate::widgets::Tip;
@@ -47,10 +47,10 @@ struct RailBudget {
 /// still be the transport; the scrubber's tooltip carries the frame number while
 /// it is away.
 ///
-/// `controls` is every fixed item but the readout; the row has seven gaps with
-/// the readout in it and six without.
+/// `controls` is every fixed item but the readout; the row has eight gaps with
+/// the readout in it and seven without.
 fn rail_budget(available: f32, controls: f32, readout: f32, gap: f32) -> RailBudget {
-    let rail = available - (controls + readout + gap * 7.0);
+    let rail = available - (controls + readout + gap * 8.0);
     if rail >= size::ANIM_SCRUB_MIN_WIDTH {
         return RailBudget {
             rail,
@@ -58,14 +58,14 @@ fn rail_budget(available: f32, controls: f32, readout: f32, gap: f32) -> RailBud
         };
     }
     RailBudget {
-        rail: (available - (controls + gap * 6.0)).max(size::ANIM_SCRUB_MIN_WIDTH),
+        rail: (available - (controls + gap * 7.0)).max(size::ANIM_SCRUB_MIN_WIDTH),
         readout_shown: false,
     }
 }
 
 /// The transport's single row of controls: the four transport buttons pinned
-/// left, the loop toggle + speed dropdown pinned right, and the scrubber
-/// stretched across everything between them.
+/// left, the loop toggle, speed dropdown and animation-curve toggle pinned
+/// right, and the scrubber stretched across everything between them.
 ///
 /// The widths of both end groups are known up front, so the rail is sized by
 /// subtraction rather than by a token — the slider is whatever the row has left
@@ -73,14 +73,10 @@ fn rail_budget(available: f32, controls: f32, readout: f32, gap: f32) -> RailBud
 /// *widest* string this clip can produce (plus a trailing pad), so a frame
 /// counter or an elapsed time gaining a digit can't shove the right-hand
 /// controls sideways.
-pub(crate) fn transport_row(
-    ui: &mut egui::Ui,
-    state: &mut UiState,
-    clip: &AnimationClip,
-    fps: f64,
-) {
+pub(crate) fn transport_row(ui: &mut egui::Ui, state: &mut UiState, clip: &AnimationClip) {
     let anim = &mut state.animation;
-    let last_frame = clip.frame_count(fps).saturating_sub(1);
+    let panels_open = &mut state.panels_open;
+    let last_frame = clip.frame_count().saturating_sub(1);
     // Square tiles the height of the speed dropdown — `compact_combo` sizes its
     // button from `PANEL_ROW_H`, so every control in the row reads as one band.
     let tile = egui::Vec2::splat(size::PANEL_ROW_H);
@@ -97,7 +93,7 @@ pub(crate) fn transport_row(
         // words and their order around them are the catalog's.
         let digits = last_frame.to_string().len();
         let readout = keys::ui_transport::readout(
-            format!("{:>digits$}", clip.frame_at(anim.time, fps)),
+            format!("{:>digits$}", clip.frame_at(anim.time)),
             last_frame as f64,
             format!("{:.2}", (anim.time - clip.time_begin).max(0.0)),
         );
@@ -110,11 +106,11 @@ pub(crate) fn transport_row(
         );
         let readout_width = mono_width(ui, &widest) + size::ANIM_TRANSPORT_GROUP_GAP;
 
-        // Five tiles (four transport + loop) and the combo, whose `width` is its
-        // inner content so its frame padding counts too. Whatever is left over
-        // goes to the rail and the readout.
+        // Six tiles (four transport, loop, curves) and the combo, whose `width` is
+        // its inner content so its frame padding counts too. Whatever is left
+        // over goes to the rail and the readout.
         let combo_width = size::ANIM_SPEED_COMBO_WIDTH;
-        let controls = tile.x * 5.0 + combo_width + ui.spacing().button_padding.x * 2.0;
+        let controls = tile.x * 6.0 + combo_width + ui.spacing().button_padding.x * 2.0;
         let RailBudget {
             rail,
             readout_shown,
@@ -136,7 +132,7 @@ pub(crate) fn transport_row(
                 .describe(keys::ui_transport::PREVIOUS_FRAME_DESCRIPTION)
                 .page(Page::Animation),
         ) {
-            anim.time = clip.step_frame_time(anim.time, -1, fps);
+            anim.time = clip.step_frame_time(anim.time, -1);
             anim.playing = false;
         }
         let play_icon = if anim.playing {
@@ -162,13 +158,13 @@ pub(crate) fn transport_row(
                 .describe(keys::ui_transport::NEXT_FRAME_DESCRIPTION)
                 .page(Page::Animation),
         ) {
-            anim.time = clip.step_frame_time(anim.time, 1, fps);
+            anim.time = clip.step_frame_time(anim.time, 1);
             anim.playing = false;
         }
 
         // The scrubber works in whole frames; dragging it pauses playback so the
         // frame under the pointer is the one shown.
-        let mut frame = clip.frame_at(anim.time, fps) as f64;
+        let mut frame = clip.frame_at(anim.time) as f64;
         ui.spacing_mut().slider_width = rail;
         let scrub = ui.add(
             egui::Slider::new(&mut frame, 0.0..=last_frame as f64)
@@ -176,7 +172,7 @@ pub(crate) fn transport_row(
                 .show_value(false),
         );
         if scrub.changed() {
-            anim.time = clip.frame_time(frame.round().max(0.0) as usize, fps);
+            anim.time = clip.frame_time(frame.round().max(0.0) as usize);
             anim.playing = false;
         }
         if !readout_shown {
@@ -221,6 +217,27 @@ pub(crate) fn transport_row(
                 }
             },
         );
+
+        // Last, apart from the playback settings: it changes what the viewport
+        // shows, not how the clip plays. Right-click opens how it is drawn, as
+        // every toggle with options does.
+        let curves = widgets::icon_tile_button(
+            ui,
+            &assets::ICON_ANIM_CURVE,
+            anim.show_curves,
+            Tip::new(keys::ui_transport::CURVES)
+                .describe(keys::ui_transport::CURVES_DESCRIPTION)
+                .with_options()
+                .page(Page::PanelsAnimationCurves),
+            tile,
+            true,
+        );
+        if curves.clicked() {
+            anim.show_curves = !anim.show_curves;
+        }
+        if curves.secondary_clicked() {
+            panels_open.toggle(OptionPanel::AnimationCurves);
+        }
     });
 }
 
@@ -241,9 +258,9 @@ mod tests {
     use super::*;
 
     /// Everything in the row except the rail and the readout, at the real
-    /// tokens: five tiles, the speed combo and its frame padding.
+    /// tokens: six tiles, the speed combo and its frame padding.
     fn controls() -> f32 {
-        size::PANEL_ROW_H * 5.0 + size::ANIM_SPEED_COMBO_WIDTH + 8.0
+        size::PANEL_ROW_H * 6.0 + size::ANIM_SPEED_COMBO_WIDTH + 8.0
     }
 
     /// At its preferred width the row shows everything; squeezed, the readout is
@@ -281,7 +298,7 @@ mod tests {
         let gap = size::ANIM_TRANSPORT_GAP;
         let readout = 120.0;
         // A width just under the point where the readout stops fitting.
-        let threshold = controls() + readout + gap * 7.0 + size::ANIM_SCRUB_MIN_WIDTH;
+        let threshold = controls() + readout + gap * 8.0 + size::ANIM_SCRUB_MIN_WIDTH;
         let just_under = rail_budget(threshold - 1.0, controls(), readout, gap);
         assert!(!just_under.readout_shown);
         assert!(

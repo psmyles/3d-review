@@ -110,6 +110,39 @@ pub(super) struct SkeletonParams {
     pub(super) color: [f32; 4],
     pub(super) selected_color: [f32; 4],
     pub(super) hover_color: [f32; 4],
+    /// The animation curves the bones are coloured to match, as the overlay's
+    /// [`TrajectoryParams`]; `None` while the curves are off.
+    pub(super) curves: Option<TrajectoryParams>,
+}
+
+/// Bake key for the animation-curve overlay, and the part of the skeleton's that
+/// follows it: which sampling of which clip (`revision`), which of its paths the
+/// selection leaves showing, and whether they are drawn smooth. Colours are
+/// derived from the node, so they need no key of their own; the width, opacity
+/// and dot size are uniforms, so dragging them rebuilds nothing.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct TrajectoryParams {
+    pub(super) revision: u64,
+    pub(super) shown: Vec<u32>,
+    pub(super) smooth: bool,
+}
+
+impl TrajectoryParams {
+    /// Whether this key describes `overlay` — compared against the borrowed
+    /// frame input, so a steady-state frame allocates nothing.
+    pub(super) fn matches(&self, overlay: &crate::TrajectoryOverlay<'_>) -> bool {
+        self.revision == overlay.revision
+            && self.shown == overlay.shown
+            && self.smooth == overlay.style.smooth
+    }
+
+    pub(super) fn of(overlay: &crate::TrajectoryOverlay<'_>) -> Self {
+        Self {
+            revision: overlay.revision,
+            shown: overlay.shown.to_vec(),
+            smooth: overlay.style.smooth,
+        }
+    }
 }
 
 /// Bake key for the skin-weight heat map. Only the model and the selected bone
@@ -160,8 +193,6 @@ pub(super) struct MeshBuffers {
     pub(super) vertices: VertexBuffer,
     pub(super) indices: IndexBuffer,
     pub(super) ranges: Vec<MaterialDrawRange>,
-    /// The GPU deform tables, `None` for a model that never deforms.
-    pub(super) deform: Option<DeformGpu>,
 }
 
 /// The build-on-demand derived views (invariant 3): each buffer exists only while
@@ -220,6 +251,15 @@ pub(super) struct DerivedViews {
     pub(super) skeleton_fill_buf: Option<VertexBuffer>,
     pub(super) skeleton_line_buf: Option<VertexBuffer>,
     pub(super) skeleton_baked: Option<SkeletonParams>,
+    /// The animation curves: each shown path, a dot on every frame of it, and a
+    /// marker per path riding its node to the current frame. Three buffers
+    /// because each draws at its own width. All `None` while the transport's
+    /// toggle is off (invariant 3). Drawn always-on-top, like the skeleton whose
+    /// bones they colour.
+    pub(super) trajectory_line_buf: Option<VertexBuffer>,
+    pub(super) trajectory_dot_buf: Option<VertexBuffer>,
+    pub(super) trajectory_marker_buf: Option<VertexBuffer>,
+    pub(super) trajectory_baked: Option<TrajectoryParams>,
     /// The model's UV edges for the active channel and the laid-out nodes.
     pub(super) uv_wireframe_buf: Option<VertexBuffer>,
     pub(super) uv_wireframe_baked: Option<UvViewParams>,
@@ -272,6 +312,11 @@ pub(super) struct ModelSlot {
     /// revision) — the per-corner lanes every mesh-derived overlay copies.
     /// `None` for a model that never deforms.
     pub(super) deform_layout: Option<DeformLayout>,
+    /// The GPU deform tables, `None` for a model that never deforms. The
+    /// model's, not the mesh's: a skeleton with no mesh (an animation file opened
+    /// on its own) still poses its overlay through the palette, so these exist
+    /// whether or not `mesh` does.
+    pub(super) deform: Option<DeformGpu>,
     pub(super) mesh_revision: u64,
     pub(super) mesh_uv_channel: u32,
     pub(super) mesh_material_mode: MaterialMode,
@@ -397,12 +442,11 @@ impl ModelSlot {
             .map_or(&[], |layout| layout.corner.as_slice())
     }
 
-    /// Whether this frame's mesh draws through the deform path: the model has
-    /// deform tables and a matching pose has been uploaded.
+    /// Whether this frame draws through the deform path: the model has deform
+    /// tables and a matching pose has been uploaded.
     pub(super) fn deform_enabled(&self) -> bool {
-        self.mesh
+        self.deform
             .as_ref()
-            .and_then(|mesh| mesh.deform.as_ref())
             .is_some_and(|deform| deform.palette_revision.is_some())
     }
 }

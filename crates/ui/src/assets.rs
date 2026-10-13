@@ -296,6 +296,12 @@ pub(crate) const ICON_ANIM_LOOP: AppIcon = AppIcon {
     id: "icon_anim_loop",
     png_bytes: include_bytes!("../../../assets/icons/icon_anim_loop.png"),
 };
+/// "Animation curves" — the transport's toggle for the selected clip's motion
+/// paths.
+pub(crate) const ICON_ANIM_CURVE: AppIcon = AppIcon {
+    id: "icon_anim_curve",
+    png_bytes: include_bytes!("../../../assets/icons/icon_anim_curve.png"),
+};
 
 /// Tone-mapped equirectangular preview thumbnails for the built-in HDR
 /// environments, shown beside each option in the Environment dropdown. They are

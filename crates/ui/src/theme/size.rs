@@ -419,12 +419,12 @@ pub const ANIM_ROW_TRAILING_WIDTH: f32 = 104.0;
 /// *maximum*, not a fixed size: a span wider than this leaves the row centred at
 /// this width rather than stretching the scrubber across the whole bar, and a
 /// narrower one shrinks it (see `transport::transport_row`).
-pub const ANIM_TRANSPORT_WIDTH: f32 = 610.0;
+pub const ANIM_TRANSPORT_WIDTH: f32 = 636.0;
 /// The span below which the transport doesn't draw at all. Its fixed controls —
-/// five tiles, the speed picker and their gaps — plus a usable rail come to
+/// six tiles, the speed picker and their gaps — plus a usable rail come to
 /// about this much, and a row squeezed under it would be buttons with no
 /// scrubber between them.
-pub const ANIM_TRANSPORT_MIN_WIDTH: f32 = 210.0;
+pub const ANIM_TRANSPORT_MIN_WIDTH: f32 = 236.0;
 /// Gap between transport controls.
 pub const ANIM_TRANSPORT_GAP: f32 = 4.0;
 /// Extra breathing room reserved after the transport's frame readout, so the

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
-use review_render::ViewportBackground;
+use review_render::{TrajectoryStyle, ViewportBackground};
 
 pub const USAGE: &str = "\
 review-snapshot - headless renders through the viewer's own renderer
@@ -41,6 +41,20 @@ OPTIONS
   --inspect             report how each subject's vertices and normals relate to
                         the first subject's (kept or moved, copied or recomputed)
   --no-render           skip the images (with --inspect)
+  --clip <n>[:<frame>]  pose every subject on its clip n (0-based) at that frame
+                        (default the first), framing on the clip's whole motion
+  --attach <file.fbx>   attach an animation file to every subject, as the viewer's
+                        File > Add Animations does (repeatable); its clips number on
+                        from the subject's own in --clip
+  --curves              with --clip: draw the clip's animation curves
+  --curve-style <shape>[:<width>:<opacity>:<dot>]
+                        how --curves draws them, as the Animation Curves window
+                        sets it: straight (default) or smooth, then the line width
+                        in points, its opacity (0-1) and the frame dots' size
+  --skeleton            draw the skeleton overlay
+  --select <names>      ','-separated node names, selected as an Outliner click
+                        would: bones narrow the curves to their own, a mesh or group
+                        to everything under it
 ";
 
 /// Everything the command line asked for.
@@ -60,6 +74,21 @@ pub struct Args {
     pub singles: bool,
     pub inspect: bool,
     pub render: bool,
+    pub clip: Option<ClipSpec>,
+    /// Animation files attached to every subject, in order.
+    pub attach: Vec<PathBuf>,
+    pub curves: bool,
+    pub curve_style: TrajectoryStyle,
+    pub skeleton: bool,
+    pub select: Vec<String>,
+}
+
+/// Which clip to pose the subjects on, and on which of its frames.
+#[derive(Clone, Copy)]
+pub struct ClipSpec {
+    pub index: usize,
+    /// 0-based; the first frame when `None`, clamped to the last.
+    pub frame: Option<usize>,
 }
 
 /// One `INPUT` argument, parsed.
@@ -142,6 +171,12 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
         singles: false,
         inspect: false,
         render: true,
+        clip: None,
+        attach: Vec::new(),
+        curves: false,
+        curve_style: TrajectoryStyle::default(),
+        skeleton: false,
+        select: Vec::new(),
     };
     while let Some(argument) = arguments.next() {
         let mut value = |flag: &str| {
@@ -181,12 +216,27 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
             "--singles" => args.singles = true,
             "--inspect" => args.inspect = true,
             "--no-render" => args.render = false,
+            "--clip" => args.clip = Some(parse_clip(&value("--clip")?)?),
+            "--attach" => args.attach.push(value("--attach")?.into()),
+            "--curves" => args.curves = true,
+            "--curve-style" => args.curve_style = parse_curve_style(&value("--curve-style")?)?,
+            "--skeleton" => args.skeleton = true,
+            "--select" => args.select.extend(
+                value("--select")?
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned),
+            ),
             flag if flag.starts_with("--") => bail!("unknown option {flag}"),
             input => args.inputs.push(parse_input(input)?),
         }
     }
     if args.inputs.is_empty() {
         return Ok(None);
+    }
+    if args.curves && args.clip.is_none() {
+        bail!("--curves draws a clip's motion: it needs --clip");
     }
     let [left, top, right, bottom] = args.chrome;
     if left + right >= args.size.0 || top + bottom >= args.size.1 {
@@ -204,6 +254,19 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
         args.looks.push(Look::Shaded);
     }
     Ok(Some(args))
+}
+
+fn parse_clip(text: &str) -> Result<ClipSpec> {
+    let (index, frame) = match text.split_once(':') {
+        Some((index, frame)) => (index, Some(frame)),
+        None => (text, None),
+    };
+    Ok(ClipSpec {
+        index: index.trim().parse().context("--clip takes a clip index")?,
+        frame: frame
+            .map(|frame| frame.trim().parse().context("--clip's frame is a number"))
+            .transpose()?,
+    })
 }
 
 fn parse_size(text: &str) -> Result<(u32, u32)> {
@@ -348,4 +411,26 @@ fn parse_input(text: &str) -> Result<InputSpec> {
         stack,
         level,
     })
+}
+
+/// `smooth` or `straight`, then optionally `:width:opacity:dot size`.
+fn parse_curve_style(text: &str) -> Result<TrajectoryStyle> {
+    let mut parts = text.split(':');
+    let mut style = TrajectoryStyle {
+        smooth: match parts.next().map(str::trim) {
+            Some("smooth") => true,
+            Some("straight") => false,
+            other => bail!("--curve-style: {other:?} is neither smooth nor straight"),
+        },
+        ..TrajectoryStyle::default()
+    };
+    for slot in [&mut style.width, &mut style.opacity, &mut style.dot_size] {
+        if let Some(part) = parts.next() {
+            *slot = part
+                .trim()
+                .parse()
+                .with_context(|| format!("--curve-style: {part:?} is not a number"))?;
+        }
+    }
+    Ok(style)
 }

@@ -13,18 +13,108 @@ as facial expressions) are handled the same way.
 ## Clips
 
 Every animation in the file becomes a clip. Clips are sampled at the file's
-own frame rate, and nothing is thrown away.
+own frame rate, and nothing is thrown away. Frames are always counted at the
+rate of the file a clip came from.
 
 Click a clip in the Outliner's Animations tab to select it. The model pauses on
 the clip's first frame and the playback controls appear in the status bar: go
 to start, step back, play/pause, step forward, a scrubber you can drag, a
-readout showing `frame / total   seconds`, a loop switch (on to begin with) and
-a speed control. Click the clip again to return the model to its resting pose.
+readout showing `frame / total   seconds`, a loop switch (on to begin with), a
+speed control and the animation curves switch (see below). Click the clip again
+to return the model to its resting pose.
 
 If the window is narrow, the scrubber shrinks first, and then the readout
 tucks itself into the scrubber's tooltip, so the controls always stay reachable.
 
 `Space` plays and pauses; `,` and `.` step one frame back or forward.
+
+## Animations from other files
+
+Animations often live in files of their own, next to the model they were made
+for. Opened together with the model, or added to it later (see
+[Getting a model in](getting-a-model-in.md#a-model-and-its-animation-files)),
+their clips play on the model exactly as its own do. The Animations tab then
+groups the clips by the file they came from, each group headed by the file's
+name and frame rate.
+
+The animation is matched to the model by name: each bone it moves drives the
+model's bone of the same name, and each blend shape it moves (a facial
+expression, say) drives the model's blend shape of the same name on the mesh of
+the same name. Anything the file animates that the model does not have, such as
+the controls an animation package adds, is ignored. Anything of the model's that
+the file does not animate stays in the model's resting pose.
+
+Only one clip plays at a time. A face animation therefore plays on a body
+standing in its resting pose.
+
+### When the two files do not line up
+
+As an animation file is added, 3D Review checks that it fits the model, and if
+anything does not, a warning says so straight away - before you play anything,
+so a clip that looks wrong is never the first sign of it:
+
+- **Units.** One file is in centimeters and the other in meters, say. The
+  animation is converted, so it plays at the model's scale, as a game engine
+  importing both files would show it.
+- **Axes.** One file is Z-up and the other Y-up, say. The animation is turned to
+  match the model. Two files whose axes are mirror images of each other cannot be
+  matched by turning, and the warning says that instead.
+- **Bone lengths.** A bone the animation holds at a different distance from its
+  parent than the model does. The animation is played as keyed, so the model's
+  proportions change while it plays - which is what the engine would show too.
+  Bones that move as part of the animation, such as the hips, are not compared.
+- **Mesh vertex counts.** A face animation carries copies of the model's head
+  meshes. If a copy has a different number of vertices from the model's own, the
+  animation was probably exported from another version of the mesh, and its
+  expressions may not be the ones the model has.
+- **Bones with no match.** A bone the animation moves that the model does not
+  have. Its keys are not played; it was most likely renamed or removed.
+
+Bones and expressions the animation leaves alone, and the controls an animation
+package adds beside the skeleton, are expected, and are not warned about.
+
+The [Opt workspace](opt/index.md) exports only the model's own animations, not
+the ones added from other files.
+
+## Animation files with no model in them
+
+An animation file opened on its own, with no model, holds a skeleton and its
+clips but no surface, and 3D Review shows it as exactly that: the skeleton, with
+the
+[skeleton](panels/skeleton.md) overlay switched on so there is something to
+see, ready to play. `F` frames the skeleton's joints, and while a clip is
+selected, the whole area they move through.
+
+A file with neither a surface nor a skeleton in it has nothing to show, and is
+refused with a message saying so.
+
+## Animation curves
+
+The last button in the playback controls shows the animation's curves: the path
+each moving bone or animated object takes from the first frame to the last. It
+is off to begin with, and it stays on while you switch between animations, so
+you can compare their paths.
+
+Every path has a color of its own, and while the curves are on the skeleton's
+bones take the same colors (turn the [skeleton](panels/skeleton.md) on to see
+them). Along each path there is a dot on every frame, so dots spread far apart
+mean fast movement and bunched-up dots mean slow, and a larger dot sits where
+the bone or object is on the current frame. It slides along its path as the
+animation plays.
+
+A path follows the point the bone or object turns around: a bone's joint, or an
+object's pivot. A bone that only turns in place, or an object that never moves,
+has no path.
+
+To look at just a few paths, [select](selection.md) them: pick bones in the
+Outliner, or click them in the viewport with the skeleton on, and only their
+paths are drawn. Selecting an object or a group shows the paths of everything
+inside it. If nothing you select has a path, all of them stay on screen. An
+object you hide in the Outliner hides its path too.
+
+Right-click the curves button to set how they are drawn: smooth or straight
+between the dots, how thick and how solid the lines are, and how large the dots
+are. See [Animation Curves](panels/animation-curves.md).
 
 ## Framing an animation
 

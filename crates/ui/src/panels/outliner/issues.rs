@@ -131,7 +131,7 @@ pub(super) fn issues_tab(
     ui.add_space(size::PANEL_ROW_GAP);
 
     let Some(report) = state.aud.report.clone() else {
-        ui.weak(if model.indices.is_empty() && model.nodes.is_empty() {
+        ui.weak(if model.is_empty() {
             keys::ui_audit::NO_MODEL
         } else {
             keys::ui_audit::RUNNING

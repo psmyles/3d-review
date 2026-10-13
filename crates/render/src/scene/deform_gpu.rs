@@ -109,7 +109,7 @@ impl DeformGpu {
 }
 
 impl SceneGpu {
-    /// Upload the frame's pose into the active mesh's palette when its revision
+    /// Upload the frame's pose into the active model's palette when its revision
     /// moved. A pose that doesn't fit the model's tables (built for another
     /// model, mid-swap) is ignored, which also leaves the deform flag off.
     pub(super) fn sync_pose(
@@ -117,12 +117,7 @@ impl SceneGpu {
         pose: Option<&DeformPose>,
         pose_revision: u64,
     ) -> GpuResult<()> {
-        let Some(deform) = self
-            .active
-            .mesh
-            .as_mut()
-            .and_then(|mesh| mesh.deform.as_mut())
-        else {
+        let Some(deform) = self.active.deform.as_mut() else {
             return Ok(());
         };
         match pose {

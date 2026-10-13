@@ -484,6 +484,7 @@ impl SceneGpu {
             scene.model_revision,
             scene.debug.uv_channel,
             scene.debug.material_mode,
+            scene.pose.is_some(),
         )?;
         let material_key = MaterialKey::new(
             material_revision,
@@ -517,7 +518,9 @@ impl SceneGpu {
             scene.debug,
             scene.selected_bones,
             scene.hover_bone,
+            scene.trajectories.as_ref(),
         )?;
+        self.sync_trajectories(scene.model, scene.trajectories.as_ref())?;
         self.sync_skin_weights(
             scene.model,
             scene.model_revision,
@@ -659,6 +662,8 @@ impl SceneGpu {
             || derived.pivot_buf.is_some()
             || derived.skeleton_fill_buf.is_some()
             || derived.skeleton_line_buf.is_some()
+            || derived.trajectory_line_buf.is_some()
+            || derived.trajectory_marker_buf.is_some()
             || (views.wireframe_ghost.is_some() && self.idle.ghost_wireframe_edges.is_some())
             || derived.audit_edges.is_some()
             || derived.audit_dots.is_some()
@@ -771,6 +776,25 @@ impl SceneGpu {
             &lines.overlay,
         );
 
+        // The animation curves and their frame dots, always on top like the
+        // skeleton they colour, and under it: a path runs through every joint it
+        // follows, and the bone drawn over it is what says which joint that is.
+        let views = &self.active.views;
+        self.draw_lines(
+            frame,
+            &self.lines.line_overlay,
+            views.trajectory_line_buf.iter(),
+            uniforms,
+            &lines.trajectory,
+        );
+        self.draw_lines(
+            frame,
+            &self.lines.line_overlay,
+            views.trajectory_dot_buf.iter(),
+            uniforms,
+            &lines.trajectory_dot,
+        );
+
         // Skeleton fills go first, under their own outlines: translucent octahedra,
         // with the per-bone selection tint already baked into the buffer.
         if let Some(fill) = &self.active.views.skeleton_fill_buf {
@@ -796,6 +820,15 @@ impl SceneGpu {
             overlay_lines.into_iter().flatten(),
             uniforms,
             &lines.overlay,
+        );
+        // Each curve's current-frame marker, over the bones: it sits on a joint,
+        // and under the outline it would be covered by exactly the bone it marks.
+        self.draw_lines(
+            frame,
+            &self.lines.line_overlay,
+            self.active.views.trajectory_marker_buf.iter(),
+            uniforms,
+            &lines.trajectory_marker,
         );
 
         // The Opt overlay's wireframe ghost, over everything, at the wireframe's width.

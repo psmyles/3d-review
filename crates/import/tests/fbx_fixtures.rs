@@ -406,6 +406,11 @@ fn import_carries_animation_clips() {
     assert!(model.frame_rate > 0.0, "the file declares a frame rate");
     for clip in &model.animations {
         assert!(!clip.name.is_empty(), "every clip is named");
+        assert_eq!(
+            clip.frame_rate, model.frame_rate,
+            "clip '{}' is timed at the rate it was baked at, its file's",
+            clip.name
+        );
         assert!(
             clip.time_end > clip.time_begin,
             "clip '{}' has an empty range {}..{}",
@@ -486,17 +491,16 @@ fn measured_clip_bounds_match_walking_every_corner() {
         );
 
         let ctx = review_model::AnimContext::new(&model);
-        let fps = model.frame_rate_or_default();
         let mut pose = review_model::Pose::new(&model);
         let mut deform = review_model::DeformPose::default();
         for (clip, measured) in model.animations.iter().zip(&measured) {
             let mut expected = review_model::Bounds::EMPTY;
-            for frame in 0..clip.frame_count(fps) {
+            for frame in 0..clip.frame_count() {
                 review_model::anim::evaluate_pose(
                     &model,
                     &ctx,
                     Some(clip),
-                    clip.frame_time(frame, fps),
+                    clip.frame_time(frame),
                     &mut pose,
                 );
                 review_model::anim::build_palette(&model, &ctx, &pose, &mut deform);

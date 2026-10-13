@@ -35,6 +35,10 @@ pub struct ModelStats {
     /// the stats panel can show what the file claimed. `0.0` means the source
     /// declared no unit (e.g. the built-in demo, or a file missing the metadata).
     pub source_unit_meters: f32,
+    /// The axis system the file declared, or `None` when it declared none.
+    /// Import does not convert axes, so this is the system every coordinate of
+    /// the model is written in.
+    pub source_axes: Option<CoordinateAxes>,
 }
 
 /// Measured counts for one draw group — the triangles sharing a
@@ -294,6 +298,38 @@ impl ModelData {
         mask
     }
 
+    /// Per-node mask of the union of the subtrees rooted at `roots`, in one
+    /// O(nodes x depth) pass however many roots there are (rather than one
+    /// [`Self::node_subtree_mask`] walk per root) — what a multi-node selection
+    /// covers. A root out of range covers nothing, and a guard bounds a malformed
+    /// parent cycle.
+    pub fn node_subtree_union(&self, roots: &[u32]) -> Vec<bool> {
+        let node_count = self.nodes.len();
+        let mut is_root = vec![false; node_count];
+        for &root in roots {
+            if let Some(slot) = is_root.get_mut(root as usize) {
+                *slot = true;
+            }
+        }
+        (0..node_count)
+            .map(|index| {
+                let mut current = Some(index);
+                let mut guard = 0;
+                while let Some(node) = current {
+                    if is_root[node] {
+                        return true;
+                    }
+                    current = self.nodes.get(node).and_then(|node| node.parent);
+                    guard += 1;
+                    if guard > node_count || current.is_some_and(|parent| parent >= node_count) {
+                        break;
+                    }
+                }
+                false
+            })
+            .collect()
+    }
+
     /// Sum a [`mesh_group_stats`] table over the groups `scope` covers.
     ///
     /// The table is the expensive part and is built once per model; this is a
@@ -503,6 +539,13 @@ mod tests {
         assert_eq!(model.node_subtree_mask(3), [false, false, false, true]);
         // Out of range selects nothing rather than panicking.
         assert_eq!(model.node_subtree_mask(9), [false; 4]);
+
+        // The union of several roots is the union of their masks, and agrees
+        // with the single-root walk on one.
+        assert_eq!(model.node_subtree_union(&[1, 3]), [false, true, true, true]);
+        assert_eq!(model.node_subtree_union(&[0]), model.node_subtree_mask(0));
+        assert_eq!(model.node_subtree_union(&[]), [false; 4]);
+        assert_eq!(model.node_subtree_union(&[9]), [false; 4]);
     }
 
     #[test]

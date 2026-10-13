@@ -20,6 +20,10 @@ ui-toolbar-menu-help = Help
 
 ui-toolbar-menu-open-file = Open File...
 ui-toolbar-menu-open-file-shortcut = { $modifier }+O
+ui-toolbar-menu-add-animations = Add Animations...
+    .description = Adds animation files to the model on screen, so their clips play on it.
+        Each file is matched to the model by its bone and blend shape names; a file that
+        matches nothing is not loaded.
 ui-toolbar-menu-open-recent = Open Recent
 ui-toolbar-menu-clear-recent-files = Clear Recent Files
 ui-toolbar-menu-close-file = Close File

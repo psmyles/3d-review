@@ -8,12 +8,16 @@
 //! exactly as the viewer does into a texture it then reads back.
 //!
 //! Each look writes one contact sheet (a row per subject, a column per view).
+//! `--clip` poses every subject on one frame of a clip instead of its bind pose,
+//! and `--curves` / `--skeleton` / `--select` draw what the viewer draws over an
+//! animation - see [`animation`].
 //! `--compare` additionally renders every subject's interpolated vertex normals
 //! and reports how far each one's are from the first subject's, pixel by pixel
 //! from the same cameras — see [`compare`].
 
 #![forbid(unsafe_code)]
 
+mod animation;
 mod capture;
 mod cli;
 mod compare;
@@ -71,18 +75,39 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
+    let attachments = animation::load_attachments(&args.attach)?;
+    let posed: Vec<Option<animation::Posed>> = subjects
+        .iter()
+        .map(|subject| {
+            let attached = animation::attach(&subject.model, &attachments);
+            args.clip
+                .map(|clip| {
+                    animation::pose(
+                        &subject.model,
+                        &attached,
+                        clip,
+                        args.curves,
+                        &args.select,
+                        &subject.hidden,
+                    )
+                })
+                .transpose()
+        })
+        .collect::<Result<_>>()?;
+    // A posed subject frames on its clip's whole motion, as the viewer does.
+    let bounds = |index: usize| {
+        posed[index]
+            .as_ref()
+            .and_then(|posed| posed.envelope)
+            .or_else(|| subjects[index].bounds())
+    };
     let framing = match args.frame_on {
-        Some(index) => match subjects.get(index) {
-            Some(subject) => subject.bounds(),
-            None => bail!(
-                "--frame {index}: there are only {} subjects",
-                subjects.len()
-            ),
-        },
-        None => subjects
-            .iter()
-            .filter_map(|subject| subject.bounds())
-            .reduce(union),
+        Some(index) if index < subjects.len() => bounds(index),
+        Some(index) => bail!(
+            "--frame {index}: there are only {} subjects",
+            subjects.len()
+        ),
+        None => (0..subjects.len()).filter_map(bounds).reduce(union),
     };
     let Some(framing) = framing.filter(|bounds| !bounds.is_empty()) else {
         bail!("nothing to frame: every subject is empty");
@@ -94,7 +119,14 @@ fn run() -> Result<()> {
     );
 
     std::fs::create_dir_all(&args.out)?;
-    let mut capture = Capture::new(args.size, args.chrome, args.background, args.grid)?;
+    let mut capture = Capture::new(
+        args.size,
+        args.chrome,
+        args.background,
+        args.grid,
+        args.skeleton,
+        args.curve_style,
+    )?;
     let columns: Vec<String> = args.views.iter().map(|view| view.name.clone()).collect();
     let cameras: Vec<_> = args
         .views
@@ -107,7 +139,7 @@ fn run() -> Result<()> {
         for (index, subject) in subjects.iter().enumerate() {
             let mut cells = Vec::with_capacity(cameras.len());
             for (view, &camera) in cameras.iter().enumerate() {
-                let image = capture.render(subject, camera, look)?;
+                let image = capture.render(subject, posed[index].as_ref(), camera, look)?;
                 if args.singles {
                     image.save(args.out.join(format!(
                         "{}_{}_s{index}_v{view}.png",
@@ -130,7 +162,7 @@ fn run() -> Result<()> {
     if args.compare && subjects.len() > 1 {
         let reference: Vec<_> = cameras
             .iter()
-            .map(|&camera| capture.render(&subjects[0], camera, Look::Normals))
+            .map(|&camera| capture.render(&subjects[0], posed[0].as_ref(), camera, Look::Normals))
             .collect::<Result<_>>()?;
         let mut rows = Vec::with_capacity(subjects.len() - 1);
         println!("shading normals against [0] {}:", subjects[0].label);
@@ -138,7 +170,8 @@ fn run() -> Result<()> {
             let mut error = NormalError::default();
             let mut cells = Vec::with_capacity(cameras.len());
             for (view, &camera) in cameras.iter().enumerate() {
-                let candidate = capture.render(subject, camera, Look::Normals)?;
+                let candidate =
+                    capture.render(subject, posed[index].as_ref(), camera, Look::Normals)?;
                 cells.push(error.add_view(&reference[view], &candidate));
             }
             println!("  [{index}] {}", error.summary());
