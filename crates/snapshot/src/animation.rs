@@ -2,8 +2,14 @@
 //! animation curves over it: what the viewer's transport, its curve toggle and
 //! an Outliner selection draw, for looking at them without a window.
 
-use anyhow::{Result, bail};
-use review_model::{AnimContext, Bounds, DeformPose, ModelData, NodeKind, NodePath, Pose, anim};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use anyhow::{Context, Result, bail};
+use review_model::{
+    AnimContext, AttachedAnimation, Bounds, ClipId, Clips, DeformPose, ModelData, NodeKind,
+    NodePath, Pose, anim,
+};
 
 use crate::cli::ClipSpec;
 
@@ -22,22 +28,76 @@ pub struct Posed {
     pub selected_nodes: Vec<u32>,
 }
 
+/// The `--attach` files, read once for every subject to attach.
+pub fn load_attachments(paths: &[PathBuf]) -> Result<Vec<(PathBuf, ModelData)>> {
+    paths
+        .iter()
+        .map(|path| {
+            let model = review_import::load_model(path)
+                .with_context(|| format!("--attach {}", path.display()))?;
+            Ok((path.clone(), model))
+        })
+        .collect()
+}
+
+/// `files` attached to `model`, as the viewer's File > Add Animations attaches
+/// them — every one of them, whether or not it binds, so `--clip` numbers the
+/// same clips whatever the subject.
+pub fn attach(model: &ModelData, files: &[(PathBuf, ModelData)]) -> Vec<Arc<AttachedAnimation>> {
+    files
+        .iter()
+        .map(|(path, source)| {
+            let name = path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let attached = AttachedAnimation::new(model, source.clone(), name);
+            let matched = attached.node_map.iter().flatten().count();
+            println!(
+                "attached {}: {} clips, {matched} of its {} nodes matched",
+                path.display(),
+                attached.clips.len(),
+                attached.nodes.len()
+            );
+            Arc::new(attached)
+        })
+        .collect()
+}
+
+/// Clip `index` of every clip on offer, counting the model's own first and then
+/// each attached file's in order — the Animations tab's order.
+fn nth_clip(clips: Clips<'_>, index: usize) -> Option<ClipId> {
+    let mut remaining = index;
+    for file in 0..=clips.attached.len() {
+        let count = clips.of_file(file).len();
+        if remaining < count {
+            return Some(ClipId {
+                file,
+                clip: remaining,
+            });
+        }
+        remaining -= count;
+    }
+    None
+}
+
 /// Pose `model` on `clip`, sample its curves when asked, and resolve `select`
 /// to node indices. `hidden` are the subject's hidden nodes, which take their
 /// curves with them as they do in the viewer.
 pub fn pose(
     model: &ModelData,
+    attached: &[Arc<AttachedAnimation>],
     clip: ClipSpec,
     curves: bool,
     select: &[String],
     hidden: &[u32],
 ) -> Result<Posed> {
-    let Some(animation) = model.animations.get(clip.index) else {
-        bail!(
-            "--clip {}: the model has {} clips",
-            clip.index,
-            model.animations.len()
-        );
+    let clips = Clips::new(model, attached);
+    let Some(animation) = nth_clip(clips, clip.index).and_then(|id| clips.get(id)) else {
+        let total: usize = (0..=attached.len())
+            .map(|file| clips.of_file(file).len())
+            .sum();
+        bail!("--clip {}: there are {total} clips", clip.index);
     };
     let ctx = AnimContext::new(model);
     let frame = clip

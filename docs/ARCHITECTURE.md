@@ -75,7 +75,7 @@ One `impl App` block per concern, one file each:
 | `input.rs` | Pointer / scroll / resize / pinch routing, the drag mode, the zoom sensitivities, the framing area (`sync_framing_area`, every frame from the chrome just laid out) |
 | `shortcuts.rs` | Keyboard dispatch (the help tables in `ui` mirror it) |
 | `flycam.rs` | The RMB-held WASD/QE flycam: held-key direction bits, integrated once per frame |
-| `loading.rs` | The model-load funnel — drag-drop, Ctrl+O, double-click, CLI/file association |
+| `loading/` | The load funnel. `mod.rs`: every way of opening files (drop, Ctrl+O, File > Add Animations, Open Recent, double-click, CLI/file association) as a request with an intent — new session, attach, or drop — and the queue that parses one request at a time; `parse.rs`: a request's files parsed in parallel on a worker, one loading card for all of them; `classify.rs`: the pure rules deciding which file is the model and which attach to it (`docs/animation-sources-plan.md`); `session.rs`: the plan applied — a new model, attached files, the left-out card; `measure.rs`: what is measured once it is on screen (source capture, pick BVH, every clip's envelope, the stats table) |
 | `ui_intents.rs` | Applying `UiOutput` intents to the renderer (invariant 2, made concrete) |
 | `pick.rs` | The viewport pick: the ray, the per-view geometry, the posed-pick cache |
 | `gate.rs` | The performance gate stamp (`--gate-out <file>`) |
@@ -171,6 +171,13 @@ Host-agnostic data only. Depends on `glam` and nothing else: no GPU API, no
   which of them a selection leaves showing — bones exactly, a mesh or group with
   its subtree (`ModelData::node_subtree_union`), every path when the selection
   names none.
+- `attach.rs` — playing one file's clips on another file's model. `Binding`
+  matches a file's nodes to the model's by name (namespaces removed, exact names
+  first, one source node per model node) and its blend-shape channels by mesh
+  name plus channel name; `AttachedAnimation` holds a file's clips **re-pointed**
+  at the model in place (tracks with no target dropped, no key copied) beside the
+  file's own node table; `ClipId { file, clip }` and the `Clips` view address
+  every clip on offer, file 0 being the model's own.
 - `bvh.rs` — a per-mesh-part triangle BVH, used for occlusion of the dimension
   labels and by the Opt AO bake.
 - The mesh facts more than one crate measures, written once: `topology.rs`
@@ -254,9 +261,18 @@ and together they are the majority of a large load:
   `stats.gpu_vertex_count` sums — left `0`, which the stats card reads as "not
   measured yet" and simply omits.
 
-`app` makes both on the import worker *after* publishing the mesh and folds each
+`app` makes both on a measuring worker *after* publishing the mesh and folds each
 into the UI as it lands. `load_model` is the complete import, for tests and batch
 callers.
+
+The envelopes are measured on every core (`measure_clip_bounds_of`, which also
+measures the clips of an animation file attached to the model): each clip is cut
+into pieces of 128 frames, the threads claim pieces one at a time, and each clip's
+pieces are united. A box union is exact in any order, so the result does not
+depend on the thread count. Whole clips per thread were not enough, because one
+long clip is often a third of the frames: nine body clips on a 210k-triangle
+character went from 9.8 s on one thread to 4.3 s with whole clips shared out, and
+to 0.9 s with pieces.
 
 On a 2.8M-triangle, 120 MB scene that is the mesh on screen in ~2.1 s, its clip
 envelope at ~2.8 s and its stats at ~5.7 s, against ~5.2 s of blank viewport if

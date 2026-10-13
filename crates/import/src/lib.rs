@@ -313,13 +313,96 @@ fn load_fbx_staged(
 /// [`AnimContext`] is built once rather than per clip. Each clip is stepped at
 /// its own frame rate.
 pub fn measure_clip_bounds(model: &ModelData) -> Vec<Option<review_model::Bounds>> {
-    if model.animations.is_empty() {
+    measure_clip_bounds_of(model, &model.animations)
+}
+
+/// How many frames of one clip a thread measures at a time. Small enough that a
+/// long clip is shared out among the cores; large enough that the rest pose each
+/// piece measures again for the static corners stays a small part of it.
+const ENVELOPE_FRAMES_PER_PIECE: usize = 128;
+
+/// [`measure_clip_bounds`] for clips that are not `model`'s own but play on it —
+/// an attached animation file's, already re-pointed at `model`.
+///
+/// Measured on every core. Each frame is a pose and a walk of the moving mesh,
+/// independent of every other, and a rig's clips are many and long: nine body
+/// clips on a 210k-triangle character were 9.8 s on one thread, and one of them
+/// was over a third of the frames, so sharing out whole clips still left that one
+/// on a single core for 4 s. The clips are therefore cut into pieces of
+/// [`ENVELOPE_FRAMES_PER_PIECE`] frames, which the threads claim one at a time,
+/// and each clip's pieces are united. That is exact — a box is a minimum and a
+/// maximum, which do not depend on the order they were taken in — so the result
+/// is the same on any number of threads.
+pub fn measure_clip_bounds_of(
+    model: &ModelData,
+    clips: &[review_model::AnimationClip],
+) -> Vec<Option<review_model::Bounds>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    if clips.is_empty() {
         return Vec::new();
     }
     let ctx = AnimContext::new(model);
-    model
-        .animations
+    let pieces: Vec<(usize, std::ops::Range<usize>)> = clips
         .iter()
-        .map(|clip| review_model::anim::clip_bounds(model, &ctx, clip))
-        .collect()
+        .enumerate()
+        .flat_map(|(index, clip)| {
+            let frames = clip.frame_count();
+            (0..frames)
+                .step_by(ENVELOPE_FRAMES_PER_PIECE)
+                .map(move |start| {
+                    (
+                        index,
+                        start..(start + ENVELOPE_FRAMES_PER_PIECE).min(frames),
+                    )
+                })
+        })
+        .collect();
+    let measure = |(index, frames): &(usize, std::ops::Range<usize>)| {
+        review_model::anim::clip_bounds_over(model, &ctx, &clips[*index], frames.clone())
+    };
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |count| count.get())
+        .min(pieces.len());
+    let next = AtomicUsize::new(0);
+    let mut bounds: Vec<Option<review_model::Bounds>> = vec![None; clips.len()];
+    let mut unite = |index: usize, piece: Option<review_model::Bounds>| {
+        if let Some(piece) = piece {
+            let whole = bounds[index].get_or_insert(review_model::Bounds::EMPTY);
+            whole.include_point(piece.min);
+            whole.include_point(piece.max);
+        }
+    };
+    if threads <= 1 {
+        for piece in &pieces {
+            unite(piece.0, measure(piece));
+        }
+        return bounds;
+    }
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut measured = Vec::new();
+                    while let Some(piece) = pieces.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        measured.push((piece.0, measure(piece)));
+                    }
+                    measured
+                })
+            })
+            .collect();
+        for worker in workers {
+            match worker.join() {
+                Ok(measured) => {
+                    for (index, piece) in measured {
+                        unite(index, piece);
+                    }
+                }
+                // A panic in a measurement is a bug; carry it on rather than
+                // report an envelope that was never measured.
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+    });
+    bounds
 }

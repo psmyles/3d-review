@@ -43,6 +43,9 @@ OPTIONS
   --no-render           skip the images (with --inspect)
   --clip <n>[:<frame>]  pose every subject on its clip n (0-based) at that frame
                         (default the first), framing on the clip's whole motion
+  --attach <file.fbx>   attach an animation file to every subject, as the viewer's
+                        File > Add Animations does (repeatable); its clips number on
+                        from the subject's own in --clip
   --curves              with --clip: draw the clip's animation curves
   --skeleton            draw the skeleton overlay
   --select <names>      ','-separated node names, selected as an Outliner click
@@ -68,6 +71,8 @@ pub struct Args {
     pub inspect: bool,
     pub render: bool,
     pub clip: Option<ClipSpec>,
+    /// Animation files attached to every subject, in order.
+    pub attach: Vec<PathBuf>,
     pub curves: bool,
     pub skeleton: bool,
     pub select: Vec<String>,
@@ -162,6 +167,7 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
         inspect: false,
         render: true,
         clip: None,
+        attach: Vec::new(),
         curves: false,
         skeleton: false,
         select: Vec::new(),
@@ -205,6 +211,7 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
             "--inspect" => args.inspect = true,
             "--no-render" => args.render = false,
             "--clip" => args.clip = Some(parse_clip(&value("--clip")?)?),
+            "--attach" => args.attach.push(value("--attach")?.into()),
             "--curves" => args.curves = true,
             "--skeleton" => args.skeleton = true,
             "--select" => args.select.extend(

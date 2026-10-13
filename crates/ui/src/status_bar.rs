@@ -227,11 +227,11 @@ fn draw_transport(
     right_rect: egui::Rect,
     group_height: f32,
 ) {
-    let Some(clip) = state
-        .animation
-        .selected_clip
-        .and_then(|index| model.animations.get(index))
-    else {
+    // The attached files are cloned (a few `Arc`s) so the clip can be held while
+    // the transport edits the playback state beside it.
+    let attached = state.attached_animations.clone();
+    let clips = review_model::Clips::new(model, &attached);
+    let Some(clip) = state.animation.selected_clip.and_then(|id| clips.get(id)) else {
         return;
     };
     let spacing = size::TOOLBAR_GROUP_SPACING;

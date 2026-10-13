@@ -156,14 +156,27 @@ impl SceneGpu {
     /// Rebuild the mesh buffers + per-material draw ranges when the model, UV channel
     /// or material mode changes (the index reorder groups by the active mode's key).
     /// An empty model leaves `mesh` as `None`. Call after [`Self::sync_unique_parts`].
+    ///
+    /// `posed` says a pose is being handed over for `model` this frame. That is
+    /// what builds the deform path for a model that would not deform by itself —
+    /// a rigid one with clips attached from another file — and once built it is
+    /// kept for as long as the model is, so leaving the workspace that draws the
+    /// pose does not rebuild the mesh.
     pub(super) fn sync_mesh(
         &mut self,
         model: &ModelData,
         model_revision: u64,
         uv_channel: u32,
         mode: MaterialMode,
+        posed: bool,
     ) -> GpuResult<()> {
-        if self.active.mesh_revision == model_revision
+        let model_changed = self.active.mesh_revision != model_revision;
+        let deform_arrived = posed
+            && !model_changed
+            && self.active.deform_layout.is_none()
+            && !model.nodes.is_empty();
+        if !model_changed
+            && !deform_arrived
             && self.active.mesh_uv_channel == uv_channel
             && self.active.mesh_material_mode.groups_by_part() == mode.groups_by_part()
         {
@@ -186,14 +199,19 @@ impl SceneGpu {
         // The tables are built whether or not there is a mesh: a skeleton with no
         // mesh (an animation file opened on its own) is posed through the same
         // palette, by its overlay's node lanes.
-        let model_changed = self.active.mesh_revision != model_revision;
-        if model_changed {
+        if model_changed || deform_arrived {
             self.active.deform = None;
-            self.active.deform_layout = DeformLayout::build(model);
+            self.active.deform_layout = DeformLayout::build(model, posed);
             if let Some(layout) = &mut self.active.deform_layout {
                 self.active.deform = DeformGpu::new(layout)?;
                 layout.release_tables();
             }
+        }
+        if deform_arrived {
+            // The derived views copied the lanes the mesh had before it could
+            // deform; back to the slot's "nothing derived yet" sentinel, so they
+            // rebuild with the new ones this frame.
+            self.active.views_revision = u64::MAX;
         }
         let (vertices, indices, ranges) = model_mesh(model, self.active.lanes(), uv_channel, key);
         self.active.mesh = None;

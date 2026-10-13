@@ -1,7 +1,15 @@
-//! Playback state for the transport card.
+//! Playback state for the transport card, and the clips it picks from.
 //!
 //! This is view state and is never undone: the clock and the evaluated pose live
-//! in `app`, and the pose math in `review_model::anim`.
+//! in `app`, and the pose math in `review_model::anim`. A clip is addressed by a
+//! [`ClipId`] — which file, then which of its clips — since the model's own file
+//! and every animation file attached to it each contribute their own.
+
+use std::sync::Arc;
+
+use review_model::{AttachedAnimation, Bounds, ClipId, Clips, ModelData};
+
+use crate::UiState;
 
 /// The transport's playback-rate choices.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -49,17 +57,18 @@ impl PlaybackSpeed {
 /// 6). View state: deliberately outside the undo history.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnimationUiState {
-    /// The selected clip (index into `ModelData::animations`), or `None` for the
-    /// rest pose. Selecting a clip lands paused on its first frame.
-    pub selected_clip: Option<usize>,
+    /// The selected clip, or `None` for the rest pose. Selecting a clip lands
+    /// paused on its first frame.
+    pub selected_clip: Option<ClipId>,
     pub playing: bool,
     /// Loop at the end (default) or stop on the last frame.
     pub looping: bool,
     pub speed: PlaybackSpeed,
     /// The current time on the clip's own timeline, in seconds.
     pub time: f64,
-    /// Whether the loaded model carries any clip — gates the Animations tab. Set
-    /// on load by [`crate::UiState::reset_animation_state`].
+    /// Whether the model or any file attached to it carries a clip — gates the
+    /// Animations tab. Kept by [`crate::UiState::reset_animation_state`] and
+    /// [`crate::UiState::attach_animation`].
     pub has_clips: bool,
     /// Whether the selected clip's animation curves are drawn — the path each
     /// bone or animated object takes, in a color of its own that its bone
@@ -93,6 +102,65 @@ impl AnimationUiState {
             self.time = clip.time_begin;
         }
         self.playing = !self.playing;
+    }
+}
+
+impl UiState {
+    /// Every clip on offer: `model`'s own, then each attached file's.
+    pub fn clips<'a>(&'a self, model: &'a ModelData) -> Clips<'a> {
+        Clips::new(model, &self.attached_animations)
+    }
+
+    /// The motion envelope of clip `id`, once it has been measured.
+    pub fn clip_envelope(&self, id: ClipId) -> Option<Bounds> {
+        self.clip_bounds
+            .get(id.file)?
+            .get(id.clip)
+            .copied()
+            .flatten()
+    }
+
+    /// Re-point the animation state at `model`, the one about to be shown, with
+    /// nothing attached to it yet: drop the attached files, their envelopes, the
+    /// clip selection and playback (all of them index the old session's clips),
+    /// and re-derive the capability flag that gates the Animations tab. A stale
+    /// Animations tab needs no snapping back here: the Outliner resolves its tab
+    /// against what the model offers every frame ([`super::OutlinerState::tab`]).
+    pub fn reset_animation_state(&mut self, model: &ModelData) {
+        self.attached_animations.clear();
+        self.clip_bounds = vec![vec![None; model.animations.len()]];
+        self.animation = AnimationUiState {
+            has_clips: !model.animations.is_empty(),
+            ..AnimationUiState::default()
+        };
+    }
+
+    /// Add an animation file to the session; its clips are file
+    /// `attached_animations.len()` once it is in. Nothing already selected moves,
+    /// since files are only ever appended.
+    pub fn attach_animation(&mut self, file: Arc<AttachedAnimation>) {
+        self.animation.has_clips |= !file.clips.is_empty();
+        self.clip_bounds.push(vec![None; file.clips.len()]);
+        self.attached_animations.push(file);
+    }
+
+    /// File `file`'s clip envelopes, as measured. A list that no longer fits the
+    /// file (a session changed under the measurement) is ignored.
+    pub fn set_clip_bounds(&mut self, file: usize, bounds: Vec<Option<Bounds>>) {
+        if let Some(slot) = self.clip_bounds.get_mut(file)
+            && slot.len() == bounds.len()
+        {
+            *slot = bounds;
+        }
+    }
+
+    /// Select clip `clip` (or none), landing paused on its first frame; the app's
+    /// clock picks the change up on the next frame.
+    pub fn select_clip(&mut self, model: &ModelData, clip: Option<ClipId>) {
+        let found = clip.and_then(|id| self.clips(model).get(id).map(|clip| (id, clip.time_begin)));
+        self.animation.selected_clip = found.map(|(id, _)| id);
+        self.animation.playing = false;
+        self.animation.time = found.map_or(0.0, |(_, begin)| begin);
     }
 }
 

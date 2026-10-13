@@ -1,4 +1,5 @@
-//! File > Open Recent: the models opened lately, most recent first.
+//! File > Open Recent: the files opened lately — models and animation files
+//! alike, each on its own — most recent first.
 //!
 //! The list itself is plain data on [`review_ui::UiState::recent_files`], which the
 //! menu draws from; this module is the only thing that changes it. A load that
@@ -51,10 +52,11 @@ impl App {
     }
 
     /// File > Open Recent > (a file). Goes through the same funnel as every other
-    /// way of opening a model.
+    /// way of opening a file, and behaves as a drop of it does: an animation file
+    /// for the model on screen is attached to it, anything else replaces it.
     pub(crate) fn open_recent_file(&mut self, index: usize) {
         if let Some(path) = self.ui.recent_files.get(index).cloned() {
-            self.open_model_from_path(&path);
+            self.open_files(vec![path], crate::loading::OpenIntent::Drop);
         }
     }
 

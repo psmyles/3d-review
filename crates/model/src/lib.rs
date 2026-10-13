@@ -6,6 +6,7 @@
 use glam::{Vec2, Vec3};
 
 pub mod anim;
+pub mod attach;
 mod bvh;
 pub mod cancel;
 mod clip;
@@ -27,6 +28,7 @@ pub mod uv_islands;
 // The crate's whole surface is re-exported here, so every `review_model::X`
 // path other crates use resolves exactly as it did when this was one file.
 pub use anim::{AnimContext, DeformPose, NodePath, Pose};
+pub use attach::{AttachedAnimation, Binding, ClipId, Clips};
 pub use bvh::{
     Bvh, ClosestPoint, Hit, SceneBvh, SceneHit, closest_point_on_triangle, ray_triangle_t,
     triangle_positions,

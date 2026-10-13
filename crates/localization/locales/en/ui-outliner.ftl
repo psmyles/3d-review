@@ -49,6 +49,9 @@ ui-outliner-unnamed-clip = Clip { $index }
 
 ## Animation clips
 
+# The header over one file's clips, shown once animation files are attached to
+# the model: the file's name and the rate its clips are timed at.
+ui-outliner-clip-group = { $file } - { $fps } fps
 # The trailing readout on a clip row: frame count and duration.
 ui-outliner-clip-summary = { $frames } f - { $duration } s
 ui-outliner-clip-tooltip = { $frames } frames at { $fps } fps - { $duration } s

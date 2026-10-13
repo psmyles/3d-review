@@ -11,7 +11,7 @@
 
 use std::time::Instant;
 
-use review_model::{AnimContext, DeformPose, NodePath, Pose, anim};
+use review_model::{AnimContext, ClipId, Clips, DeformPose, NodePath, Pose, anim};
 
 use crate::App;
 
@@ -42,7 +42,7 @@ pub(crate) struct AnimationSubsystem {
     last_tick: Option<Instant>,
     /// The `(clip, time bits)` the current pose was evaluated for, so a paused
     /// clip re-evaluates nothing.
-    evaluated: Option<(Option<usize>, u64)>,
+    evaluated: Option<(Option<ClipId>, u64)>,
     /// The selected clip's motion paths while the animation curves are on;
     /// `None` otherwise (invariant 3). See [`App::sync_animation_paths`].
     pub(crate) paths: Option<ClipPaths>,
@@ -52,9 +52,10 @@ pub(crate) struct AnimationSubsystem {
 }
 
 /// One clip's motion paths, and the `(model revision, clip)` they were sampled
-/// for.
+/// for. Attached files are only ever appended, so a clip's id stays good for as
+/// long as the model revision does.
 pub(crate) struct ClipPaths {
-    key: (u64, usize),
+    key: (u64, ClipId),
     pub(crate) paths: Vec<NodePath>,
 }
 
@@ -103,9 +104,15 @@ impl App {
     /// selected clip or the time moved. Runs once per frame from `render`.
     pub(crate) fn tick_animation(&mut self) {
         let model = self.scene_model.clone();
+        // A handful of `Arc`s, cloned so a clip can be held while the playback
+        // state beside it changes.
+        let attached = self.ui.attached_animations.clone();
+        let clips = Clips::new(&model, &attached);
         let anim = &mut self.animation;
 
-        if !model.needs_deform() {
+        // Clips attached from another file can move a model that would not move by
+        // itself, so they count as well as its own deform.
+        if !model.needs_deform() && clips.is_empty() {
             // A static model draws its raw buffers; nothing to evaluate.
             if anim.active || anim.context.is_some() {
                 *anim = AnimationSubsystem::default();
@@ -123,12 +130,10 @@ impl App {
             anim.last_tick = None;
         }
 
-        // A clip index that no longer resolves (a stale selection) reads as the
-        // rest pose.
+        // A clip that no longer resolves (a stale selection) reads as the rest
+        // pose.
         let state = &mut self.ui.animation;
-        let clip = state
-            .selected_clip
-            .and_then(|index| model.animations.get(index));
+        let clip = state.selected_clip.and_then(|id| clips.get(id));
         if clip.is_none() {
             state.selected_clip = None;
             state.playing = false;
@@ -163,17 +168,17 @@ impl App {
         // once it has been measured. That happens on the import worker just after
         // the model is drawn (`loading.rs`), so a clip selected in the first
         // moments of a load frames on the whole model until its envelope lands.
-        let clip_envelope = state
-            .selected_clip
-            .and_then(|index| self.ui.clip_bounds.get(index).copied().flatten());
+        let selected = state.selected_clip;
+        let key = (selected, state.time.to_bits());
+        let time = state.time;
+        let clip_envelope = selected.and_then(|id| self.ui.clip_envelope(id));
         self.ui.bounds = clip_envelope.or(model.bounds);
 
-        let key = (state.selected_clip, state.time.to_bits());
         if anim.evaluated != Some(key) || rebuilt {
             let Some(context) = anim.context.as_ref() else {
                 return;
             };
-            anim::evaluate_pose(&model, context, clip, state.time, &mut anim.pose);
+            anim::evaluate_pose(&model, context, clip, time, &mut anim.pose);
             anim::build_palette(&model, context, &anim.pose, &mut anim.deform);
             anim.pose_revision = anim.pose_revision.wrapping_add(1);
             anim.evaluated = Some(key);
@@ -202,12 +207,13 @@ impl App {
         // Sampled against the context `tick_animation` built for this very
         // model; a load that landed since waits a frame for its own.
         let model = &self.scene_model;
+        let clips = Clips::new(model, &self.ui.attached_animations);
         let next = key.and_then(|key| {
             let context = anim
                 .context
                 .as_ref()
                 .filter(|_| anim.model_revision == key.0)?;
-            let clip = model.animations.get(key.1)?;
+            let clip = clips.get(key.1)?;
             let paths = anim::clip_paths(model, context, clip);
             Some(ClipPaths { key, paths })
         });
@@ -237,11 +243,10 @@ impl App {
     /// Space: play / pause the selected clip. Resuming restarts the clock so the
     /// pause itself is never counted as elapsed time.
     pub(crate) fn toggle_playback(&mut self) {
+        let attached = self.ui.attached_animations.clone();
+        let clips = Clips::new(&self.scene_model, &attached);
         let state = &mut self.ui.animation;
-        let Some(clip) = state
-            .selected_clip
-            .and_then(|index| self.scene_model.animations.get(index))
-        else {
+        let Some(clip) = state.selected_clip.and_then(|id| clips.get(id)) else {
             return;
         };
         state.toggle_playback(clip);
@@ -251,11 +256,10 @@ impl App {
     /// `,` / `.`: step the selected clip one frame back / forward at its own
     /// frame rate, pausing playback.
     pub(crate) fn step_frame(&mut self, delta: i64) {
+        let attached = self.ui.attached_animations.clone();
+        let clips = Clips::new(&self.scene_model, &attached);
         let state = &mut self.ui.animation;
-        let Some(clip) = state
-            .selected_clip
-            .and_then(|index| self.scene_model.animations.get(index))
-        else {
+        let Some(clip) = state.selected_clip.and_then(|id| clips.get(id)) else {
             return;
         };
         state.time = clip.step_frame_time(state.time, delta);

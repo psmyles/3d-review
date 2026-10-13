@@ -142,6 +142,33 @@ rig is saved at 24 fps and its animations at 30 — so a caller-supplied rate wa
 standing invitation to number one file's clip by the other's. `ModelData::
 frame_rate` is still there, but only as the scene setting a re-export declares.
 
+### A drop of several files is several events
+
+winit delivers a multi-file drop as one `DroppedFile` per file, back to back.
+Opening each as it arrived made every file supersede the one before it, so a
+rig and its animations dropped together loaded only the last of them. The paths
+are gathered in `LoadQueue::dropped` and opened as one request from
+`about_to_wait`, by which point the whole drop has been delivered.
+
+### Name matching takes exact names first, across the whole file
+
+`Binding` lets each model node be driven by one source node at most, so the
+order the source is walked in decides who gets a contested node. Matching in
+file order with exact-then-stripped preference *per node* let `Eve:Hip`, earlier
+in the file, claim the rig's `Hip` before the exact `Hip` was reached. The exact
+pass therefore runs over the whole file before the namespace-stripped one
+(`a_model_node_is_driven_by_one_source_node_at_most` pins it).
+
+### A rigid model gets its deform path only once a pose arrives
+
+A model with no skin, no blend shapes and no clips of its own builds no deform
+layout — its per-corner lanes would be memory for nothing. Clips attached from
+another file can still move it, so `app` evaluates a pose whenever *any* clip is
+on offer, and `sync_mesh` builds the layout the first frame a pose is handed over
+for such a model, then keeps it for the model's lifetime so a workspace switch
+does not rebuild the mesh. The derived views copied the old, empty lanes, so the
+same rebuild resets `views_revision` to make them follow.
+
 ---
 
 ## GPU struct layout and the render passes

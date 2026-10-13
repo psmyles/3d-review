@@ -28,11 +28,33 @@ tucks itself into the scrubber's tooltip, so the controls always stay reachable.
 
 `Space` plays and pauses; `,` and `.` step one frame back or forward.
 
+## Animations from other files
+
+Animations often live in files of their own, next to the model they were made
+for. Opened together with the model, or added to it later (see
+[Getting a model in](getting-a-model-in.md#a-model-and-its-animation-files)),
+their clips play on the model exactly as its own do. The Animations tab then
+groups the clips by the file they came from, each group headed by the file's
+name and frame rate.
+
+The animation is matched to the model by name: each bone it moves drives the
+model's bone of the same name, and each blend shape it moves (a facial
+expression, say) drives the model's blend shape of the same name on the mesh of
+the same name. Anything the file animates that the model does not have, such as
+the controls an animation package adds, is ignored. Anything of the model's that
+the file does not animate stays in the model's resting pose.
+
+Only one clip plays at a time. A face animation therefore plays on a body
+standing in its resting pose.
+
+The [Opt workspace](opt/index.md) exports only the model's own animations, not
+the ones added from other files.
+
 ## Animation files with no model in them
 
-Animations are often saved in files of their own, apart from the character they
-were made for. Such a file holds a skeleton and its clips but no surface, and
-3D Review opens it as exactly that: the skeleton, with the
+An animation file opened on its own, with no model, holds a skeleton and its
+clips but no surface, and 3D Review shows it as exactly that: the skeleton, with
+the
 [skeleton](panels/skeleton.md) overlay switched on so there is something to
 see, ready to play. `F` frames the skeleton's joints, and while a clip is
 selected, the whole area they move through.

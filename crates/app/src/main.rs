@@ -90,11 +90,12 @@ fn main() -> anyhow::Result<()> {
 
     // Tiny manual arg scan (the workspace has no arg parser and needs two flags):
     // `--tracy` turns profiling on, `--gate-out <file>` runs the D2 measurement and
-    // writes its stamp there (`gate.rs`); the first non-flag argument is the model
-    // path to open (Windows passes it for a double-clicked `.fbx` via the file
-    // association). They coexist in any order, e.g. `3d-review --tracy a.fbx`.
+    // writes its stamp there (`gate.rs`); every non-flag argument is a file to open,
+    // together as one session — a model and its animation files (Windows passes one
+    // for a double-clicked `.fbx` via the file association). They coexist in any
+    // order, e.g. `3d-review --tracy rig.fbx walk.fbx`.
     let mut tracy_enabled = false;
-    let mut initial_model: Option<PathBuf> = None;
+    let mut initial_files: Vec<PathBuf> = Vec::new();
     let mut gate_out: Option<PathBuf> = None;
     let mut locale: Option<String> = None;
     let mut args = std::env::args_os().skip(1);
@@ -105,8 +106,8 @@ fn main() -> anyhow::Result<()> {
             gate_out = args.next().map(PathBuf::from);
         } else if arg == "--locale" {
             locale = args.next().map(|tag| tag.to_string_lossy().into_owned());
-        } else if initial_model.is_none() && !arg.to_string_lossy().starts_with("--") {
-            initial_model = Some(PathBuf::from(arg));
+        } else if !arg.to_string_lossy().starts_with("--") {
+            initial_files.push(PathBuf::from(arg));
         }
     }
 
@@ -173,7 +174,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut app = App {
         gpu_bring_up: Some(gpu_bring_up),
-        initial_model,
+        initial_files,
         gate: gate_out.map(Gate::new),
         textures: TextureSubsystem::with_proxy(texture_proxy),
         tracy_enabled,
@@ -250,6 +251,14 @@ struct App {
     /// until the import worker marshals it, which happens right after the mesh
     /// is on screen — and `None` again the moment a new load begins.
     scene_extras: Option<Arc<review_model::SourceExtras>>,
+    /// The files the session was opened from: the model's own first, then each
+    /// attached animation file, in the order they were attached (so entry `n` is
+    /// file `n` of a `review_model::ClipId`). What a rig taking over from a
+    /// stand-in skeleton opens again, and what the notices name.
+    scene_files: Vec<PathBuf>,
+    /// The open requests waiting their turn, and the one being parsed
+    /// (`loading/mod.rs`).
+    loads: loading::LoadQueue,
     scene_revision: u64,
     /// Source of every model revision handed to the renderer, for the source mesh
     /// and each processed Opt level alike. One shared counter because the
@@ -316,9 +325,9 @@ struct App {
     /// lives in `animation.rs`.
     animation: AnimationSubsystem,
     ui: UiState,
-    /// Model to load once the window/renderer exist, taken from the command line
-    /// (file association / `3d-review.exe <path>`). Consumed in `resumed`.
-    initial_model: Option<PathBuf>,
+    /// Files to open once the window/renderer exist, taken from the command line
+    /// (file association / `3d-review.exe <path>...`). Consumed in `resumed`.
+    initial_files: Vec<PathBuf>,
     /// The D2 gate run, when `--gate-out` was passed: it measures startup, frame
     /// time and (from the outside, during its hold) memory, then exits. `None` for
     /// every normal launch, which is every launch that is not `scripts/gate.ps1`.
@@ -461,6 +470,8 @@ impl Default for App {
             redraw: RedrawScheduler::default(),
             scene_model,
             scene_extras: None,
+            scene_files: Vec::new(),
+            loads: loading::LoadQueue::default(),
             scene_revision: 0,
             model_revision_counter: 0,
             model_load_generation: Arc::new(AtomicU64::new(0)),
@@ -473,7 +484,7 @@ impl Default for App {
             announced_tool: ViewportTool::default(),
             animation: AnimationSubsystem::default(),
             ui,
-            initial_model: None,
+            initial_files: Vec::new(),
             gate: None,
             placement: PlacementTracker::default(),
             undo: UndoStack::new(),
@@ -547,26 +558,25 @@ impl App {
 
         drop(phase.take());
         phase = prof::zone!("Queue Initial Model Load");
-        // Queue the file the launch asked for, now that the renderer exists.
-        // Reuses the same path as drag-drop — the parse runs on a worker thread and
-        // lands via `ModelLoaded`, so the first frame below paints the chrome
-        // without waiting on it.
+        // Open the files the launch asked for, now that the renderer exists.
+        // Reuses the same path as every other open — the parse runs on a worker
+        // thread and lands via `FilesParsed`, so the first frame below paints the
+        // chrome without waiting on it.
         //
-        // Two sources, one slot, because only one model is ever resident: the
-        // command line (a Windows file association, or a CLI arg on either OS) and
-        // the macOS opens that arrived before this window existed (D14). A
-        // launch-by-open on a Mac carries *no* argv, so in practice exactly one of
-        // them is ever non-empty; when both are, the Finder open is the more
-        // specific intent and wins. Draining is also what switches the hook from
-        // queueing to delivering, so it must happen even when nothing is queued.
+        // Two sources: the command line (a Windows file association, or CLI args
+        // on either OS) and the macOS opens that arrived before this window existed
+        // (D14). A launch-by-open on a Mac carries *no* argv, so in practice
+        // exactly one of them is ever non-empty; when both are, the Finder open is
+        // the more specific intent and wins. Draining is also what switches the
+        // hook from queueing to delivering, so it must happen even when nothing is
+        // queued.
         let opened_from_os = review_shell_macos::take_pending_opens();
-        let initial = opened_from_os
-            .into_iter()
-            .next_back()
-            .or_else(|| self.initial_model.take());
-        if let Some(path) = initial {
-            self.open_model_from_path(&path);
-        }
+        let initial = if opened_from_os.is_empty() {
+            std::mem::take(&mut self.initial_files)
+        } else {
+            opened_from_os
+        };
+        self.open_files(initial, loading::OpenIntent::NewSession);
 
         // Paint the first frame directly rather than waiting on the first
         // `RedrawRequested`, so the window shows the rendered (grid-only) scene as
@@ -824,7 +834,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::OptPreviewed(message) => self.handle_opt_previewed(*message),
             UserEvent::OptExported(outcome) => self.handle_opt_exported(*outcome),
             UserEvent::AuditDone(done) => self.handle_audit_done(*done),
-            UserEvent::ModelLoaded(message) => self.handle_model_loaded(*message),
+            UserEvent::FilesParsed(message) => self.handle_files_parsed(*message),
             UserEvent::ModelLoadProgress(message) => self.handle_model_load_progress(message),
             UserEvent::ModelMeasured(message) => self.handle_model_measured(*message),
             UserEvent::SourceExtrasReady(message) => self.handle_source_extras_ready(*message),
@@ -960,6 +970,8 @@ impl ApplicationHandler<UserEvent> for App {
             event_loop.exit();
             return;
         }
+        // Every file of a drop has been delivered by now, one event each.
+        self.flush_dropped_files();
         self.sync_menu_bar();
         self.pace_next_frame(event_loop);
     }

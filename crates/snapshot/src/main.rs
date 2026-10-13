@@ -75,13 +75,16 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
+    let attachments = animation::load_attachments(&args.attach)?;
     let posed: Vec<Option<animation::Posed>> = subjects
         .iter()
         .map(|subject| {
+            let attached = animation::attach(&subject.model, &attachments);
             args.clip
                 .map(|clip| {
                     animation::pose(
                         &subject.model,
+                        &attached,
                         clip,
                         args.curves,
                         &args.select,

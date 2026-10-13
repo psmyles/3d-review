@@ -484,6 +484,7 @@ impl SceneGpu {
             scene.model_revision,
             scene.debug.uv_channel,
             scene.debug.material_mode,
+            scene.pose.is_some(),
         )?;
         let material_key = MaterialKey::new(
             material_revision,

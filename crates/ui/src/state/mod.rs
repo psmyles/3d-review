@@ -15,8 +15,9 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use review_model::{Bounds, MeshGroupStats, ModelData, ModelStats, StatsScope};
+use review_model::{AttachedAnimation, Bounds, MeshGroupStats, ModelData, ModelStats, StatsScope};
 use review_render::{
     ActiveMaterial, AntiAliasing, BoundingBoxScope, EnvironmentSettings, GtaoSettings,
     MaterialEdit, MaterialSnapshot, SceneDebugOptions, Selection, ShadingMode, TonemapSettings,
@@ -162,6 +163,8 @@ pub struct UiOutput {
 pub enum MenuIntent {
     /// Ask for a model to open (the open shortcut).
     OpenFile,
+    /// Ask for animation files to attach to the model on screen.
+    AddAnimations,
     /// Open the model at this index of [`UiState::recent_files`] (File > Open
     /// Recent). An index rather than the path, so the intent stays `Copy`; `app`
     /// applies it in the same frame the list it indexes was drawn from.
@@ -382,8 +385,14 @@ pub struct UiState {
     /// ownership). `None` when no model is loaded. Read by the dimension-label
     /// overlay to place each box edge's axis-length readout.
     pub bounds: Option<Bounds>,
-    /// Per clip, its motion envelope — parallel to `ModelData::animations`, and
-    /// what [`UiState::bounds`] becomes while that clip is selected.
+    /// The animation files attached to the model, in the order they were added:
+    /// file `n` of a [`review_model::ClipId`] is entry `n - 1` (file 0 is the
+    /// model's own). Plain data that only `app` changes, like
+    /// [`Self::recent_files`]; [`UiState::clips`] is how the chrome reads it.
+    pub attached_animations: Vec<Arc<AttachedAnimation>>,
+    /// Per file, then per clip, its motion envelope — parallel to
+    /// [`review_model::Clips::of_file`], and what [`UiState::bounds`] becomes
+    /// while that clip is selected.
     ///
     /// It lives here rather than on the clip because it is *measured after the
     /// model is on screen*: it costs a pose and a mesh walk per frame of the clip,
@@ -392,7 +401,7 @@ pub struct UiState {
     /// reports it; an entry still `None` simply falls back to the whole model's
     /// box, so a clip selected in the first moments of a load frames on something
     /// sensible and tightens up when the measurement lands.
-    pub clip_bounds: Vec<Option<Bounds>>,
+    pub clip_bounds: Vec<Vec<Option<Bounds>>>,
     /// The per-model derived measurements that are too costly to recompute every
     /// frame (the visible-only and selection-only boxes, the bone-influence
     /// count). `app` resets the whole set on model load — see [`BoundsCaches`].
@@ -484,6 +493,7 @@ impl Default for UiState {
             hidden_meshes: HashSet::new(),
             side_panels_open: true,
             bounds: None,
+            attached_animations: Vec::new(),
             clip_bounds: Vec::new(),
             caches: BoundsCaches::default(),
             fps: 0.0,
@@ -713,27 +723,6 @@ impl UiState {
         if !self.has_skin && self.debug.active_material == ActiveMaterial::SkinWeights {
             self.debug.active_material = ActiveMaterial::Source;
         }
-    }
-
-    /// Re-point the animation state at `model` (the one about to be shown):
-    /// drop the clip selection and playback (they index the old model's clips)
-    /// and re-derive the capability flag that gates the Animations tab. A stale
-    /// Animations tab needs no snapping back here: the Outliner resolves its tab
-    /// against what the model offers every frame ([`OutlinerState::tab`]).
-    pub fn reset_animation_state(&mut self, model: &ModelData) {
-        self.animation = AnimationUiState {
-            has_clips: !model.animations.is_empty(),
-            ..AnimationUiState::default()
-        };
-    }
-
-    /// Select clip `clip` (or none), landing paused on its first frame; the app's
-    /// clock picks the change up on the next frame.
-    pub fn select_clip(&mut self, model: &ModelData, clip: Option<usize>) {
-        let clip = clip.filter(|&index| index < model.animations.len());
-        self.animation.selected_clip = clip;
-        self.animation.playing = false;
-        self.animation.time = clip.map_or(0.0, |index| model.animations[index].time_begin);
     }
 
     /// The stats overlay's three scoped columns, re-summed only when the

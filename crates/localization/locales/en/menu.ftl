@@ -8,6 +8,7 @@ menu-window = Window
 menu-help = Help
 menu-new = New
 menu-open = Open...
+menu-add-animations = Add Animations...
 menu-open-recent = Open Recent
 menu-clear-recent-files = Clear Recent Files
 menu-about = About { $product }

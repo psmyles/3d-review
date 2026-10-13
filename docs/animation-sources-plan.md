@@ -44,8 +44,12 @@ purely to host its blend-shape curves.
 
 - **A file binds to the rig** when at least one of its tracks resolves onto the
   rig: a node track by node name, or a blend-shape weight track by mesh node name
-  plus channel name. A binding file is attached as an animation file. Its own
-  meshes are ignored (listed in its report), and only its clips are used.
+  plus channel name — **and** every mesh it carries has a mesh of the same name
+  in the rig. A binding file is attached as an animation file. Its own meshes are
+  ignored, and only its clips are used. (The mesh condition was added while
+  building step 2: without it, a second character sharing the rig's bone names —
+  every Character Creator export does — would attach to the first instead of
+  replacing it. The facial sample still binds: its six meshes are the rig's.)
 - **Several files dropped at once** load as one batch. The rig is the geometry
   file with no clips, ties going to the one with the most triangles; every other
   file attaches if it binds. A second geometry file that binds to nothing is not
@@ -127,9 +131,20 @@ compact key store is worth doing later.
    `import/tests/animation_only.rs` (an ASCII FBX written at test time) and
    `a_skeleton_with_no_mesh_is_measured_on_its_joints`. Known wrinkle: opening
    a mesh model next leaves the skeleton overlay on.
-2. **Sessions.** Batch a multi-file drop, multi-select Open, Add Animations, and
-   the add / replace rules above.
-3. **Binding.** Name matching, re-pointed clips, the checks, the report data.
+2. **Sessions, and the core of binding.** *Done.* A multi-file drop is one
+   request (gathered in `about_to_wait`); Open takes several files; File > Add
+   Animations (also on the macOS menu bar, which could not be built here);
+   Open Recent behaves as a drop; several paths on the command line open as one
+   session. Requests carry an intent and are parsed one at a time, each request's
+   files in parallel, then classified by the pure `loading/classify.rs`. Binding
+   had to come forward from step 3, since "does it bind" is what decides add or
+   replace: `review_model::attach` matches by name and re-points clips in place,
+   and the Animations tab groups clips by file. Beyond the plan: clip envelopes
+   are measured on every core in 128-frame pieces (9 body clips on the Eve rig,
+   9.8 s to 0.9 s), and a rigid rig with attached clips builds its deform path
+   when the first pose arrives.
+3. **The checks and the report data.** Units / axes, bone proportions, matched
+   mesh vertex counts, unmatched bones, coverage counts — reported up front.
 4. **Interface.** File groups in the Outliner with marks, the report in the
    Inspector, the Animations tab grouped by file.
 5. **Later:** layering a face clip over a body clip; a compact key store.

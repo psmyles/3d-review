@@ -653,9 +653,24 @@ fn corner_moves(
 /// vertices 2401 times.) The measured bounds are unchanged — a static corner's
 /// palette entry is the same matrix at rest as in every frame.
 pub fn clip_bounds(model: &ModelData, ctx: &AnimContext, clip: &AnimationClip) -> Option<Bounds> {
+    clip_bounds_over(model, ctx, clip, 0..clip.frame_count())
+}
+
+/// [`clip_bounds`] over frames `frames` of `clip` only: a piece of its envelope,
+/// so one long clip can be measured on several threads at once. The union of the
+/// pieces is exactly the whole clip's envelope — a box is a minimum and a maximum,
+/// and those do not care what order they are taken in. Each piece measures the
+/// static corners too, which is the rest pose once per piece.
+pub fn clip_bounds_over(
+    model: &ModelData,
+    ctx: &AnimContext,
+    clip: &AnimationClip,
+    frames: std::ops::Range<usize>,
+) -> Option<Bounds> {
+    let frames = frames.start..frames.end.min(clip.frame_count());
     let moved_nodes = clip_moved_nodes(model, ctx, clip);
     if !model.has_geometry() {
-        return clip_joint_bounds(model, ctx, clip, &moved_nodes);
+        return clip_joint_bounds(model, ctx, clip, &moved_nodes, frames);
     }
 
     // Split the corners `posed_bounds` would walk into the ones this clip can
@@ -676,7 +691,7 @@ pub fn clip_bounds(model: &ModelData, ctx: &AnimContext, clip: &AnimationClip) -
     }
 
     if !moving.is_empty() {
-        for frame in 0..clip.frame_count() {
+        for frame in frames {
             evaluate_pose(model, ctx, Some(clip), clip.frame_time(frame), &mut pose);
             build_palette(model, ctx, &pose, &mut deform);
             for &corner in &moving {
@@ -697,6 +712,7 @@ fn clip_joint_bounds(
     ctx: &AnimContext,
     clip: &AnimationClip,
     moved_nodes: &[bool],
+    frames: std::ops::Range<usize>,
 ) -> Option<Bounds> {
     let mut pose = Pose::new(model);
     rest_pose(model, ctx, &mut pose);
@@ -710,7 +726,7 @@ fn clip_joint_bounds(
         }
     }
     if !moving.is_empty() {
-        for frame in 0..clip.frame_count() {
+        for frame in frames {
             evaluate_pose(model, ctx, Some(clip), clip.frame_time(frame), &mut pose);
             for &joint in &moving {
                 bounds.include_point(pose.world[joint].w_axis.truncate());
@@ -1330,5 +1346,26 @@ mod tests {
         let ctx = AnimContext::new(&model);
         let clip = &model.animations[0];
         assert_eq!(clip_bounds(&model, &ctx, clip), rest_bounds(&model, &ctx));
+    }
+
+    /// A clip measured in pieces — what the import does across threads — unites
+    /// to exactly the envelope measured whole, wherever the pieces are cut.
+    #[test]
+    fn pieces_of_a_clip_unite_to_its_whole_envelope() {
+        let model = partly_animated_model(Vec3::new(-9.0, -3.0, 2.0));
+        let ctx = AnimContext::new(&model);
+        let clip = &model.animations[0];
+        let whole = clip_bounds(&model, &ctx, clip).expect("bounds");
+        let frames = clip.frame_count();
+        for size in [1, 3, 7, frames] {
+            let mut united = Bounds::EMPTY;
+            for start in (0..frames).step_by(size) {
+                let piece = clip_bounds_over(&model, &ctx, clip, start..(start + size).min(frames))
+                    .expect("piece");
+                united.include_point(piece.min);
+                united.include_point(piece.max);
+            }
+            assert_eq!(united, whole, "pieces of {size} frames");
+        }
     }
 }

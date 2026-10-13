@@ -40,9 +40,9 @@ pub(crate) enum UserEvent {
     AuditDone(Box<audit::AuditDone>),
     /// A background FBX export finished (posted by the export thread).
     OptExported(Box<crate::opt::OptExported>),
-    /// A background model import produced a drawable model (posted by the import
-    /// thread). Boxed because it carries the whole parsed model.
-    ModelLoaded(Box<loading::ModelLoaded>),
+    /// A background import has parsed every file of an open request (posted by
+    /// the import thread). Boxed because it carries the parsed models.
+    FilesParsed(Box<loading::FilesParsed>),
     /// A background model import reached a new stage, or moved within one
     /// (posted by the import thread, already throttled there — see `loading.rs`).
     /// Rewrites the loading card's stage line in place.
