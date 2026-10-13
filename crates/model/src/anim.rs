@@ -11,9 +11,12 @@
 use glam::{Mat4, Quat, Vec3};
 
 use crate::{
-    AnimationClip, Bounds, Key, ModelData, MorphChannel, MorphKeyframe, SceneNode,
-    frame_rate_or_default,
+    AnimationClip, Bounds, Key, ModelData, MorphChannel, MorphKeyframe, NodeKind, SceneNode,
 };
+
+mod paths;
+
+pub use paths::{NodePath, clip_paths, selected_paths};
 
 /// Everything about a model that pose evaluation needs but that never changes
 /// between poses: the parents-first node order, the inverse rest world matrices,
@@ -492,12 +495,37 @@ pub fn deform_logical_position(
 /// Bounds of the mesh under `deform`. Walks the logical vertices (one corner
 /// each) when the corner map is present — positions are shared across a logical
 /// vertex's corners, so that is the whole set — else every corner.
+///
+/// A model with no mesh — an animation file opened on its own — is measured on
+/// its joints instead, since its skeleton is then all there is to see.
 pub fn posed_bounds(model: &ModelData, ctx: &AnimContext, deform: &DeformPose) -> Option<Bounds> {
     let mut bounds = Bounds::EMPTY;
-    for corner in bounds_corners(model, ctx) {
-        bounds.include_point(deform_corner(model, ctx, deform, corner as usize).0);
+    if model.has_geometry() {
+        for corner in bounds_corners(model, ctx) {
+            bounds.include_point(deform_corner(model, ctx, deform, corner as usize).0);
+        }
+    } else {
+        // A node's palette entry is its delta from rest, so it carries the rest
+        // joint to the posed one.
+        for joint in joints(model) {
+            if let Some(delta) = deform.palette.get(joint) {
+                let rest = model.nodes[joint].transform.w_axis.truncate();
+                bounds.include_point(delta.transform_point3(rest));
+            }
+        }
     }
     (!bounds.is_empty()).then_some(bounds)
+}
+
+/// The skeleton's joints: every bone node, as indices into [`ModelData::nodes`].
+/// What a model with no mesh is framed and measured on.
+fn joints(model: &ModelData) -> impl Iterator<Item = usize> {
+    model
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.kind == NodeKind::Bone)
+        .map(|(index, _)| index)
 }
 
 /// The corners a bounds measurement walks: one per logical vertex when the corner
@@ -610,9 +638,10 @@ fn corner_moves(
     moved_nodes.get(node as usize).copied().unwrap_or(false)
 }
 
-/// The union of the posed bounds over every frame of `clip` at `fps` — measured
-/// once at import so framing and the bounding-box overlay can describe the whole
-/// motion without ever re-skinning on the redraw path.
+/// The union of the posed bounds over every frame of `clip` — measured once at
+/// import so framing and the bounding-box overlay can describe the whole motion
+/// without ever re-skinning on the redraw path. A model with no mesh is measured
+/// on its joints, as [`posed_bounds`] measures it.
 ///
 /// Only the corners `clip` can actually move are re-measured per frame; the rest
 /// hold their rest-pose position in every frame and so are measured once. That
@@ -623,20 +652,32 @@ fn corner_moves(
 /// 2401-frame clip reaching 1.5% of its triangles walked all 2.07M logical
 /// vertices 2401 times.) The measured bounds are unchanged — a static corner's
 /// palette entry is the same matrix at rest as in every frame.
-pub fn clip_bounds(
+pub fn clip_bounds(model: &ModelData, ctx: &AnimContext, clip: &AnimationClip) -> Option<Bounds> {
+    clip_bounds_over(model, ctx, clip, 0..clip.frame_count())
+}
+
+/// [`clip_bounds`] over frames `frames` of `clip` only: a piece of its envelope,
+/// so one long clip can be measured on several threads at once. The union of the
+/// pieces is exactly the whole clip's envelope — a box is a minimum and a maximum,
+/// and those do not care what order they are taken in. Each piece measures the
+/// static corners too, which is the rest pose once per piece.
+pub fn clip_bounds_over(
     model: &ModelData,
     ctx: &AnimContext,
     clip: &AnimationClip,
-    fps: f64,
+    frames: std::ops::Range<usize>,
 ) -> Option<Bounds> {
-    let fps = frame_rate_or_default(fps);
-    let mut pose = Pose::new(model);
-    let mut deform = DeformPose::default();
+    let frames = frames.start..frames.end.min(clip.frame_count());
+    let moved_nodes = clip_moved_nodes(model, ctx, clip);
+    if !model.has_geometry() {
+        return clip_joint_bounds(model, ctx, clip, &moved_nodes, frames);
+    }
 
     // Split the corners `posed_bounds` would walk into the ones this clip can
     // move and the ones it cannot, measuring the latter as we go — in the rest
     // pose, which is the pose they hold in every frame of the clip.
-    let moved_nodes = clip_moved_nodes(model, ctx, clip);
+    let mut pose = Pose::new(model);
+    let mut deform = DeformPose::default();
     rest_pose(model, ctx, &mut pose);
     build_palette(model, ctx, &pose, &mut deform);
     let mut bounds = Bounds::EMPTY;
@@ -650,14 +691,8 @@ pub fn clip_bounds(
     }
 
     if !moving.is_empty() {
-        for frame in 0..clip.frame_count(fps) {
-            evaluate_pose(
-                model,
-                ctx,
-                Some(clip),
-                clip.frame_time(frame, fps),
-                &mut pose,
-            );
+        for frame in frames {
+            evaluate_pose(model, ctx, Some(clip), clip.frame_time(frame), &mut pose);
             build_palette(model, ctx, &pose, &mut deform);
             for &corner in &moving {
                 bounds.include_point(deform_corner(model, ctx, &deform, corner as usize).0);
@@ -665,6 +700,39 @@ pub fn clip_bounds(
         }
     }
 
+    (!bounds.is_empty()).then_some(bounds)
+}
+
+/// [`clip_bounds`] for a model with no mesh: the joints' envelope over the clip.
+/// The same split as the mesh walk — a joint the clip cannot move is measured
+/// once at rest — though at a skeleton's size it is a nicety, not the
+/// difference it is for a mesh.
+fn clip_joint_bounds(
+    model: &ModelData,
+    ctx: &AnimContext,
+    clip: &AnimationClip,
+    moved_nodes: &[bool],
+    frames: std::ops::Range<usize>,
+) -> Option<Bounds> {
+    let mut pose = Pose::new(model);
+    rest_pose(model, ctx, &mut pose);
+    let mut bounds = Bounds::EMPTY;
+    let mut moving: Vec<usize> = Vec::new();
+    for joint in joints(model) {
+        if moved_nodes.get(joint).copied().unwrap_or(false) {
+            moving.push(joint);
+        } else {
+            bounds.include_point(pose.world[joint].w_axis.truncate());
+        }
+    }
+    if !moving.is_empty() {
+        for frame in frames {
+            evaluate_pose(model, ctx, Some(clip), clip.frame_time(frame), &mut pose);
+            for &joint in &moving {
+                bounds.include_point(pose.world[joint].w_axis.truncate());
+            }
+        }
+    }
     (!bounds.is_empty()).then_some(bounds)
 }
 
@@ -749,6 +817,45 @@ mod tests {
         assert!(rest_locals_recompose(&model, &ctx, 1e-6));
     }
 
+    /// A skeleton with no mesh — an animation file opened on its own — is
+    /// measured on its joints: at rest, and over the whole of a clip.
+    #[test]
+    fn a_skeleton_with_no_mesh_is_measured_on_its_joints() {
+        let mut model = chain();
+        // A non-bone node far away is not a joint and does not stretch the box.
+        model.nodes.push(SceneNode {
+            transform: Mat4::from_translation(Vec3::splat(100.0)),
+            ..node_with_local("marker", None, local(Vec3::splat(100.0)))
+        });
+        assert!(!model.has_geometry() && !model.is_empty());
+        let ctx = AnimContext::new(&model);
+
+        let rest = rest_bounds(&model, &ctx).expect("a skeleton has joints to measure");
+        assert!(rest.min.abs_diff_eq(Vec3::ZERO, 1e-6), "{rest:?}");
+        assert!(rest.max.abs_diff_eq(Vec3::Y * 2.0, 1e-6), "{rest:?}");
+        model.recompute_bounds();
+        assert_eq!(model.bounds, Some(rest), "the static measure agrees");
+
+        // The child slides 3 m along X and carries the grandchild with it.
+        let clip = AnimationClip {
+            time_begin: 0.0,
+            time_end: 1.0,
+            frame_rate: 10.0,
+            tracks: vec![NodeTrack {
+                node: 1,
+                translation: vec![key(0.0, Vec3::Y), key(1.0, Vec3::new(3.0, 1.0, 0.0))],
+                ..NodeTrack::default()
+            }],
+            ..AnimationClip::default()
+        };
+        let envelope = clip_bounds(&model, &ctx, &clip).expect("joints");
+        assert!(envelope.min.abs_diff_eq(Vec3::ZERO, 1e-5), "{envelope:?}");
+        assert!(
+            envelope.max.abs_diff_eq(Vec3::new(3.0, 2.0, 0.0), 1e-5),
+            "{envelope:?}"
+        );
+    }
+
     #[test]
     fn order_puts_parents_first_even_when_children_come_first_in_the_table() {
         let mut model = chain();
@@ -821,20 +928,29 @@ mod tests {
         let clip = AnimationClip {
             time_begin: 1.0,
             time_end: 2.0,
+            frame_rate: 30.0,
             ..AnimationClip::default()
         };
-        assert_eq!(clip.frame_count(30.0), 31);
-        assert_eq!(clip.frame_count(0.0), 31);
-        assert_eq!(clip.frame_time(0, 30.0), 1.0);
-        assert!((clip.frame_time(30, 30.0) - 2.0).abs() < 1e-9);
-        assert_eq!(clip.frame_time(99, 30.0), 2.0);
-        assert_eq!(clip.frame_at(1.5, 30.0), 15);
-        assert_eq!(clip.frame_at(9.0, 30.0), 30);
+        assert_eq!(clip.frame_count(), 31);
+        assert_eq!(clip.frame_time(0), 1.0);
+        assert!((clip.frame_time(30) - 2.0).abs() < 1e-9);
+        assert_eq!(clip.frame_time(99), 2.0);
+        assert_eq!(clip.frame_at(1.5), 15);
+        assert_eq!(clip.frame_at(9.0), 30);
         assert!((clip.wrap_time(2.25) - 1.25).abs() < 1e-9);
         assert!((clip.wrap_time(0.75) - 1.75).abs() < 1e-9);
         assert_eq!(clip.clamp_time(7.0), 2.0);
+        let undeclared = AnimationClip {
+            frame_rate: 0.0,
+            ..clip
+        };
+        assert_eq!(
+            undeclared.frame_count(),
+            31,
+            "an undeclared rate is the default"
+        );
         let empty = AnimationClip::default();
-        assert_eq!(empty.frame_count(30.0), 1);
+        assert_eq!(empty.frame_count(), 1);
         assert_eq!(empty.wrap_time(3.0), 0.0);
     }
 
@@ -846,14 +962,19 @@ mod tests {
         let clip = AnimationClip {
             time_begin: 0.0,
             time_end: 1e300,
+            frame_rate: 30.0,
             ..AnimationClip::default()
         };
-        assert_eq!(clip.frame_count(1e300), crate::MAX_CLIP_FRAMES);
-        assert_eq!(clip.frame_count(30.0), crate::MAX_CLIP_FRAMES);
-        let stepped = clip.step_frame_time(0.0, i64::MAX, 30.0);
+        let absurd_rate = AnimationClip {
+            frame_rate: 1e300,
+            ..clip.clone()
+        };
+        assert_eq!(absurd_rate.frame_count(), crate::MAX_CLIP_FRAMES);
+        assert_eq!(clip.frame_count(), crate::MAX_CLIP_FRAMES);
+        let stepped = clip.step_frame_time(0.0, i64::MAX);
         assert!(stepped.is_finite() && stepped > 0.0);
-        assert_eq!(clip.step_frame_time(0.0, i64::MIN, 30.0), 0.0);
-        assert_eq!(clip.frame_at(1e300, 30.0), crate::MAX_CLIP_FRAMES - 1);
+        assert_eq!(clip.step_frame_time(0.0, i64::MIN), 0.0);
+        assert_eq!(clip.frame_at(1e300), crate::MAX_CLIP_FRAMES - 1);
     }
 
     /// One triangle skinned to the chain: corner 0 rides the child (node 1)
@@ -951,7 +1072,7 @@ mod tests {
         let (p1, _) = deform_corner(&model, &ctx, &deform, 1);
         assert!(p1.abs_diff_eq(Vec3::new(2.5, 0.5, 0.0), 1e-5), "{p1}");
         // The clip envelope spans both poses.
-        let bounds = clip_bounds(&model, &ctx, &clip, 30.0).unwrap();
+        let bounds = clip_bounds(&model, &ctx, &clip).unwrap();
         assert!((bounds.max.x - 3.0).abs() < 1e-5, "{bounds:?}");
         assert!(bounds.min.x.abs() < 1e-5, "{bounds:?}");
     }
@@ -1161,9 +1282,9 @@ mod tests {
                     ],
                     ..NodeTrack::default()
                 }],
+                frame_rate: 24.0,
                 ..AnimationClip::default()
             }],
-            frame_rate: 24.0,
             ..ModelData::default()
         }
     }
@@ -1176,18 +1297,11 @@ mod tests {
         ctx: &AnimContext,
         clip: &AnimationClip,
     ) -> Bounds {
-        let fps = model.frame_rate_or_default();
         let mut pose = Pose::new(model);
         let mut deform = DeformPose::default();
         let mut bounds = Bounds::EMPTY;
-        for frame in 0..clip.frame_count(fps) {
-            evaluate_pose(
-                model,
-                ctx,
-                Some(clip),
-                clip.frame_time(frame, fps),
-                &mut pose,
-            );
+        for frame in 0..clip.frame_count() {
+            evaluate_pose(model, ctx, Some(clip), clip.frame_time(frame), &mut pose);
             build_palette(model, ctx, &pose, &mut deform);
             if let Some(frame_bounds) = posed_bounds(model, ctx, &deform) {
                 bounds.include_point(frame_bounds.min);
@@ -1215,8 +1329,7 @@ mod tests {
             let model = partly_animated_model(translated);
             let ctx = AnimContext::new(&model);
             let clip = &model.animations[0];
-            let measured =
-                clip_bounds(&model, &ctx, clip, model.frame_rate_or_default()).expect("bounds");
+            let measured = clip_bounds(&model, &ctx, clip).expect("bounds");
             let expected = brute_force_clip_bounds(&model, &ctx, clip);
             assert_eq!(measured.min, expected.min, "min for {translated}");
             assert_eq!(measured.max, expected.max, "max for {translated}");
@@ -1232,9 +1345,27 @@ mod tests {
         model.animations[0].tracks.clear();
         let ctx = AnimContext::new(&model);
         let clip = &model.animations[0];
-        assert_eq!(
-            clip_bounds(&model, &ctx, clip, model.frame_rate_or_default()),
-            rest_bounds(&model, &ctx)
-        );
+        assert_eq!(clip_bounds(&model, &ctx, clip), rest_bounds(&model, &ctx));
+    }
+
+    /// A clip measured in pieces — what the import does across threads — unites
+    /// to exactly the envelope measured whole, wherever the pieces are cut.
+    #[test]
+    fn pieces_of_a_clip_unite_to_its_whole_envelope() {
+        let model = partly_animated_model(Vec3::new(-9.0, -3.0, 2.0));
+        let ctx = AnimContext::new(&model);
+        let clip = &model.animations[0];
+        let whole = clip_bounds(&model, &ctx, clip).expect("bounds");
+        let frames = clip.frame_count();
+        for size in [1, 3, 7, frames] {
+            let mut united = Bounds::EMPTY;
+            for start in (0..frames).step_by(size) {
+                let piece = clip_bounds_over(&model, &ctx, clip, start..(start + size).min(frames))
+                    .expect("piece");
+                united.include_point(piece.min);
+                united.include_point(piece.max);
+            }
+            assert_eq!(united, whole, "pieces of {size} frames");
+        }
     }
 }

@@ -171,8 +171,7 @@ impl App {
     /// Reconcile the audit with the model and profile on screen. Every frame, in
     /// every workspace: the toolbar shows the count from anywhere.
     pub(crate) fn sync_audit(&mut self) {
-        let has_geometry =
-            !(self.scene_model.indices.is_empty() && self.scene_model.nodes.is_empty());
+        let has_geometry = !self.scene_model.is_empty();
         let wanted: Coverage = (self.scene_revision, self.ui.aud.profile_revision);
         if self.audit.wants_run(wanted, has_geometry) && self.audit.request(wanted) {
             self.spawn_audit();

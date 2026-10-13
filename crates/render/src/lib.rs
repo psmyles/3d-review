@@ -23,7 +23,7 @@
 #![deny(unsafe_code)]
 
 use glam::Vec3;
-use review_model::{Bounds, DeformPose, ModelData};
+use review_model::{Bounds, DeformPose, ModelData, NodePath};
 
 mod camera;
 mod config;
@@ -173,6 +173,55 @@ pub struct AuditOverlay<'a> {
     pub hidden_alpha: f32,
 }
 
+/// The selected clip's motion paths, for the animation-curve overlay.
+///
+/// `app` samples the paths once (`review_model::anim::clip_paths`) when the
+/// overlay is switched on or the clip changes, and decides each frame which of
+/// them the selection leaves showing. The renderer colours each path by its node
+/// and tints the skeleton's bones to match, and rebuilds its buffers only when
+/// `revision` or `shown` moves — so a playing clip costs nothing, the current
+/// frame's marker riding the pose on the GPU.
+#[derive(Debug, Clone, Copy)]
+pub struct TrajectoryOverlay<'a> {
+    /// Identifies `paths`: a different clip, model or sampling is a new one.
+    pub revision: u64,
+    /// Every path the clip has.
+    pub paths: &'a [NodePath],
+    /// Which of `paths` to draw, as sorted indices into it.
+    pub shown: &'a [u32],
+    /// How they are drawn.
+    pub style: TrajectoryStyle,
+}
+
+/// How the animation curves are drawn: the Animation Curves options window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrajectoryStyle {
+    /// A smooth curve through each frame's point, or a straight line from one
+    /// to the next. Changing it rebuilds the curves; nothing else here does.
+    pub smooth: bool,
+    /// The curve's width, in points.
+    pub width: f32,
+    /// The curve's opacity, `0..=1`. The frame dots and the current-frame
+    /// markers stay opaque: they are what the curve is read by.
+    pub opacity: f32,
+    /// The size of the dot on every frame, in points.
+    pub dot_size: f32,
+}
+
+impl Default for TrajectoryStyle {
+    fn default() -> Self {
+        // Straight lines between frames, as thin as every other overlay line,
+        // with dots three times as wide so the spacing between them reads as
+        // speed. Chosen by eye against real clips.
+        Self {
+            smooth: false,
+            width: 1.0,
+            opacity: 1.0,
+            dot_size: 3.0,
+        }
+    }
+}
+
 /// Per-frame inputs for the 3D scene render — everything `app` resolves from the
 /// live UI state each frame, bundled in one struct so the render entry points
 /// stay self-documenting and immune to argument-order mistakes among their many
@@ -226,6 +275,10 @@ pub struct SceneFrame<'a> {
     /// The Aud workspace's highlighted offenders, or `None` (every other
     /// workspace, and Aud with nothing focused).
     pub audit: Option<AuditOverlay<'a>>,
+    /// The selected clip's motion paths while the transport's animation-curve
+    /// toggle is on, or `None` (the toggle off, no clip, or a workspace that
+    /// shows the bind pose).
+    pub trajectories: Option<TrajectoryOverlay<'a>>,
 }
 
 impl<'a> SceneFrame<'a> {
@@ -237,9 +290,10 @@ impl<'a> SceneFrame<'a> {
         SceneFrame {
             model,
             model_revision,
-            // The overlay indexes the source's triangles and corners, which mean
-            // nothing on another mesh.
+            // Both overlays index the source — its triangles and corners, its
+            // nodes — which mean nothing on another mesh.
             audit: None,
+            trajectories: None,
             ..*self
         }
     }

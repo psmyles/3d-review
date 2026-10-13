@@ -226,7 +226,7 @@ fn clamp_to(rect: egui::Rect, bounds: egui::Rect) -> egui::Rect {
 /// Format an axis length (world meters) for display. Shows the file's authored
 /// unit when it matches a known DCC unit (e.g. a centimeter file reads `122 cm`);
 /// falls back to meters when the file declared no / an unrecognised unit.
-fn format_dimension(length_meters: f32, source_unit_meters: f32) -> String {
+pub(crate) fn format_dimension(length_meters: f32, source_unit_meters: f32) -> String {
     match match_known_unit(source_unit_meters) {
         Some(unit) => (unit.value)(round_dimension(length_meters / unit.meters)),
         None => crate::units::meters_value(round_dimension(length_meters)),

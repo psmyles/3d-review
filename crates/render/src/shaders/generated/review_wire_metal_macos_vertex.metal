@@ -202,14 +202,14 @@ void apply_deform(thread const uint4& lane, thread float3& position, thread floa
     for (uint i = 0u; i < lane.y; i++)
     {
         uint _219 = lane.x + i;
-        PaletteEntry _700 = PaletteEntry{ _232.palette[_215.influences[_219].entry].r0, _232.palette[_215.influences[_219].entry].r1, _232.palette[_215.influences[_219].entry].r2 };
-        PaletteEntry param = _700;
+        PaletteEntry _707 = PaletteEntry{ _232.palette[_215.influences[_219].entry].r0, _232.palette[_215.influences[_219].entry].r1, _232.palette[_215.influences[_219].entry].r2 };
+        PaletteEntry param = _707;
         float3 param_1 = position;
         blended_position += (palette_point(param, param_1) * _215.influences[_219].weight);
-        PaletteEntry param_2 = _700;
+        PaletteEntry param_2 = _707;
         float3 param_3 = normal;
         blended_normal += (palette_direction(param_2, param_3) * _215.influences[_219].weight);
-        PaletteEntry param_4 = _700;
+        PaletteEntry param_4 = _707;
         float3 param_5 = tangent;
         blended_tangent += (palette_direction(param_4, param_5) * _215.influences[_219].weight);
         total += _215.influences[_219].weight;
@@ -310,10 +310,10 @@ void emit_line_quad(thread float4& first, thread float4& second, thread const ui
     float4 _579 = select(second, first, bool4(_574));
     float _585 = _445.y * _565;
     float2 _601 = _579.xy + ((((float2(-_541.y, _541.x) * _585) + (_541 * (((_568 * 2.0) - 1.0) * _565))) / _511) * _579.w);
-    float4 _738 = _579;
-    _738.x = _601.x;
-    _738.y = _601.y;
-    gl_Position = _738;
+    float4 _745 = _579;
+    _745.x = _601.x;
+    _745.y = _601.y;
+    gl_Position = _745;
     float _615;
     if (_574)
     {
@@ -339,6 +339,7 @@ vertex main0_out main0(constant scene_vs& su [[buffer(0)]], constant line_params
     uint param_4 = _632 - (_635 * 6u);
     emit_line_quad(param_2, param_3, param_4, out.gl_Position, out.v_line, lu);
     out.v_color = su.selection_color;
+    out.v_color.w *= lu.params.w;
     return out;
 }
 

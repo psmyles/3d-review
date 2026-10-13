@@ -793,7 +793,7 @@ void main() {
 @block line_uniforms
 layout(binding=3) uniform line_params {
     // x / y = the scene target's size in pixels, z = the line's width in pixels,
-    // w spare.
+    // w = its opacity, multiplying the alpha of whatever colour it is drawn in.
     vec4 params;
 } lu;
 @end
@@ -943,6 +943,7 @@ void main() {
     uint corner_index = vertex - line * 6u;
     emit_line_quad(first, second, corner_index);
     v_color = line_corner_color(first_vertex + uint(line_quad_corner(corner_index).x));
+    v_color.a *= lu.params.w;
 }
 @end
 
@@ -972,6 +973,7 @@ void main() {
         * vec4(line_corner_position(line_index[2u * edge + 1u].index), 1.0);
     emit_line_quad(first, second, vertex - edge * 6u);
     v_color = su.selection_color;
+    v_color.a *= lu.params.w;
 }
 @end
 

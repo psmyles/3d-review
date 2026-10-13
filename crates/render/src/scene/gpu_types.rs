@@ -253,7 +253,7 @@ const _: () = assert!(
 pub(crate) struct LineUniforms {
     /// `x` / `y` = the target's size in pixels (the quad's offsets are in pixels and
     /// have to be turned back into clip space), `z` = the line's width in pixels,
-    /// `w` spare.
+    /// `w` = its opacity, multiplying the alpha of the colour it is drawn in.
     pub(crate) params: [f32; 4],
 }
 

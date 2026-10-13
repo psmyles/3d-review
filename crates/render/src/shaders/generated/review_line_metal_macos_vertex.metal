@@ -192,14 +192,14 @@ void apply_deform(thread const uint4& lane, thread float3& position, thread floa
     for (uint i = 0u; i < lane.y; i++)
     {
         uint _223 = lane.x + i;
-        PaletteEntry _759 = PaletteEntry{ _236.palette[_219.influences[_223].entry].r0, _236.palette[_219.influences[_223].entry].r1, _236.palette[_219.influences[_223].entry].r2 };
-        PaletteEntry param = _759;
+        PaletteEntry _766 = PaletteEntry{ _236.palette[_219.influences[_223].entry].r0, _236.palette[_219.influences[_223].entry].r1, _236.palette[_219.influences[_223].entry].r2 };
+        PaletteEntry param = _766;
         float3 param_1 = position;
         blended_position += (palette_point(param, param_1) * _219.influences[_223].weight);
-        PaletteEntry param_2 = _759;
+        PaletteEntry param_2 = _766;
         float3 param_3 = normal;
         blended_normal += (palette_direction(param_2, param_3) * _219.influences[_223].weight);
-        PaletteEntry param_4 = _759;
+        PaletteEntry param_4 = _766;
         float3 param_5 = tangent;
         blended_tangent += (palette_direction(param_4, param_5) * _219.influences[_223].weight);
         total += _219.influences[_223].weight;
@@ -300,10 +300,10 @@ void emit_line_quad(thread float4& first, thread float4& second, thread const ui
     float4 _638 = select(second, first, bool4(_633));
     float _644 = _504.y * _624;
     float2 _660 = _638.xy + ((((float2(-_600.y, _600.x) * _644) + (_600 * (((_627 * 2.0) - 1.0) * _624))) / _570) * _638.w);
-    float4 _817 = _638;
-    _817.x = _660.x;
-    _817.y = _660.y;
-    gl_Position = _817;
+    float4 _824 = _638;
+    _824.x = _660.x;
+    _824.y = _660.y;
+    gl_Position = _824;
     float _674;
     if (_633)
     {
@@ -338,6 +338,7 @@ vertex main0_out main0(constant scene_vs& su [[buffer(0)]], constant line_params
     uint param_5 = _726;
     uint param_6 = _697 + uint(line_quad_corner(param_5).x);
     out.v_color = line_corner_color(param_6, _318);
+    out.v_color.w *= lu.params.w;
     return out;
 }
 

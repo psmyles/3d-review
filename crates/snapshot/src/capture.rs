@@ -7,9 +7,11 @@ use review_model::Bounds;
 use review_render::{
     ActiveMaterial, AntiAliasing, BufferView, CameraProjection, EnvironmentSettings, FramingArea,
     Gpu, GtaoSettings, MaterialMode, OrbitCamera, Renderer, RendererConfig, SceneDebugOptions,
-    SceneFrame, SelectionView, ShadingMode, TonemapSettings, ViewportBackground,
+    SceneFrame, SelectionView, ShadingMode, TonemapSettings, TrajectoryOverlay, TrajectoryStyle,
+    ViewportBackground,
 };
 
+use crate::animation::Posed;
 use crate::cli::{Look, View};
 use crate::inputs::Subject;
 
@@ -26,6 +28,8 @@ pub struct Capture {
     chrome: [u32; 4],
     background: ViewportBackground,
     grid: bool,
+    skeleton: bool,
+    curve_style: TrajectoryStyle,
     /// The renderer caches a mesh's GPU buffers by revision, so every subject
     /// needs its own — the same rule `app` follows for every mesh it hands over.
     next_revision: u64,
@@ -39,6 +43,8 @@ impl Capture {
         chrome: [u32; 4],
         background: ViewportBackground,
         grid: bool,
+        skeleton: bool,
+        curve_style: TrajectoryStyle,
     ) -> Result<Self> {
         let gpu = Gpu::headless(size.0, size.1).context("bringing the GPU up without a window")?;
         let mut renderer = Renderer::new(RendererConfig::default());
@@ -50,6 +56,8 @@ impl Capture {
             chrome,
             background,
             grid,
+            skeleton,
+            curve_style,
             next_revision: 1,
             current: None,
         })
@@ -78,10 +86,12 @@ impl Capture {
         camera
     }
 
-    /// Render `subject` from `camera` and read the frame back.
+    /// Render `subject` from `camera` - posed, with its overlays, when `posed` is
+    /// given - and read the frame back.
     pub fn render(
         &mut self,
         subject: &Subject,
+        posed: Option<&Posed>,
         camera: OrbitCamera,
         look: Look,
     ) -> Result<RgbaImage> {
@@ -100,6 +110,7 @@ impl Capture {
 
         let mut debug = SceneDebugOptions {
             show_grid: self.grid,
+            show_skeleton: self.skeleton,
             ..SceneDebugOptions::default()
         };
         match look {
@@ -130,8 +141,8 @@ impl Capture {
             anti_aliasing: AntiAliasing::default(),
             selection: SelectionView::default(),
             hidden_meshes: &subject.hidden,
-            selected_bones: &[],
-            selected_nodes: &[],
+            selected_bones: posed.map_or(&[], |posed| &posed.selected_bones),
+            selected_nodes: posed.map_or(&[], |posed| &posed.selected_nodes),
             hover: None,
             hover_bone: None,
             // The normals look is read back by `compare`, which tells surface from
@@ -142,11 +153,24 @@ impl Capture {
             } else {
                 self.background
             },
-            pose: None,
-            pose_revision: 0,
-            scene_bounds: subject.bounds(),
+            // One pose per subject, and the palette lives with the subject's own
+            // mesh, so a fixed revision is enough to upload it once.
+            pose: posed.map(|posed| &posed.deform),
+            pose_revision: 1,
+            scene_bounds: posed
+                .and_then(|posed| posed.envelope)
+                .or_else(|| subject.bounds()),
             pixels_per_point: 1.0,
             audit: None,
+            // Keyed on the subject's revision: each has its own paths.
+            trajectories: posed.filter(|posed| !posed.paths.is_empty()).map(|posed| {
+                TrajectoryOverlay {
+                    revision,
+                    paths: &posed.paths,
+                    shown: &posed.shown,
+                    style: self.curve_style,
+                }
+            }),
         };
 
         // Ambient occlusion converges over a run of still frames, exactly as it

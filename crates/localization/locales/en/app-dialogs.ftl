@@ -4,6 +4,7 @@
 ### the user reads, so they live in the catalog like everything else.
 
 app-dialogs-open-model = Open Model
+app-dialogs-add-animations = Add Animations
 app-dialogs-import-textures = Import Textures
 app-dialogs-export-mesh = Export optimized mesh
 app-dialogs-save-preset = Save optimization preset

@@ -37,6 +37,8 @@ pub enum MenuCommand {
     ToggleRememberSettings,
     /// File → Open… (⌘O)
     Open,
+    /// File → Add Animations…
+    AddAnimations,
     /// File → Open Recent → the model at this index of the list last handed to
     /// [`MenuBar::sync`].
     OpenRecent(usize),

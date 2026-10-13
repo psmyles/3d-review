@@ -15,8 +15,9 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use review_model::{Bounds, MeshGroupStats, ModelData, ModelStats, StatsScope};
+use review_model::{AttachedAnimation, Bounds, MeshGroupStats, ModelData, ModelStats, StatsScope};
 use review_render::{
     ActiveMaterial, AntiAliasing, BoundingBoxScope, EnvironmentSettings, GtaoSettings,
     MaterialEdit, MaterialSnapshot, SceneDebugOptions, Selection, ShadingMode, TonemapSettings,
@@ -66,6 +67,19 @@ pub(crate) mod range {
     /// varies enormously — a hand rig needs thinner bones than a vehicle's.
     pub const SKELETON_SCALE_MIN: f32 = 0.2;
     pub const SKELETON_SCALE_MAX: f32 = 4.0;
+    /// An animation curve's width, in points: the wireframe's floor, for the
+    /// same reason, and room past it for a curve read from across the room.
+    pub const CURVE_WIDTH_MIN: f32 = 0.5;
+    pub const CURVE_WIDTH_MAX: f32 = 6.0;
+    /// An animation curve's opacity. Not down to nothing: a curve too faint to
+    /// see is the toggle's job to hide.
+    pub const CURVE_OPACITY_MIN: f32 = 0.1;
+    pub const CURVE_OPACITY_MAX: f32 = 1.0;
+    /// The size of a curve's frame dots, in points. At one point a dot is no
+    /// wider than a thin curve, and that is the floor; past twelve, frames a
+    /// few pixels apart merge into a bar.
+    pub const CURVE_DOT_SIZE_MIN: f32 = 1.0;
+    pub const CURVE_DOT_SIZE_MAX: f32 = 12.0;
     /// The model wireframe's line width, in points. Below half a point a line is
     /// only a fainter one-pixel line (the shader fades it rather than thinning it
     /// further), and past four it buries the faces it outlines.
@@ -162,6 +176,8 @@ pub struct UiOutput {
 pub enum MenuIntent {
     /// Ask for a model to open (the open shortcut).
     OpenFile,
+    /// Ask for animation files to attach to the model on screen.
+    AddAnimations,
     /// Open the model at this index of [`UiState::recent_files`] (File > Open
     /// Recent). An index rather than the path, so the intent stays `Copy`; `app`
     /// applies it in the same frame the list it indexes was drawn from.
@@ -263,6 +279,9 @@ pub struct UiState {
     pub vertex_normals: NormalPanelState,
     pub uv_seams: UvSeamPanelState,
     pub skeleton: SkeletonPanelState,
+    /// How the animation curves are drawn; whether they are is
+    /// [`AnimationUiState::show_curves`].
+    pub curves: CurvesPanelState,
     pub vertex_colors: VertexColorPanelState,
     /// Scene antialiasing (MSAA level). Read straight by the viewport callback —
     /// not a debug option — and edited by the Anti Aliasing panel.
@@ -382,8 +401,14 @@ pub struct UiState {
     /// ownership). `None` when no model is loaded. Read by the dimension-label
     /// overlay to place each box edge's axis-length readout.
     pub bounds: Option<Bounds>,
-    /// Per clip, its motion envelope — parallel to `ModelData::animations`, and
-    /// what [`UiState::bounds`] becomes while that clip is selected.
+    /// The animation files attached to the model, in the order they were added:
+    /// file `n` of a [`review_model::ClipId`] is entry `n - 1` (file 0 is the
+    /// model's own). Plain data that only `app` changes, like
+    /// [`Self::recent_files`]; [`UiState::clips`] is how the chrome reads it.
+    pub attached_animations: Vec<Arc<AttachedAnimation>>,
+    /// Per file, then per clip, its motion envelope — parallel to
+    /// [`review_model::Clips::of_file`], and what [`UiState::bounds`] becomes
+    /// while that clip is selected.
     ///
     /// It lives here rather than on the clip because it is *measured after the
     /// model is on screen*: it costs a pose and a mesh walk per frame of the clip,
@@ -392,7 +417,7 @@ pub struct UiState {
     /// reports it; an entry still `None` simply falls back to the whole model's
     /// box, so a clip selected in the first moments of a load frames on something
     /// sensible and tightens up when the measurement lands.
-    pub clip_bounds: Vec<Option<Bounds>>,
+    pub clip_bounds: Vec<Vec<Option<Bounds>>>,
     /// The per-model derived measurements that are too costly to recompute every
     /// frame (the visible-only and selection-only boxes, the bone-influence
     /// count). `app` resets the whole set on model load — see [`BoundsCaches`].
@@ -459,6 +484,7 @@ impl Default for UiState {
             },
             uv_seams: UvSeamPanelState::default(),
             skeleton: SkeletonPanelState::default(),
+            curves: CurvesPanelState::default(),
             vertex_colors: VertexColorPanelState::default(),
             anti_aliasing: AntiAliasing::default(),
             capabilities: Capabilities::default(),
@@ -484,6 +510,7 @@ impl Default for UiState {
             hidden_meshes: HashSet::new(),
             side_panels_open: true,
             bounds: None,
+            attached_animations: Vec::new(),
             clip_bounds: Vec::new(),
             caches: BoundsCaches::default(),
             fps: 0.0,
@@ -705,30 +732,14 @@ impl UiState {
             self.debug.show_skeleton = false;
             self.panels_open.set(OptionPanel::Skeleton, false);
         }
+        // A skeleton with no mesh — an animation file opened on its own — is
+        // nothing *but* the overlay: with it off, the viewport would be empty.
+        if self.has_bones && !model.has_geometry() {
+            self.debug.show_skeleton = true;
+        }
         if !self.has_skin && self.debug.active_material == ActiveMaterial::SkinWeights {
             self.debug.active_material = ActiveMaterial::Source;
         }
-    }
-
-    /// Re-point the animation state at `model` (the one about to be shown):
-    /// drop the clip selection and playback (they index the old model's clips)
-    /// and re-derive the capability flag that gates the Animations tab. A stale
-    /// Animations tab needs no snapping back here: the Outliner resolves its tab
-    /// against what the model offers every frame ([`OutlinerState::tab`]).
-    pub fn reset_animation_state(&mut self, model: &ModelData) {
-        self.animation = AnimationUiState {
-            has_clips: !model.animations.is_empty(),
-            ..AnimationUiState::default()
-        };
-    }
-
-    /// Select clip `clip` (or none), landing paused on its first frame; the app's
-    /// clock picks the change up on the next frame.
-    pub fn select_clip(&mut self, model: &ModelData, clip: Option<usize>) {
-        let clip = clip.filter(|&index| index < model.animations.len());
-        self.animation.selected_clip = clip;
-        self.animation.playing = false;
-        self.animation.time = clip.map_or(0.0, |index| model.animations[index].time_begin);
     }
 
     /// The stats overlay's three scoped columns, re-summed only when the

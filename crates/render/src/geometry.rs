@@ -12,7 +12,8 @@
 //! reorder; [`select`] the selection/visibility draw lists; [`wireframe`] the
 //! model wireframe; [`markers`] the pivot and bounding box; [`normal_lines`] the
 //! face and vertex normals; [`uv_seams`] the seam view; [`skeleton`] the bone
-//! overlay; [`skin`] the weight heat map; [`uv`] the UV viewport geometry.
+//! overlay; [`trajectory`] the animation curves; [`skin`] the weight heat map;
+//! [`uv`] the UV viewport geometry.
 //!
 //! [`ModelData`]: review_model::ModelData
 
@@ -27,6 +28,7 @@ mod normal_lines;
 mod select;
 mod skeleton;
 mod skin;
+mod trajectory;
 mod uv;
 mod uv_seams;
 mod vertex;
@@ -43,6 +45,7 @@ pub(crate) use select::{selected_triangle_mask, selection_geometry, visible_geom
 pub use skeleton::{BONE_PICK_TOLERANCE_POINTS, pick_bone_shape, posed_joint_positions};
 pub(crate) use skeleton::{BoneTint, skeleton_fill_triangles, skeleton_lines};
 pub(crate) use skin::skin_weight_vertices;
+pub(crate) use trajectory::{trajectory_geometry, trajectory_node_colors};
 pub(crate) use uv::{
     UvNodeScope, hsv_to_rgb, uv_fill_triangles, uv_highlight_triangles, uv_wireframe_lines,
 };

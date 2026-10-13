@@ -11,6 +11,11 @@ ui-transport-next-frame = Next frame
 ui-transport-loop = Loop playback
     .description = Plays the animation over and over. This is on to begin with. With it
         off, the animation stops when it reaches the last frame.
+ui-transport-curves = Animation curves
+    .description = Draws the path every moving bone or object takes through this
+        animation, each in a color of its own, with a dot on every frame and a larger
+        one where it is now. The skeleton's bones take the same colors. Select bones
+        or objects to show only their paths.
 
 # The frame counter beside the scrubber: current frame, last frame, and the time
 # in seconds. On a narrow window this moves into the scrubber's tooltip.

@@ -5,10 +5,16 @@ workspace, and has four parts.
 
 ## File
 
-- **Open File...** asks for a model to open, the same as the open shortcut
-  (see [Keyboard and mouse](keyboard.md)).
-- **Open Recent** lists the last ten models you opened, the newest at the
-  top. Point at one to see where it is saved, and click it to open it again.
+- **Open File...** asks for files to open, the same as the open shortcut
+  (see [Keyboard and mouse](keyboard.md)): a model, and any animation files to
+  play on it.
+- **Add Animations...** asks for animation files to add to the model that is
+  open, so their animations play on it. See
+  [Getting a model in](getting-a-model-in.md#a-model-and-its-animation-files).
+  It is greyed out while no model is open.
+- **Open Recent** lists the last ten files you opened, the newest at the
+  top. Point at one to see where it is saved, and click it to open it again;
+  that works the same way as dropping it on the window.
   **Clear Recent Files** at the bottom empties the list. A file that has been
   moved or deleted is taken off the list the next time you try to open it.
   The list is kept between sessions whether or not **Remember Settings** is

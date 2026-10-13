@@ -64,6 +64,24 @@ ui-panels-bone-color = Bone Color
     .description = The color of the bones. A bone you have selected in the Outliner is
         drawn in the highlight color instead, so you can always find it.
 
+## Animation curves
+
+ui-panels-curve-shape = Shape
+    .description = How the line runs from one frame's dot to the next. Smooth draws a
+        curve through the dots; Straight joins them with straight lines. The dots are
+        where the bone really is on each frame either way - the line between them is
+        only drawn, not measured.
+ui-panels-curve-width = Line Width
+    .description = How thick the curves are. It is measured on the screen, not in the
+        model, so a curve keeps the same weight however close you zoom in.
+ui-panels-curve-opacity = Line Opacity
+    .description = How solid the curves are. Lower it to see the model through a dense
+        tangle of paths. The dots stay solid, so the frames still read.
+ui-panels-curve-dot-size = Dot Size
+    .description = How large the dot on every frame is. The spacing between the dots is
+        the speed: close together where the bone moves slowly, far apart where it moves
+        fast.
+
 ## Vertex colors
 
 ui-panels-color-mode = Color Mode

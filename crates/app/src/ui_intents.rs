@@ -120,6 +120,7 @@ impl App {
     fn apply_menu_intent(&mut self, intent: MenuIntent) {
         match intent {
             MenuIntent::OpenFile => self.open_model_from_dialog(),
+            MenuIntent::AddAnimations => self.add_animations_from_dialog(),
             MenuIntent::OpenRecent(index) => self.open_recent_file(index),
             MenuIntent::ClearRecentFiles => self.clear_recent_files(),
             MenuIntent::CloseFile => self.reset_to_start_state(),
@@ -159,6 +160,7 @@ impl App {
     pub(crate) fn handle_menu_command(&mut self, command: MenuCommand) {
         let intent = match command {
             MenuCommand::Open => MenuIntent::OpenFile,
+            MenuCommand::AddAnimations => MenuIntent::AddAnimations,
             MenuCommand::New => MenuIntent::CloseFile,
             MenuCommand::OpenRecent(index) => MenuIntent::OpenRecent(index),
             MenuCommand::ClearRecentFiles => MenuIntent::ClearRecentFiles,

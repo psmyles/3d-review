@@ -233,7 +233,7 @@ impl App {
         let clips = model.animations.len();
         let playing = clips > 0;
         if playing {
-            self.ui.animation.selected_clip = Some(0);
+            self.ui.animation.selected_clip = Some(review_model::ClipId { file: 0, clip: 0 });
             self.ui.animation.playing = true;
             self.ui.animation.looping = true;
         }

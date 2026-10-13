@@ -57,10 +57,12 @@ impl DeformLayout {
         self.morph = Vec::new();
     }
 
-    /// Build the layout for `model`, or `None` when it needs no deform path
-    /// (no skin, no blend shapes, no clips) or has no nodes to attach to.
-    pub(crate) fn build(model: &ModelData) -> Option<Self> {
-        if !model.needs_deform() || model.nodes.is_empty() {
+    /// Build the layout for `model`, or `None` when it needs no deform path —
+    /// no skin, no blend shapes, no clips of its own, and not `posed` (a pose
+    /// handed over for it, as clips attached from another file are) — or has no
+    /// nodes to attach to.
+    pub(crate) fn build(model: &ModelData, posed: bool) -> Option<Self> {
+        if !(model.needs_deform() || posed) || model.nodes.is_empty() {
             return None;
         }
         let node_count = model.nodes.len();
@@ -203,14 +205,14 @@ mod tests {
 
     #[test]
     fn a_static_model_has_no_layout() {
-        assert!(DeformLayout::build(&base_model()).is_none());
+        assert!(DeformLayout::build(&base_model(), false).is_none());
     }
 
     #[test]
     fn rigid_corners_reference_their_node_entry() {
         let mut model = base_model();
         model.animations.push(AnimationClip::default());
-        let layout = DeformLayout::build(&model).expect("a clip needs the deform path");
+        let layout = DeformLayout::build(&model, false).expect("a clip needs the deform path");
         assert_eq!(layout.influences.len(), 3);
         assert_eq!(layout.influences[1].entry, 1);
         assert_eq!(layout.influences[1].weight, 1.0);
@@ -243,7 +245,7 @@ mod tests {
             clusters: vec![cluster(0), cluster(2)],
             deformers: Vec::new(),
         });
-        let layout = DeformLayout::build(&model).expect("skinned");
+        let layout = DeformLayout::build(&model, false).expect("skinned");
         // 3 node entries + one shared 2-entry run.
         assert_eq!(layout.influences.len(), 5);
         assert_eq!(layout.corner[0], [3, 2, 0, 0]);
@@ -277,7 +279,7 @@ mod tests {
             position: vec![Vec3::X, Vec3::Y],
             normal: vec![Vec3::ZERO, Vec3::ZERO],
         });
-        let layout = DeformLayout::build(&model).expect("morphed");
+        let layout = DeformLayout::build(&model, false).expect("morphed");
         assert_eq!(layout.corner[0][2..], [0, 0]);
         assert_eq!(layout.corner[1][2..], [0, 2]);
         assert_eq!(layout.corner[2][2..], [2, 0]);

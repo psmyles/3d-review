@@ -1,7 +1,7 @@
 //! The scene graph: nodes, what kind of thing each one is, and the rest pose
 //! transform a clip overrides.
 
-use glam::{Mat4, Quat, Vec3};
+use glam::{Mat3, Mat4, Quat, Vec3};
 
 /// A material's *import-time defaults* — the immutable source values an FBX
 /// declares, used only to seed the renderer's editable material table (the
@@ -159,5 +159,103 @@ impl Default for SceneNode {
             kind: NodeKind::Other,
             bone: None,
         }
+    }
+}
+
+/// One of the six signed directions a file's coordinate system can name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Axis {
+    PositiveX,
+    NegativeX,
+    PositiveY,
+    NegativeY,
+    PositiveZ,
+    NegativeZ,
+}
+
+impl Axis {
+    /// The axis for a `ufbx_coordinate_axis` code, or `None` for
+    /// `UFBX_COORDINATE_AXIS_UNKNOWN` and anything past it.
+    pub fn from_code(code: u32) -> Option<Self> {
+        Some(match code {
+            0 => Axis::PositiveX,
+            1 => Axis::NegativeX,
+            2 => Axis::PositiveY,
+            3 => Axis::NegativeY,
+            4 => Axis::PositiveZ,
+            5 => Axis::NegativeZ,
+            _ => return None,
+        })
+    }
+
+    /// The unit vector this axis points along.
+    pub fn direction(self) -> Vec3 {
+        match self {
+            Axis::PositiveX => Vec3::X,
+            Axis::NegativeX => Vec3::NEG_X,
+            Axis::PositiveY => Vec3::Y,
+            Axis::NegativeY => Vec3::NEG_Y,
+            Axis::PositiveZ => Vec3::Z,
+            Axis::NegativeZ => Vec3::NEG_Z,
+        }
+    }
+
+    /// A stable identifier for logs (`+Y`); never shown in the interface.
+    pub fn label(self) -> &'static str {
+        match self {
+            Axis::PositiveX => "+X",
+            Axis::NegativeX => "-X",
+            Axis::PositiveY => "+Y",
+            Axis::NegativeY => "-Y",
+            Axis::PositiveZ => "+Z",
+            Axis::NegativeZ => "-Z",
+        }
+    }
+}
+
+/// The axis system a file declares: which of its coordinate axes point right, up
+/// and toward the viewer. Import converts units but never axes, so a file's
+/// coordinates are read in its own system and this is what says what that is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CoordinateAxes {
+    pub right: Axis,
+    pub up: Axis,
+    pub front: Axis,
+}
+
+impl CoordinateAxes {
+    /// The system three `ufbx_coordinate_axis` codes name, or `None` when any of
+    /// them is unknown or two lie along the same line — which is what a file
+    /// that declares nothing produces.
+    pub fn from_codes(right: u32, up: u32, front: u32) -> Option<Self> {
+        let axes = Self {
+            right: Axis::from_code(right)?,
+            up: Axis::from_code(up)?,
+            front: Axis::from_code(front)?,
+        };
+        let [r, u, f] = axes.directions();
+        (r.dot(u) == 0.0 && u.dot(f) == 0.0 && f.dot(r) == 0.0).then_some(axes)
+    }
+
+    fn directions(self) -> [Vec3; 3] {
+        [
+            self.right.direction(),
+            self.up.direction(),
+            self.front.direction(),
+        ]
+    }
+
+    /// The rotation that takes a direction written in this system to the same
+    /// direction written in `target`: right to right, up to up, front to front.
+    /// `None` when the two are of opposite handedness, which no rotation can
+    /// map — only a mirror can.
+    pub fn rotation_to(self, target: Self) -> Option<Quat> {
+        let [r, u, f] = self.directions();
+        let [tr, tu, tf] = target.directions();
+        // Both bases are orthonormal, so the inverse of `source` is its transpose.
+        let source = Mat3::from_cols(r, u, f);
+        let target = Mat3::from_cols(tr, tu, tf);
+        let rotation = target * source.transpose();
+        (rotation.determinant() > 0.0).then(|| Quat::from_mat3(&rotation).normalize())
     }
 }
