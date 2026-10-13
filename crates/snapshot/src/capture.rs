@@ -5,8 +5,8 @@ use glam::{Vec2, Vec3};
 use image::RgbaImage;
 use review_model::Bounds;
 use review_render::{
-    ActiveMaterial, AntiAliasing, BufferView, CameraProjection, EnvironmentSettings, Gpu,
-    GtaoSettings, MaterialMode, OrbitCamera, Renderer, RendererConfig, SceneDebugOptions,
+    ActiveMaterial, AntiAliasing, BufferView, CameraProjection, EnvironmentSettings, FramingArea,
+    Gpu, GtaoSettings, MaterialMode, OrbitCamera, Renderer, RendererConfig, SceneDebugOptions,
     SceneFrame, SelectionView, ShadingMode, TonemapSettings, ViewportBackground,
 };
 
@@ -21,6 +21,9 @@ pub struct Capture {
     gpu: Gpu,
     renderer: Renderer,
     size: (u32, u32),
+    /// Pixels covered on the left, top, right and bottom, as the viewer's chrome
+    /// covers its scene: framed around, then dimmed.
+    chrome: [u32; 4],
     background: ViewportBackground,
     grid: bool,
     /// The renderer caches a mesh's GPU buffers by revision, so every subject
@@ -31,7 +34,12 @@ pub struct Capture {
 }
 
 impl Capture {
-    pub fn new(size: (u32, u32), background: ViewportBackground, grid: bool) -> Result<Self> {
+    pub fn new(
+        size: (u32, u32),
+        chrome: [u32; 4],
+        background: ViewportBackground,
+        grid: bool,
+    ) -> Result<Self> {
         let gpu = Gpu::headless(size.0, size.1).context("bringing the GPU up without a window")?;
         let mut renderer = Renderer::new(RendererConfig::default());
         renderer.set_camera_aspect_ratio(size.0 as f32 / size.1 as f32);
@@ -39,6 +47,7 @@ impl Capture {
             gpu,
             renderer,
             size,
+            chrome,
             background,
             grid,
             next_revision: 1,
@@ -46,15 +55,22 @@ impl Capture {
         })
     }
 
-    /// The camera for `view`, framed on `bounds`.
+    /// The camera for `view`, framed on `bounds` into what the chrome leaves.
     pub fn camera(&self, view: &View, bounds: Bounds) -> OrbitCamera {
+        let (width, height) = (self.size.0 as f32, self.size.1 as f32);
+        let [left, top, right, bottom] = self.chrome.map(|inset| inset as f32);
+        let area = FramingArea {
+            aspect_ratio: width / height,
+            visible_min: Vec2::new(left / width, top / height),
+            visible_max: Vec2::new(1.0 - right / width, 1.0 - bottom / height),
+        };
         let mut camera = OrbitCamera {
             yaw: view.yaw_degrees.to_radians(),
             pitch: view.pitch_degrees.to_radians().clamp(-1.5, 1.5),
             aspect_ratio: self.size.0 as f32 / self.size.1 as f32,
             ..OrbitCamera::default()
         }
-        .framed_to_bounds(bounds, Vec2::ONE);
+        .framed_to_bounds(bounds, area, CameraProjection::Perspective);
         if let Some(focus) = view.focus {
             camera.target = bounds.min + Vec3::from_array(focus) * bounds.size();
         }
@@ -148,7 +164,26 @@ impl Capture {
             }
         }
         let pixels = self.gpu.read_back()?;
-        RgbaImage::from_raw(self.size.0, self.size.1, pixels)
-            .ok_or_else(|| anyhow!("the read-back frame is the wrong size"))
+        let mut image = RgbaImage::from_raw(self.size.0, self.size.1, pixels)
+            .ok_or_else(|| anyhow!("the read-back frame is the wrong size"))?;
+        // Not the normals look: `compare` reads that one back pixel by pixel.
+        if look != Look::Normals {
+            self.dim_chrome(&mut image);
+        }
+        Ok(image)
+    }
+
+    /// Darken what the chrome covers, leaving enough of it to see what a
+    /// framing put underneath.
+    fn dim_chrome(&self, image: &mut RgbaImage) {
+        let [left, top, right, bottom] = self.chrome;
+        let (width, height) = self.size;
+        for (x, y, pixel) in image.enumerate_pixels_mut() {
+            if x < left || y < top || x >= width - right || y >= height - bottom {
+                for channel in &mut pixel.0[..3] {
+                    *channel = (u16::from(*channel) * 3 / 10 + 20) as u8;
+                }
+            }
+        }
     }
 }

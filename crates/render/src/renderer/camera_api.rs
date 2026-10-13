@@ -7,8 +7,8 @@
 use glam::{Vec2, Vec3};
 use review_model::Bounds;
 
-use crate::camera::{CameraTransition, OrbitCamera};
-use crate::{GRID_BOUNDS, HOME_FILL_FRACTION, Renderer};
+use crate::camera::{CameraTransition, FramingArea, OrbitCamera};
+use crate::{CameraProjection, GRID_BOUNDS, HOME_FILL_FRACTION, Renderer};
 
 /// Which of the two orbit cameras a gesture drives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,10 +53,18 @@ impl Renderer {
         self.uv_camera.reset();
     }
 
-    /// Set the fraction of the viewport that subsequent framing should fill, so
-    /// the model lands inside the band left visible by the toolbar / status bar.
-    pub fn set_framing_safe_area(&mut self, width_fraction: f32, height_fraction: f32) {
-        self.framing_safe_area = Vec2::new(width_fraction, height_fraction);
+    /// Set where subsequent framing puts the model: the shape of the image the
+    /// main camera is drawn into, and the part of it the chrome leaves visible,
+    /// seen through `projection`. `app` calls this every frame, after laying the
+    /// chrome out, because a side panel can be resized or closed at any time.
+    pub fn set_framing_area(&mut self, area: FramingArea, projection: CameraProjection) {
+        self.framing_area = area;
+        self.framing_projection = projection;
+    }
+
+    /// `camera` framed on `bounds` into the live framing area.
+    fn framed(&self, camera: OrbitCamera, bounds: Bounds) -> OrbitCamera {
+        camera.framed_to_bounds(bounds, self.framing_area, self.framing_projection)
     }
 
     pub fn orbit_camera(&mut self, delta: Vec2) {
@@ -153,7 +161,7 @@ impl Renderer {
     }
 
     pub fn animate_camera_to_bounds(&mut self, bounds: Bounds) {
-        self.animate_camera_to(self.camera.framed_to_bounds(bounds, self.framing_safe_area));
+        self.animate_camera_to(self.framed(self.camera, bounds));
     }
 
     /// Snap (no animation) to a framing of `bounds`. Used when a model is
@@ -161,17 +169,17 @@ impl Renderer {
     /// only delay showing the model already framed.
     pub fn snap_camera_to_bounds(&mut self, bounds: Bounds) {
         self.camera_transition = None;
-        self.camera = self.camera.framed_to_bounds(bounds, self.framing_safe_area);
+        self.camera = self.framed(self.camera, bounds);
     }
 
     pub fn animate_camera_to_offset_direction(&mut self, direction: Vec3) {
         self.animate_camera_to(self.camera.with_offset_direction(direction));
     }
 
-    /// The default "home" view, re-framed for the live aspect ratio and the
-    /// chrome-aware safe area so the whole grid stays visible regardless of
-    /// window shape. Shared by the animated reset and the instant startup frame
-    /// so both land on exactly the same view. Framed through the user's field of
+    /// The default "home" view, re-framed into the live framing area so the
+    /// whole grid stays visible whatever the window's shape and whichever panels
+    /// are open. Shared by the animated reset and the instant startup frame so
+    /// both land on exactly the same view. Framed through the user's field of
     /// view, not the default one, so a wide lens still fits the grid.
     fn home_camera(&self) -> OrbitCamera {
         let home = OrbitCamera {
@@ -179,9 +187,13 @@ impl Renderer {
             fov_y_radians: self.camera.fov_y_radians,
             ..OrbitCamera::default()
         };
-        // Fill only a fraction of the safe area so the grid sits back from the
-        // edges (see HOME_FILL_FRACTION) instead of filling the window.
-        home.framed_to_bounds(GRID_BOUNDS, self.framing_safe_area * HOME_FILL_FRACTION)
+        // Fill only a fraction of the area so the grid sits back from the
+        // edges (see HOME_FILL_FRACTION) instead of filling it.
+        home.framed_to_bounds(
+            GRID_BOUNDS,
+            self.framing_area.shrunk(HOME_FILL_FRACTION),
+            self.framing_projection,
+        )
     }
 
     /// Animate back to the home view.

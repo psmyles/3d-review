@@ -255,6 +255,43 @@ an out-of-range index out of `model.triangles.node`.
 
 So that a future renderer swap only touches `render`.
 
+### Framing fits what the user can see, not the image the camera draws
+
+A single view is drawn across the whole window with the chrome painted over it,
+so a framed model has to land in the window *less* the toolbar, status bar,
+Outliner and Inspector — an area that need not be centred, since the two side
+panels are sized independently. The Opt and Aud splits are the opposite case:
+each view is an image of its own and nothing covers it, but it is half as wide,
+while `app` keeps the main camera's aspect at the window's and the renderer
+corrects it only at draw time. Fitting at the window's shape with a height-only
+"safe area" — what `F` used to do — put a wide model's sides under the side
+panels in 3D and cut a split view down to its middle.
+
+`app`'s `sync_framing_area` hands the renderer a `FramingArea` (the image's
+shape and the visible fraction of it) **every frame**, after the egui pass has
+measured the chrome, because panels are resized and closed at any time.
+`OrbitCamera::framed_to_bounds` fits the box's corners into it exactly: a
+closed-form distance per axis and a bisected centring pan. It replaced a
+six-pass iteration whose last pan move came after its last distance fit, so the
+pair it returned had never been checked together.
+`a_framed_box_lands_inside_the_visible_area` pins it over 3,600 framings.
+
+Centring in an off-centre area pans the pivot off the model's centre, so an
+orbit after `F` swings the model a little. With both panels at their default
+width the area is centred and nothing changes. Keeping the pivot on the model
+would take an off-axis projection, which GTAO's view-space reconstruction, the
+pick ray and the label projection would all have to learn.
+
+The fit is per projection. Orthographic sees every corner at its size at the
+pivot, and perspective binds on the near ones, so a perspective fit seen
+orthographically overflowed by up to a third. Holding both at once costs
+perspective up to a quarter of its fill, so each is fit for itself, and a
+projection toggle may want a second `F`. Orthographic's view size is tied to the
+distance, so it also holds the distance where no orbit can swing the model
+through the near plane. That clearance is measured round the *pivot*, which the
+centring pan has moved (`orthographic_clearance`, pinned by
+`an_orthographic_framing_survives_an_orbit`).
+
 ---
 
 ## Import and the FBX libraries

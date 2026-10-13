@@ -94,7 +94,7 @@ fn run() -> Result<()> {
     );
 
     std::fs::create_dir_all(&args.out)?;
-    let mut capture = Capture::new(args.size, args.background, args.grid)?;
+    let mut capture = Capture::new(args.size, args.chrome, args.background, args.grid)?;
     let columns: Vec<String> = args.views.iter().map(|view| view.name.clone()).collect();
     let cameras: Vec<_> = args
         .views

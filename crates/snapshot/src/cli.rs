@@ -30,6 +30,9 @@ OPTIONS
                         checker
                         (default shaded)
   --frame <n>           frame every view on subject n's bounds instead of on all of them
+  --chrome <l,t,r,b>    pixels of each view the viewer's chrome covers on the left, top,
+                        right and bottom (its panels and bars): frame into what they
+                        leave, as the viewer does, and dim them so the sheet shows it
   --background <name>   black, grey25, grey50, grey75, white, gradient (default grey25)
   --grid                draw the ground grid
   --compare             measure each subject's shading normals against the first's,
@@ -49,6 +52,8 @@ pub struct Args {
     pub views: Vec<View>,
     pub looks: Vec<Look>,
     pub frame_on: Option<usize>,
+    /// Pixels of each view covered on the left, top, right and bottom.
+    pub chrome: [u32; 4],
     pub background: ViewportBackground,
     pub grid: bool,
     pub compare: bool,
@@ -130,6 +135,7 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
         views: Vec::new(),
         looks: Vec::new(),
         frame_on: None,
+        chrome: [0; 4],
         background: ViewportBackground::Grey25,
         grid: false,
         compare: false,
@@ -168,6 +174,7 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
                         .context("--frame takes an index")?,
                 )
             }
+            "--chrome" => args.chrome = parse_chrome(&value("--chrome")?)?,
             "--background" => args.background = parse_background(&value("--background")?)?,
             "--grid" => args.grid = true,
             "--compare" => args.compare = true,
@@ -180,6 +187,15 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
     }
     if args.inputs.is_empty() {
         return Ok(None);
+    }
+    let [left, top, right, bottom] = args.chrome;
+    if left + right >= args.size.0 || top + bottom >= args.size.1 {
+        bail!(
+            "--chrome {:?} covers the whole {}x{} view",
+            args.chrome,
+            args.size.0,
+            args.size.1
+        );
     }
     if args.views.is_empty() {
         args.views = vec![parse_view("iso")?, parse_view("iso-back")?];
@@ -199,6 +215,18 @@ fn parse_size(text: &str) -> Result<(u32, u32)> {
         bail!("--size {text} is out of range");
     }
     Ok(size)
+}
+
+fn parse_chrome(text: &str) -> Result<[u32; 4]> {
+    let numbers: Vec<u32> = text
+        .split(',')
+        .map(|n| n.trim().parse::<u32>())
+        .collect::<Result<_, _>>()
+        .with_context(|| format!("--chrome takes left,top,right,bottom in pixels: {text}"))?;
+    match numbers[..] {
+        [left, top, right, bottom] => Ok([left, top, right, bottom]),
+        _ => bail!("--chrome takes four numbers: {text}"),
+    }
 }
 
 fn parse_view(text: &str) -> Result<View> {

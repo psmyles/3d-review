@@ -72,7 +72,7 @@ One `impl App` block per concern, one file each:
 | `events.rs` | `UserEvent`: the cross-module message bus every worker posts back through |
 | `redraw.rs` | Redraw pacing — `RedrawScheduler` and the `about_to_wait` body that drives it |
 | `frame.rs` | The per-frame render loop, including the camera-animation tick |
-| `input.rs` | Pointer / scroll / resize / pinch routing, the drag mode, the zoom sensitivities, the framing safe area |
+| `input.rs` | Pointer / scroll / resize / pinch routing, the drag mode, the zoom sensitivities, the framing area (`sync_framing_area`, every frame from the chrome just laid out) |
 | `shortcuts.rs` | Keyboard dispatch (the help tables in `ui` mirror it) |
 | `flycam.rs` | The RMB-held WASD/QE flycam: held-key direction bits, integrated once per frame |
 | `loading.rs` | The model-load funnel — drag-drop, Ctrl+O, double-click, CLI/file association |
@@ -293,7 +293,9 @@ the whole GPU layer.
   `TonemapSettings`, `SceneDebugOptions`, `RendererConfig`.
 - `camera.rs` — `OrbitCamera` (framing / orbit / pan / zoom, ortho and
   perspective, reversed-Z infinite perspective, plus the flycam's `look` — which
-  turns about the eye rather than the pivot — and `fly`), `UvCamera`,
+  turns about the eye rather than the pivot — and `fly`), `FramingArea` (the
+  image a camera draws and the part of it the chrome leaves, which framing fits
+  into exactly, per projection — see GOTCHAS), `UvCamera`,
   `CameraTransition`
   (0.3 s ease-in-out cubic) and the shared `ease_in_out_cubic` curve the chrome's
   own animations reuse.
@@ -746,6 +748,9 @@ reports how a simplified mesh's vertices relate to its source's — kept or move
 normals copied or refit (`inspect.rs`). The two are how the simplifier's shading
 was matched against a commercial tool's output, and they are the way to check a
 change to it: e.g. `review-snapshot --look matte --compare src.fbx src.fbx@lods`.
+`--chrome l,t,r,b` frames each view into what the viewer's panels and bars would
+leave, at their pixel sizes, and dims the covered bands. That is how framing is
+checked against a real model without the window.
 
 ### Vendored trees
 
