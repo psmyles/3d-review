@@ -4,9 +4,9 @@
 //! A path follows the node's **pivot** — the origin of its `node_to_world`. For
 //! a bone that is its joint, the point the skeleton overlay draws it from; for an
 //! object it is the point the animator keyed, which is also what a DCC's motion
-//! trail follows. It is sampled once per frame of the clip at the file's rate:
-//! exactly the frames the transport steps through, and the keys themselves,
-//! since `ufbx_bake_anim` bakes at that rate.
+//! trail follows. It is sampled once per frame of the clip at the clip's own
+//! rate: exactly the frames the transport steps through, and the keys
+//! themselves, since `ufbx_bake_anim` bakes at that rate.
 //!
 //! Only nodes the clip can move are walked ([`super::clip_moved_nodes`]: every
 //! node it tracks, and everything under one). Of those, two get no path:
@@ -20,7 +20,7 @@
 
 use glam::Vec3;
 
-use crate::{AnimationClip, ModelData, frame_rate_or_default};
+use crate::{AnimationClip, ModelData};
 
 use super::{AnimContext, Pose, clip_moved_nodes, evaluate_pose};
 
@@ -39,18 +39,12 @@ pub struct NodePath {
     pub points: Vec<Vec3>,
 }
 
-/// The path of every node `clip` moves, at `fps`, in node order.
+/// The path of every node `clip` moves, in node order.
 ///
 /// One pose evaluation per frame, so the cost is the clip's frame count times
 /// the scene's node count — the mesh is never touched. Built when the overlay is
 /// switched on or the clip changes, never per drawn frame.
-pub fn clip_paths(
-    model: &ModelData,
-    ctx: &AnimContext,
-    clip: &AnimationClip,
-    fps: f64,
-) -> Vec<NodePath> {
-    let fps = frame_rate_or_default(fps);
+pub fn clip_paths(model: &ModelData, ctx: &AnimContext, clip: &AnimationClip) -> Vec<NodePath> {
     let moved = clip_moved_nodes(model, ctx, clip);
 
     // A skinned mesh is moved by its clusters' bones, not by its own node.
@@ -70,20 +64,14 @@ pub fn clip_paths(
         return Vec::new();
     }
 
-    let frames = clip.frame_count(fps);
+    let frames = clip.frame_count();
     let mut points: Vec<Vec<Vec3>> = candidates
         .iter()
         .map(|_| Vec::with_capacity(frames))
         .collect();
     let mut pose = Pose::new(model);
     for frame in 0..frames {
-        evaluate_pose(
-            model,
-            ctx,
-            Some(clip),
-            clip.frame_time(frame, fps),
-            &mut pose,
-        );
+        evaluate_pose(model, ctx, Some(clip), clip.frame_time(frame), &mut pose);
         for (path, &node) in points.iter_mut().zip(&candidates) {
             path.push(pose.world[node].w_axis.truncate());
         }
@@ -191,7 +179,6 @@ mod tests {
                 min: Vec3::splat(-1.0),
                 max: Vec3::splat(2.0),
             }),
-            frame_rate: 10.0,
             ..ModelData::default()
         };
         model.nodes[1].transform = Mat4::from_translation(Vec3::Y);
@@ -207,6 +194,7 @@ mod tests {
             name: "clip".to_owned(),
             time_begin: 0.0,
             time_end: 1.0,
+            frame_rate: 10.0,
             tracks,
             ..AnimationClip::default()
         }
@@ -234,11 +222,11 @@ mod tests {
             ..NodeTrack::default()
         }]);
 
-        let paths = clip_paths(&model, &ctx, &clip, model.frame_rate);
+        let paths = clip_paths(&model, &ctx, &clip);
         let nodes: Vec<u32> = paths.iter().map(|path| path.node).collect();
         assert_eq!(nodes, [1, 2], "the root never moves");
 
-        let frames = clip.frame_count(model.frame_rate);
+        let frames = clip.frame_count();
         assert_eq!(frames, 11);
         for path in &paths {
             assert_eq!(path.points.len(), frames, "one point per frame");
@@ -272,7 +260,7 @@ mod tests {
             ..NodeTrack::default()
         }]);
 
-        let paths = clip_paths(&model, &ctx, &clip, model.frame_rate);
+        let paths = clip_paths(&model, &ctx, &clip);
         let nodes: Vec<u32> = paths.iter().map(|path| path.node).collect();
         assert_eq!(nodes, [2]);
     }
@@ -310,7 +298,7 @@ mod tests {
             ..NodeTrack::default()
         }]);
 
-        let paths = clip_paths(&model, &ctx, &clip, model.frame_rate);
+        let paths = clip_paths(&model, &ctx, &clip);
         let nodes: Vec<u32> = paths.iter().map(|path| path.node).collect();
         assert_eq!(nodes, [1]);
     }
@@ -320,7 +308,7 @@ mod tests {
     fn a_clip_with_no_tracks_has_no_paths() {
         let model = chain();
         let ctx = AnimContext::new(&model);
-        assert!(clip_paths(&model, &ctx, &clip(Vec::new()), model.frame_rate).is_empty());
+        assert!(clip_paths(&model, &ctx, &clip(Vec::new())).is_empty());
     }
 
     /// One path per node of `chain`, so a path's index is its node's.

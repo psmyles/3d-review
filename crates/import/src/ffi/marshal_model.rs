@@ -348,6 +348,9 @@ pub(super) fn marshal_animations(
                 name: stack.name().unwrap_or_default(),
                 time_begin: stack.time_begin,
                 time_end: stack.time_end,
+                // The rate the bridge baked every stack at; its 30 fps fallback
+                // for an undeclared rate is the model's DEFAULT_FRAME_RATE.
+                frame_rate: scene.frames_per_second,
                 tracks,
                 morph_tracks,
             })

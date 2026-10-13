@@ -20,7 +20,6 @@ pub(super) fn animations_tab(ui: &mut egui::Ui, state: &mut UiState, model: &Mod
     }
 
     let query = state.outliner.search.trim().to_lowercase();
-    let fps = model.frame_rate_or_default();
     let selected = state.animation.selected_clip;
     // Deferred like every Outliner mutation: the rows are drawn against one
     // consistent selection, then the click is applied.
@@ -42,8 +41,9 @@ pub(super) fn animations_tab(ui: &mut egui::Ui, state: &mut UiState, model: &Mod
         // Frames are numbered from the clip's first frame, so a clip spanning
         // `n` frame intervals reads as `n` frames long — what the transport's
         // "frame / total" readout counts to.
-        let frames = clip.frame_count(fps).saturating_sub(1);
+        let frames = clip.frame_count().saturating_sub(1);
         let duration = clip.duration();
+        let fps = clip.frame_rate_or_default();
 
         let (response, content, trailing) = widgets::list_row(
             ui,

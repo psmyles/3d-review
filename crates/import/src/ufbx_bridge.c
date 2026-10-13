@@ -730,12 +730,21 @@ static int review_import_alloc_geometry(
         return 0;
     }
 
-    out_scene->vertices = (review_import_vertex*)calloc(totals->corners, sizeof(review_import_vertex));
-    out_scene->indices = (uint32_t*)calloc(index_count, sizeof(uint32_t));
-    out_scene->faces = (review_import_face*)calloc(totals->faces, sizeof(review_import_face));
-    out_scene->tri_to_face = (uint32_t*)calloc(totals->triangles, sizeof(uint32_t));
-    out_scene->tri_material = (uint32_t*)calloc(totals->triangles, sizeof(uint32_t));
-    out_scene->tri_node = (uint32_t*)calloc(totals->triangles, sizeof(uint32_t));
+    /* A skeleton-only file has no mesh, so every count here can be zero, and
+       `calloc(0, ...)` may return NULL, which the check below would read as out
+       of memory. Each buffer therefore gets at least one element; the counts
+       stored below stay the true ones, so Rust still sees empty slices. */
+    out_scene->vertices = (review_import_vertex*)calloc(
+        totals->corners > 0 ? totals->corners : 1, sizeof(review_import_vertex));
+    out_scene->indices = (uint32_t*)calloc(index_count > 0 ? index_count : 1, sizeof(uint32_t));
+    out_scene->faces = (review_import_face*)calloc(
+        totals->faces > 0 ? totals->faces : 1, sizeof(review_import_face));
+    out_scene->tri_to_face = (uint32_t*)calloc(
+        totals->triangles > 0 ? totals->triangles : 1, sizeof(uint32_t));
+    out_scene->tri_material = (uint32_t*)calloc(
+        totals->triangles > 0 ? totals->triangles : 1, sizeof(uint32_t));
+    out_scene->tri_node = (uint32_t*)calloc(
+        totals->triangles > 0 ? totals->triangles : 1, sizeof(uint32_t));
     if (!out_scene->vertices || !out_scene->indices || !out_scene->faces ||
         !out_scene->tri_to_face || !out_scene->tri_material || !out_scene->tri_node) {
         review_import_set_error(out_error, "out of memory while allocating imported mesh");
@@ -753,7 +762,8 @@ static int review_import_alloc_geometry(
     /* The corner -> logical-vertex map is allocated for every model, skinned or
        not: it is 4 bytes per render vertex, and having it unconditionally keeps
        the fill pass free of a "is this scene skinned" branch. */
-    out_scene->corner_source_vertex = (uint32_t*)calloc(totals->corners, sizeof(uint32_t));
+    out_scene->corner_source_vertex = (uint32_t*)calloc(
+        totals->corners > 0 ? totals->corners : 1, sizeof(uint32_t));
     if (!out_scene->corner_source_vertex) {
         review_import_set_error(out_error, "out of memory while allocating imported mesh");
         return 0;
@@ -1926,8 +1936,11 @@ int review_import_load_fbx(
         goto cleanup;
     }
 
-    if (totals.corners == 0 || totals.triangles == 0) {
-        review_import_set_error(out_error, "no triangulatable mesh data found in FBX");
+    /* No mesh is not on its own a reason to refuse the file: an animation saved
+       apart from its character is a skeleton and its clips, and the viewer shows
+       it as exactly that. Only a file with nothing to draw either way is one. */
+    if ((totals.corners == 0 || totals.triangles == 0) && scene->bones.count == 0) {
+        review_import_set_error(out_error, "no mesh or skeleton found in FBX");
         goto cleanup;
     }
 

@@ -208,7 +208,7 @@ impl App {
                 .as_ref()
                 .filter(|_| anim.model_revision == key.0)?;
             let clip = model.animations.get(key.1)?;
-            let paths = anim::clip_paths(model, context, clip, model.frame_rate_or_default());
+            let paths = anim::clip_paths(model, context, clip);
             Some(ClipPaths { key, paths })
         });
         if anim.paths.is_none() && next.is_none() {
@@ -248,18 +248,17 @@ impl App {
         self.animation.last_tick = None;
     }
 
-    /// `,` / `.`: step the selected clip one frame back / forward at the file's
+    /// `,` / `.`: step the selected clip one frame back / forward at its own
     /// frame rate, pausing playback.
     pub(crate) fn step_frame(&mut self, delta: i64) {
-        let model = self.scene_model.clone();
         let state = &mut self.ui.animation;
         let Some(clip) = state
             .selected_clip
-            .and_then(|index| model.animations.get(index))
+            .and_then(|index| self.scene_model.animations.get(index))
         else {
             return;
         };
-        state.time = clip.step_frame_time(state.time, delta, model.frame_rate_or_default());
+        state.time = clip.step_frame_time(state.time, delta);
         state.playing = false;
         self.animation.last_tick = None;
         self.redraw.requested = true;

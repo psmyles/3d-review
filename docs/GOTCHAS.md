@@ -116,6 +116,32 @@ palette should do the same.
   (`channel_effective_weights` is a verbatim port). Do not multiply the channel
   weight in again.
 
+### "No vertices" does not mean "no model"
+
+An animation file saved apart from its character is a skeleton and its clips, with
+no mesh, and it imports as exactly that. So an empty vertex buffer is no longer
+the empty start state: ask `ModelData::is_empty()` for that (no geometry *and* no
+nodes), and `has_geometry()` for "is there a triangle to draw". Two places tested
+`vertices.is_empty()` before this — the double-click-to-open and the fly-in on
+replacing a model — and would have opened a file dialog on a click at the
+skeleton.
+
+The same file is why the GPU deform tables live on `ModelSlot` beside
+`deform_layout`, not inside `MeshBuffers`: a meshless skeleton still poses its
+overlay through the palette, and with the tables hung off the mesh it drew frozen
+at rest. And it is why `posed_bounds` / `clip_bounds` / `recompute_bounds` fall
+back to the bone joints when there is no mesh — they would otherwise measure
+nothing and leave the model unframed.
+
+### A clip is timed at its own frame rate, never the model's
+
+`AnimationClip::frame_rate` is the rate the clip was baked at, and every
+frame-numbering method reads it; none takes a rate from the caller. A clip can be
+played on a model from another file, and the two disagree in practice — the Eve
+rig is saved at 24 fps and its animations at 30 — so a caller-supplied rate was a
+standing invitation to number one file's clip by the other's. `ModelData::
+frame_rate` is still there, but only as the scene setting a re-export declares.
+
 ---
 
 ## GPU struct layout and the render passes

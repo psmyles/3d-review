@@ -182,32 +182,29 @@ impl SceneGpu {
         // (invariant 1 - the morph table is the model's blend shapes over again);
         // only the per-corner lanes stay, since every mesh-derived overlay copies
         // them.
+        //
+        // The tables are built whether or not there is a mesh: a skeleton with no
+        // mesh (an animation file opened on its own) is posed through the same
+        // palette, by its overlay's node lanes.
         let model_changed = self.active.mesh_revision != model_revision;
         if model_changed {
+            self.active.deform = None;
             self.active.deform_layout = DeformLayout::build(model);
+            if let Some(layout) = &mut self.active.deform_layout {
+                self.active.deform = DeformGpu::new(layout)?;
+                layout.release_tables();
+            }
         }
         let (vertices, indices, ranges) = model_mesh(model, self.active.lanes(), uv_channel, key);
-        let kept_deform = self.active.mesh.take().and_then(|mesh| mesh.deform);
-        self.active.mesh = if indices.is_empty() {
-            None
-        } else {
-            let deform = match (&mut self.active.deform_layout, model_changed) {
-                (Some(layout), true) => {
-                    let deform = DeformGpu::new(layout)?;
-                    layout.release_tables();
-                    deform
-                }
-                (Some(_), false) => kept_deform,
-                (None, _) => None,
-            };
-            Some(MeshBuffers {
+        self.active.mesh = None;
+        if !indices.is_empty() {
+            self.active.mesh = Some(MeshBuffers {
                 // Pullable, so the wireframe reads these bytes rather than a copy.
                 vertices: VertexBuffer::pullable(&vertices, c"mesh")?,
                 indices: IndexBuffer::new(&indices, c"mesh")?,
                 ranges,
-                deform,
-            })
-        };
+            });
+        }
         self.active.mesh_revision = model_revision;
         self.active.mesh_uv_channel = uv_channel;
         self.active.mesh_material_mode = mode;

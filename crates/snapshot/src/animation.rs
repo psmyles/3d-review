@@ -39,18 +39,17 @@ pub fn pose(
             model.animations.len()
         );
     };
-    let fps = model.frame_rate_or_default();
     let ctx = AnimContext::new(model);
     let frame = clip
         .frame
         .unwrap_or(0)
-        .min(animation.frame_count(fps).saturating_sub(1));
+        .min(animation.frame_count().saturating_sub(1));
     let mut pose = Pose::new(model);
     anim::evaluate_pose(
         model,
         &ctx,
         Some(animation),
-        animation.frame_time(frame, fps),
+        animation.frame_time(frame),
         &mut pose,
     );
     let mut deform = DeformPose::default();
@@ -59,7 +58,7 @@ pub fn pose(
         "posed on clip {} '{}', frame {frame} of {}",
         clip.index,
         animation.name,
-        animation.frame_count(fps)
+        animation.frame_count()
     );
 
     let mut selected_bones = Vec::new();
@@ -91,7 +90,7 @@ pub fn pose(
     selected_nodes.dedup();
 
     let paths = if curves {
-        anim::clip_paths(model, &ctx, animation, fps)
+        anim::clip_paths(model, &ctx, animation)
     } else {
         Vec::new()
     };
@@ -102,7 +101,7 @@ pub fn pose(
 
     Ok(Posed {
         deform,
-        envelope: anim::clip_bounds(model, &ctx, animation, fps),
+        envelope: anim::clip_bounds(model, &ctx, animation),
         paths,
         shown,
         selected_bones,

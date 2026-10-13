@@ -579,7 +579,7 @@ impl App {
         // the model already framed — a fly-in from the home view would only
         // delay it. Replacing an already-loaded model keeps the animated
         // re-frame so the view change reads as a transition.
-        let animate_framing = !self.scene_model.vertices.is_empty();
+        let animate_framing = !self.scene_model.is_empty();
 
         match result {
             Ok(model) => {
@@ -742,7 +742,9 @@ impl App {
     }
 
     pub(crate) fn should_open_on_double_click(&self) -> bool {
-        if !self.scene_model.vertices.is_empty() {
+        // Only on the empty start state: a skeleton with no mesh has no vertices
+        // either, and a double-click there is a click on the model.
+        if !self.scene_model.is_empty() {
             return false;
         }
 

@@ -310,17 +310,16 @@ fn load_fbx_staged(
 ///
 /// Split out of the import funnel so it can run *after* the model is drawn (see
 /// [`load_model_with_progress`]); it lives here rather than in the caller so the
-/// two things a caller could get wrong — using the file's own frame rate, and
-/// building the [`AnimContext`] once rather than per clip — are decided once.
+/// [`AnimContext`] is built once rather than per clip. Each clip is stepped at
+/// its own frame rate.
 pub fn measure_clip_bounds(model: &ModelData) -> Vec<Option<review_model::Bounds>> {
     if model.animations.is_empty() {
         return Vec::new();
     }
     let ctx = AnimContext::new(model);
-    let fps = model.frame_rate_or_default();
     model
         .animations
         .iter()
-        .map(|clip| review_model::anim::clip_bounds(model, &ctx, clip, fps))
+        .map(|clip| review_model::anim::clip_bounds(model, &ctx, clip))
         .collect()
 }

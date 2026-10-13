@@ -705,6 +705,11 @@ impl UiState {
             self.debug.show_skeleton = false;
             self.panels_open.set(OptionPanel::Skeleton, false);
         }
+        // A skeleton with no mesh — an animation file opened on its own — is
+        // nothing *but* the overlay: with it off, the viewport would be empty.
+        if self.has_bones && !model.has_geometry() {
+            self.debug.show_skeleton = true;
+        }
         if !self.has_skin && self.debug.active_material == ActiveMaterial::SkinWeights {
             self.debug.active_material = ActiveMaterial::Source;
         }

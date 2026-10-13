@@ -247,9 +247,8 @@ fn draw_transport(
         left_rect.center().y,
     );
     let rect = egui::Rect::from_center_size(centre, egui::vec2(width, group_height));
-    let fps = model.frame_rate_or_default();
     bar_group_scope(ui, rect, group_height, |ui| {
-        transport::transport_row(ui, state, clip, fps);
+        transport::transport_row(ui, state, clip);
     });
 }
 

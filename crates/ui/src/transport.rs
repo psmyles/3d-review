@@ -73,14 +73,9 @@ fn rail_budget(available: f32, controls: f32, readout: f32, gap: f32) -> RailBud
 /// *widest* string this clip can produce (plus a trailing pad), so a frame
 /// counter or an elapsed time gaining a digit can't shove the right-hand
 /// controls sideways.
-pub(crate) fn transport_row(
-    ui: &mut egui::Ui,
-    state: &mut UiState,
-    clip: &AnimationClip,
-    fps: f64,
-) {
+pub(crate) fn transport_row(ui: &mut egui::Ui, state: &mut UiState, clip: &AnimationClip) {
     let anim = &mut state.animation;
-    let last_frame = clip.frame_count(fps).saturating_sub(1);
+    let last_frame = clip.frame_count().saturating_sub(1);
     // Square tiles the height of the speed dropdown — `compact_combo` sizes its
     // button from `PANEL_ROW_H`, so every control in the row reads as one band.
     let tile = egui::Vec2::splat(size::PANEL_ROW_H);
@@ -97,7 +92,7 @@ pub(crate) fn transport_row(
         // words and their order around them are the catalog's.
         let digits = last_frame.to_string().len();
         let readout = keys::ui_transport::readout(
-            format!("{:>digits$}", clip.frame_at(anim.time, fps)),
+            format!("{:>digits$}", clip.frame_at(anim.time)),
             last_frame as f64,
             format!("{:.2}", (anim.time - clip.time_begin).max(0.0)),
         );
@@ -136,7 +131,7 @@ pub(crate) fn transport_row(
                 .describe(keys::ui_transport::PREVIOUS_FRAME_DESCRIPTION)
                 .page(Page::Animation),
         ) {
-            anim.time = clip.step_frame_time(anim.time, -1, fps);
+            anim.time = clip.step_frame_time(anim.time, -1);
             anim.playing = false;
         }
         let play_icon = if anim.playing {
@@ -162,13 +157,13 @@ pub(crate) fn transport_row(
                 .describe(keys::ui_transport::NEXT_FRAME_DESCRIPTION)
                 .page(Page::Animation),
         ) {
-            anim.time = clip.step_frame_time(anim.time, 1, fps);
+            anim.time = clip.step_frame_time(anim.time, 1);
             anim.playing = false;
         }
 
         // The scrubber works in whole frames; dragging it pauses playback so the
         // frame under the pointer is the one shown.
-        let mut frame = clip.frame_at(anim.time, fps) as f64;
+        let mut frame = clip.frame_at(anim.time) as f64;
         ui.spacing_mut().slider_width = rail;
         let scrub = ui.add(
             egui::Slider::new(&mut frame, 0.0..=last_frame as f64)
@@ -176,7 +171,7 @@ pub(crate) fn transport_row(
                 .show_value(false),
         );
         if scrub.changed() {
-            anim.time = clip.frame_time(frame.round().max(0.0) as usize, fps);
+            anim.time = clip.frame_time(frame.round().max(0.0) as usize);
             anim.playing = false;
         }
         if !readout_shown {

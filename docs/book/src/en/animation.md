@@ -13,7 +13,8 @@ as facial expressions) are handled the same way.
 ## Clips
 
 Every animation in the file becomes a clip. Clips are sampled at the file's
-own frame rate, and nothing is thrown away.
+own frame rate, and nothing is thrown away. Frames are always counted at the
+rate of the file a clip came from.
 
 Click a clip in the Outliner's Animations tab to select it. The model pauses on
 the clip's first frame and the playback controls appear in the status bar: go
@@ -26,6 +27,18 @@ If the window is narrow, the scrubber shrinks first, and then the readout
 tucks itself into the scrubber's tooltip, so the controls always stay reachable.
 
 `Space` plays and pauses; `,` and `.` step one frame back or forward.
+
+## Animation files with no model in them
+
+Animations are often saved in files of their own, apart from the character they
+were made for. Such a file holds a skeleton and its clips but no surface, and
+3D Review opens it as exactly that: the skeleton, with the
+[skeleton](panels/skeleton.md) overlay switched on so there is something to
+see, ready to play. `F` frames the skeleton's joints, and while a clip is
+selected, the whole area they move through.
+
+A file with neither a surface nor a skeleton in it has nothing to show, and is
+refused with a message saying so.
 
 ## Animation curves
 

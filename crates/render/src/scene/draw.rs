@@ -55,10 +55,7 @@ impl SceneGpu {
 
     /// The active model's deform tables, if it has any.
     pub(super) fn active_deform(&self) -> Option<&DeformGpu> {
-        self.active
-            .mesh
-            .as_ref()
-            .and_then(|mesh| mesh.deform.as_ref())
+        self.active.deform.as_ref()
     }
 
     /// Which of the active mesh's index lists the frame draws, and its per-material

@@ -92,6 +92,20 @@ pub struct ModelData {
 }
 
 impl ModelData {
+    /// True when the model has a triangle to draw. False for an animation file
+    /// opened on its own, which is a skeleton and its clips, and for the empty
+    /// start state.
+    pub fn has_geometry(&self) -> bool {
+        !self.vertices.is_empty() && !self.indices.is_empty()
+    }
+
+    /// True for the empty start state: nothing to draw and no scene graph. A
+    /// skeleton with no mesh is *not* empty — "no vertices" stopped meaning "no
+    /// model" when animation files could be opened on their own.
+    pub fn is_empty(&self) -> bool {
+        !self.has_geometry() && self.nodes.is_empty()
+    }
+
     /// True when drawing this model needs the GPU deform path at all: it carries
     /// skin or blend-shape data (always deformed, even at rest, since the rest
     /// pose is the file's default pose, not the bind pose) or any clip that
@@ -177,11 +191,20 @@ impl ModelData {
             .collect()
     }
 
+    /// Measure [`ModelData::bounds`] from the vertex buffer — or, for a model
+    /// with no mesh, from its joints at rest, since a skeleton is then all there
+    /// is to frame.
     pub fn recompute_bounds(&mut self) {
         let mut bounds = Bounds::EMPTY;
 
-        for vertex in &self.vertices {
-            bounds.include_point(vertex.position);
+        if self.has_geometry() {
+            for vertex in &self.vertices {
+                bounds.include_point(vertex.position);
+            }
+        } else {
+            for node in self.nodes.iter().filter(|node| node.kind == NodeKind::Bone) {
+                bounds.include_point(node.transform.w_axis.truncate());
+            }
         }
 
         self.bounds = (!bounds.is_empty()).then_some(bounds);
@@ -291,12 +314,16 @@ impl ModelData {
 
     /// Bounds over only the geometry whose owning node is *not* in `hidden_nodes`
     /// — the box for the Outliner's currently-visible meshes. Falls back to the
-    /// full [`ModelData::bounds`] when nothing is hidden or the model carries no
-    /// per-triangle node info (so visibility can't be resolved). `None` when no
-    /// visible geometry remains (every mesh hidden, or an empty model).
+    /// full [`ModelData::bounds`] when nothing is hidden, the model carries no
+    /// per-triangle node info (so visibility can't be resolved), or it has no
+    /// mesh at all (a skeleton is framed whole). `None` when no visible geometry
+    /// remains (every mesh hidden, or an empty model).
     pub fn visible_bounds(&self, hidden_nodes: &[u32]) -> Option<Bounds> {
         let triangle_count = self.indices.len() / 3;
-        if hidden_nodes.is_empty() || self.triangles.node.len() != triangle_count {
+        if hidden_nodes.is_empty()
+            || !self.has_geometry()
+            || self.triangles.node.len() != triangle_count
+        {
             return self.bounds;
         }
         let hidden: std::collections::HashSet<u32> = hidden_nodes.iter().copied().collect();

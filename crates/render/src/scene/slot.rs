@@ -188,8 +188,6 @@ pub(super) struct MeshBuffers {
     pub(super) vertices: VertexBuffer,
     pub(super) indices: IndexBuffer,
     pub(super) ranges: Vec<MaterialDrawRange>,
-    /// The GPU deform tables, `None` for a model that never deforms.
-    pub(super) deform: Option<DeformGpu>,
 }
 
 /// The build-on-demand derived views (invariant 3): each buffer exists only while
@@ -309,6 +307,11 @@ pub(super) struct ModelSlot {
     /// revision) — the per-corner lanes every mesh-derived overlay copies.
     /// `None` for a model that never deforms.
     pub(super) deform_layout: Option<DeformLayout>,
+    /// The GPU deform tables, `None` for a model that never deforms. The
+    /// model's, not the mesh's: a skeleton with no mesh (an animation file opened
+    /// on its own) still poses its overlay through the palette, so these exist
+    /// whether or not `mesh` does.
+    pub(super) deform: Option<DeformGpu>,
     pub(super) mesh_revision: u64,
     pub(super) mesh_uv_channel: u32,
     pub(super) mesh_material_mode: MaterialMode,
@@ -434,12 +437,11 @@ impl ModelSlot {
             .map_or(&[], |layout| layout.corner.as_slice())
     }
 
-    /// Whether this frame's mesh draws through the deform path: the model has
-    /// deform tables and a matching pose has been uploaded.
+    /// Whether this frame draws through the deform path: the model has deform
+    /// tables and a matching pose has been uploaded.
     pub(super) fn deform_enabled(&self) -> bool {
-        self.mesh
+        self.deform
             .as_ref()
-            .and_then(|mesh| mesh.deform.as_ref())
             .is_some_and(|deform| deform.palette_revision.is_some())
     }
 }
