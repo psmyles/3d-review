@@ -111,33 +111,58 @@ pub(crate) fn simplify_submeshes(
     // is the only case the seam diagnosis below applies to.
     let mut seam_bound = false;
 
-    for piece in submeshes.iter_mut() {
+    // One object at a time: a node's material pieces are one surface, and the
+    // simplifier spends the object's budget across all of them by error (see
+    // `ops::simplify_object`). Nodes in the order their first piece appears.
+    let mut nodes: Vec<u32> = Vec::new();
+    for piece in submeshes.iter() {
+        if !nodes.contains(&piece.node) {
+            nodes.push(piece.node);
+        }
+    }
+    for node in nodes {
         if cancelled(cancel) {
             return worst_error;
         }
-        if is_excluded(stack, piece.node) {
+        if is_excluded(stack, node) {
             continue;
         }
-        let (settings, target) = settings_for(piece);
+        let mut pieces: Vec<&mut Submesh> = submeshes
+            .iter_mut()
+            .filter(|piece| piece.node == node)
+            .collect();
+        // Settings resolve per node (an override names a node), so any piece
+        // answers for all of them.
+        let (settings, target) = settings_for(pieces[0]);
         seam_bound |= settings.algorithm != SimplifyAlgorithm::Sloppy && !settings.flags.permissive;
 
-        // The ratio is applied per submesh, which is the only interpretation
+        // The ratio is applied per object, which is the only interpretation
         // consistent with processing them independently: a 50% target means each
         // object keeps half its triangles, not that the scene total halves while
         // one object vanishes.
         let ratio = target.target_ratio.clamp(0.0, 1.0);
-        let triangles = ((piece.triangle_count() as f32) * ratio).round() as usize;
-        let before = piece.triangle_count();
+        let before: usize = pieces.iter().map(|piece| piece.triangle_count()).sum();
+        let triangles = ((before as f32) * ratio).round() as usize;
 
-        match ops::simplify(piece, &settings, triangles, target.target_error.max(0.0)) {
+        match ops::simplify_object(
+            &mut pieces,
+            &settings,
+            triangles,
+            target.target_error.max(0.0),
+        ) {
             Ok(error) => worst_error = worst_error.max(error),
             Err(error) => warnings.push(OptWarning::OperationFailed {
                 operation: operation.clone(),
                 detail: error.to_string(),
             }),
         }
+        let after: usize = submeshes
+            .iter()
+            .filter(|piece| piece.node == node)
+            .map(Submesh::triangle_count)
+            .sum();
         requested += before.saturating_sub(triangles);
-        produced += before.saturating_sub(piece.triangle_count());
+        produced += before.saturating_sub(after);
     }
 
     // A topology-preserving collapse cannot cross an attribute discontinuity, and

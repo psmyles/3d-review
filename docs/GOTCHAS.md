@@ -38,6 +38,14 @@ return value only proves it did not error. Each test skips itself when its fixtu
 or a vendored tree is absent. `tests/remesh.rs` and `tests/remesh_fidelity.rs`
 are the Remesh pair — see [Remesh](#remesh) for why validity alone is not enough.
 
+**Render checks can be scripted, headlessly.** `review-snapshot` (see
+[ARCHITECTURE](ARCHITECTURE.md#snapshot--review-snapshot)) draws through the
+real renderer on a windowless GPU and writes PNGs; `--compare` turns "the
+shading looks different" into a number — the per-pixel angle between two
+meshes' shading normals from the same cameras — and `--inspect` says what a
+simplifier did to the vertices. It still needs a real GPU, so it is a tool to
+run by hand, not a test.
+
 **The shaders are validated by the build, not by a test.** `fxc /WX` (or `xcrun
 metal`) in `render`'s `build.rs` rejects a broken shader.
 
@@ -247,6 +255,43 @@ an out-of-range index out of `model.triangles.node`.
 
 So that a future renderer swap only touches `render`.
 
+### Framing fits what the user can see, not the image the camera draws
+
+A single view is drawn across the whole window with the chrome painted over it,
+so a framed model has to land in the window *less* the toolbar, status bar,
+Outliner and Inspector — an area that need not be centred, since the two side
+panels are sized independently. The Opt and Aud splits are the opposite case:
+each view is an image of its own and nothing covers it, but it is half as wide,
+while `app` keeps the main camera's aspect at the window's and the renderer
+corrects it only at draw time. Fitting at the window's shape with a height-only
+"safe area" — what `F` used to do — put a wide model's sides under the side
+panels in 3D and cut a split view down to its middle.
+
+`app`'s `sync_framing_area` hands the renderer a `FramingArea` (the image's
+shape and the visible fraction of it) **every frame**, after the egui pass has
+measured the chrome, because panels are resized and closed at any time.
+`OrbitCamera::framed_to_bounds` fits the box's corners into it exactly: a
+closed-form distance per axis and a bisected centring pan. It replaced a
+six-pass iteration whose last pan move came after its last distance fit, so the
+pair it returned had never been checked together.
+`a_framed_box_lands_inside_the_visible_area` pins it over 3,600 framings.
+
+Centring in an off-centre area pans the pivot off the model's centre, so an
+orbit after `F` swings the model a little. With both panels at their default
+width the area is centred and nothing changes. Keeping the pivot on the model
+would take an off-axis projection, which GTAO's view-space reconstruction, the
+pick ray and the label projection would all have to learn.
+
+The fit is per projection. Orthographic sees every corner at its size at the
+pivot, and perspective binds on the near ones, so a perspective fit seen
+orthographically overflowed by up to a third. Holding both at once costs
+perspective up to a quarter of its fill, so each is fit for itself, and a
+projection toggle may want a second `F`. Orthographic's view size is tied to the
+distance, so it also holds the distance where no orbit can swing the model
+through the near plane. That clearance is measured round the *pivot*, which the
+centring pan has moved (`orthographic_clearance`, pinned by
+`an_orthographic_framing_survives_an_orbit`).
+
 ---
 
 ## Import and the FBX libraries
@@ -438,6 +483,72 @@ it. `process` detects the stall and says so.
 The default weld comparing normals is *correct* for the tool's stated target of
 static game meshes, so do not "fix" it by loosening the defaults.
 
+### A simplifier's survivors must be refit, or a flat face shades in blotches
+
+A collapse-based simplify keeps some of the source's vertices and drops the
+rest — and a kept vertex's normal describes the few small faces it had at full
+detail. Game assets soften their edges, so the vertices along a bevel lean into
+it. Collapse the middle of a flat face away and the triangles left stretch from
+bevel to bevel; with their old normals the lean is interpolated across the whole
+face, and it reads as dark and light patches. That was the Standard simplifier,
+the default until it was measured against a commercial tool's output on the
+same budgets: on an arch whose stone faces are bevelled panels, 11.7 degrees of
+mean shading error at a quarter of the triangles against the other tool's 1.4.
+`--inspect` showed what the other tool does differently — it *moves* about half
+its vertices off the source positions, and re-derives the normals even where it
+keeps a position.
+
+`WithAttributes` now does both through `meshopt_simplifyWithUpdate`, and it is
+the default. Measured with `review-snapshot --compare` over ten assets, eight
+views, three levels each, at equal triangle counts: survivors kept as they were,
+11.5 degrees; attributes weighed but nothing moved, 6.0; weighed and refit, 4.7,
+with the silhouette tighter too. **Refitting is most of it** — refit alone, with
+normals weighed at almost nothing, already gives 5.9. An attribute left at weight
+zero is therefore still refit (`REFIT_WEIGHT`): meshoptimizer neither weighs nor
+rewrites a zero-weighted attribute, and a vertex that moves without its UVs drags
+the texture with it. The refit value does not depend on the weight, so a tiny one
+is exact. The default normal weight (0.25) is where the measured trade between
+shading and silhouette sits best; weighing normals harder (1.0) shades slightly
+better and loses silhouette. **Do not "simplify" back to keeping survivors as
+they were** — it is the bug.
+
+Only a vertex inside a smooth surface or at a junction of seams moves; one on an
+open border or a two-sided seam stays put, and a vertex that moves takes every
+vertex at its position with it, bit for bit. That is what keeps UV seams, hard
+edges and material borders closed.
+
+### A simplify budget is per object, never per material
+
+`Submesh` is a (node, material) piece, and the simplifier used to be handed one
+piece at a time with the ratio applied to each. That spends triangles by
+material rather than by shape: on the arch, 91 % of the triangles are a dense
+decorative trim and 9 % the stone faces, and a quarter of each left the trim
+with detail nobody could see and cut each stone's curved outline to a chord — the
+silhouette visibly faceted where the other tool's stayed round. It also opened
+the material borders: each side of a border collapsed its shared edge on its
+own, leaving T-junctions (`a_material_border_does_not_open` fails four edges
+open on the old path). `ops::simplify_object` simplifies a node's pieces as one
+mesh, so the border is an attribute seam both sides keep and the budget goes
+wherever the error is lowest across the object. The ratio is still per *object*
+— a scene's objects do not trade triangles with each other, so none vanishes to
+pay for another. The sloppy simplifier stays per piece, since it clusters
+vertices without regard to which piece they came from.
+
+### The error limit bounds the shape; attribute error must not spend it
+
+Inside meshoptimizer the attribute error rides in the same figure as the
+position error, so a single attribute-aware run stops as soon as the *shading*
+has drifted the limit's worth, however little the surface moved. On the
+fixtures that held most levels far short of their targets — a column stayed at
+8430 triangles for every level of a chain asking for 5000, 2500 and 1250. The
+limit is documented as a limit on how far the surface moves, so
+`ops::simplify_appearance` runs a position-only pass first to find how far the
+limit allows, then the attribute-aware pass to exactly that count with no limit
+of its own, and reports the position-only pass's error. With pruning on, the
+loose pieces that first pass removed are dropped before the second, which then
+prunes nothing — a second pass with no limit would otherwise be free to prune
+anything to reach its count.
+
 ### Re-keying operation ids is a two-pass job
 
 `OptStack::reassign_ids` builds the whole old→new map before rewriting a single
@@ -503,10 +614,12 @@ render corners are the same point. An imported mesh answers from
 corner-splits every face corner and comparing vertex indices would find no shared
 edges at all. An Opt-processed level carries no such map, so
 `geometry::uv_seams::welded_logical_ids` welds by **(owning node, exact position
-bits)** instead. Exact is correct, not a shortcut: `optimize` never synthesizes a
-position outside Remesh and Shrinkwrap, which rebuild whole objects — every other
-operation drops vertices or copies whole ones — so a processed position is bit
-for bit one the source had. The node is in the key because reassembly
+bits)** instead. Exact is correct, not a shortcut: outside Remesh and Shrinkwrap,
+which rebuild whole objects, the only operation that synthesizes a position is
+the attribute-aware simplify, and it moves a vertex together with every vertex
+at the same position, writing the same bits to each — every other operation
+drops vertices or copies whole ones — so the copies of a processed point still
+share their position bit for bit. The node is in the key because reassembly
 concatenates per-object buffers, and a bare position weld would fuse two objects
 that merely touch and hide the border each really has.
 

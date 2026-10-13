@@ -43,13 +43,23 @@ impl Default for WeldParams {
 }
 
 /// Which simplifier runs, and what it is asked to preserve.
+///
+/// Every one of them works an object at a time: a node's material pieces are
+/// simplified together toward one budget (`ops::simplify_object`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SimplifyAlgorithm {
-    /// Topology-preserving, position error only. The safe default.
-    #[default]
+    /// Topology-preserving, position error only. Every surviving vertex keeps
+    /// its exact source position, normal, UVs and colour — which is also why its
+    /// shading degrades: a survivor's normal describes the faces it had at full
+    /// detail, not the larger ones the collapses leave it with.
     Standard,
-    /// Topology-preserving, and additionally penalizes attribute drift so
-    /// normals / UVs / colors stay closer to the original.
+    /// Topology-preserving, weighing how far normals / UVs / colours would drift
+    /// beside the position error, and moving every survivor to the point that
+    /// best fits its surface with those attributes refit there. The default: the
+    /// refit is what keeps a simplified level shading like its source (see
+    /// `ops::simplify_appearance` for the measurements). The serialized name
+    /// predates the refit and is kept so presets still load.
+    #[default]
     WithAttributes,
     /// Ignores topology: much faster and hits the target far more reliably, but
     /// can close holes and merge nearby shells. Best for the smallest levels.
@@ -74,7 +84,9 @@ impl SimplifyAlgorithm {
 
 /// How much each attribute resists being distorted, used only by
 /// [`SimplifyAlgorithm::WithAttributes`]. Higher weights preserve the attribute
-/// harder at the cost of geometric accuracy; `0.0` ignores it entirely.
+/// harder at the cost of geometric accuracy. `0.0` stops an attribute steering
+/// which edges collapse; it is still refit wherever a survivor moves, so it
+/// stays attached to the surface.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AttributeWeights {
@@ -85,10 +97,16 @@ pub struct AttributeWeights {
 
 impl Default for AttributeWeights {
     fn default() -> Self {
-        // meshoptimizer's own demo uses weights around 1.0 for normals and
-        // noticeably lower for UVs; colors matter least for silhouette.
+        // Measured with `review-snapshot --compare` over ten real assets, three
+        // levels each, at equal triangle counts (mean shading-normal error /
+        // silhouette mismatch against the source): normal 1.0 gave 4.51 deg /
+        // 2.83 %, 0.5 gave 4.76 / 2.72, 0.25 gave 4.73 / 2.68 and 0.1 gave
+        // 5.18 / 2.54. Most of the shading comes from the refit itself; weighing
+        // normals harder than this buys little and costs silhouette. The UV
+        // weight barely moved either figure (0.1 to 1.0); colours matter least
+        // for silhouette, and are refit whenever they vary anyway.
         Self {
-            normal: 1.0,
+            normal: 0.25,
             uv: 0.5,
             color: 0.0,
         }

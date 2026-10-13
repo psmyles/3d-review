@@ -28,7 +28,9 @@ use windows::Win32::Graphics::Direct3D::{
     D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL,
     D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
 };
-#[cfg(feature = "bake")]
+#[cfg(feature = "headless")]
+use windows::Win32::Graphics::Direct3D11::{D3D11_BIND_RENDER_TARGET, D3D11_USAGE_DEFAULT};
+#[cfg(any(feature = "bake", feature = "headless"))]
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC,
     D3D11_USAGE_STAGING,
@@ -182,7 +184,7 @@ impl Device {
 /// backbuffer.
 pub(crate) struct Swapchain {
     device: ID3D11Device,
-    swap_chain: IDXGISwapChain1,
+    surface: Surface,
     /// The backbuffer's view, created on demand ([`Self::render_view`]) and dropped
     /// on resize — `ResizeBuffers` refuses to run while one is outstanding.
     rtv: Option<ID3D11RenderTargetView>,
@@ -194,6 +196,17 @@ pub(crate) struct Swapchain {
     /// so `present(false)` would measure the monitor. The shipped viewer always
     /// presents with vsync on and never sees this; the D2 gate is what needs it.
     tearing: bool,
+}
+
+/// What a [`Swapchain`]'s backbuffer is.
+enum Surface {
+    /// The window's DXGI flip-model chain — the viewer's only kind.
+    Window(IDXGISwapChain1),
+    /// A plain render-target texture that nothing presents, for the headless
+    /// `review-snapshot` tool: the frame is drawn exactly as on screen and then
+    /// read back. Created on demand like the window's view, and dropped on resize.
+    #[cfg(feature = "headless")]
+    Offscreen(Option<ID3D11Texture2D>),
 }
 
 impl Swapchain {
@@ -256,12 +269,99 @@ impl Swapchain {
         };
         Ok(Swapchain {
             device: device.device.clone(),
-            swap_chain,
+            surface: Surface::Window(swap_chain),
             rtv: None,
             width,
             height,
             tearing,
         })
+    }
+
+    /// A `width`×`height` backbuffer with no window behind it: an ordinary
+    /// render-target texture in the swapchain format, which [`Self::present`]
+    /// leaves alone and [`Self::read_back`] copies to the CPU. Everything the frame
+    /// draws reaches it exactly as it would reach the window's.
+    #[cfg(feature = "headless")]
+    pub(crate) fn offscreen(device: &Device, width: u32, height: u32) -> GpuResult<Self> {
+        let mut swapchain = Swapchain {
+            device: device.device.clone(),
+            surface: Surface::Offscreen(None),
+            rtv: None,
+            width: width.max(1),
+            height: height.max(1),
+            tearing: false,
+        };
+        // Created now rather than on the first frame, so a device that cannot make
+        // the target fails here, where the caller can report it.
+        swapchain.backbuffer().map(|_| swapchain)
+    }
+
+    /// The offscreen backbuffer's pixels as tight `R8G8B8A8` rows, top row first —
+    /// what the last frame drew, once [`crate::rhi::Frame::finish`] has committed it.
+    #[cfg(feature = "headless")]
+    pub(crate) fn read_back(&mut self) -> GpuResult<Vec<u8>> {
+        if !matches!(self.surface, Surface::Offscreen(_)) {
+            return Err(GpuError::invalid_arg(
+                "only an offscreen swapchain can be read back",
+            ));
+        }
+        let texture = self.backbuffer()?;
+        // SAFETY: plain query on the live device; the context it returns is the
+        // immediate one sokol draws through, used here on the same thread.
+        let context = unsafe { self.device.GetImmediateContext() }
+            .resource(ResourceKind::Texture, "readback context")?;
+        read_texture(
+            &self.device,
+            &context,
+            &texture,
+            0,
+            (self.width, self.height),
+            SWAPCHAIN_DXGI_FORMAT,
+            4,
+        )
+    }
+
+    /// The texture the frame draws into: the chain's buffer 0, or the offscreen
+    /// texture (created if a resize dropped it).
+    fn backbuffer(&mut self) -> GpuResult<ID3D11Texture2D> {
+        match &mut self.surface {
+            Surface::Window(chain) => {
+                // SAFETY: buffer 0 of a live flip-model swapchain.
+                let buffer = unsafe { chain.GetBuffer(0) };
+                buffer.resource(ResourceKind::Swapchain, "swapchain buffer")
+            }
+            #[cfg(feature = "headless")]
+            Surface::Offscreen(texture) => {
+                if let Some(texture) = texture {
+                    return Ok(texture.clone());
+                }
+                let desc = D3D11_TEXTURE2D_DESC {
+                    Width: self.width,
+                    Height: self.height,
+                    MipLevels: 1,
+                    ArraySize: 1,
+                    Format: SWAPCHAIN_DXGI_FORMAT,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
+                    Usage: D3D11_USAGE_DEFAULT,
+                    BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
+                    CPUAccessFlags: 0,
+                    MiscFlags: 0,
+                };
+                let mut made = None;
+                // SAFETY: a render-target texture with no initial data on the live
+                // device; the out-param is populated on success.
+                unsafe { self.device.CreateTexture2D(&desc, None, Some(&mut made)) }
+                    .resource(ResourceKind::Swapchain, "offscreen backbuffer")?;
+                let made = made.ok_or_else(|| {
+                    GpuError::invalid_arg("the offscreen backbuffer was not created")
+                })?;
+                *texture = Some(made.clone());
+                Ok(made)
+            }
+        }
     }
 
     /// The backbuffer size in physical pixels.
@@ -284,6 +384,22 @@ impl Swapchain {
         if width == 0 || height == 0 {
             return;
         }
+        #[cfg_attr(
+            not(feature = "headless"),
+            expect(
+                clippy::infallible_destructuring_match,
+                reason = "the window is the only surface without the headless feature"
+            )
+        )]
+        let chain = match &mut self.surface {
+            Surface::Window(chain) => chain,
+            #[cfg(feature = "headless")]
+            Surface::Offscreen(texture) => {
+                // Recreated at the new size on the next acquire.
+                *texture = None;
+                return;
+            }
+        };
         // The flags must repeat what the chain was created with — `ResizeBuffers`
         // treats them as the new flag set, so passing 0 here would quietly drop
         // tearing support on the first resize.
@@ -294,10 +410,8 @@ impl Swapchain {
         };
         // SAFETY: the view — the only outstanding reference to a backbuffer — was
         // released above; 0/UNKNOWN keep the existing buffer count and format.
-        if let Err(err) = unsafe {
-            self.swap_chain
-                .ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, flags)
-        } {
+        let resized = unsafe { chain.ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, flags) };
+        if let Err(err) = resized {
             log::error!("swapchain ResizeBuffers failed: {err}");
         }
     }
@@ -329,16 +443,16 @@ impl Swapchain {
     /// `sg_swapchain` takes, creating it if a resize dropped it.
     fn render_view(&mut self) -> Option<*const c_void> {
         if self.rtv.is_none() {
-            // SAFETY: buffer 0 of a live flip-model swapchain; the out-pointer is a
-            // live local, written only on success.
+            let back = match self.backbuffer() {
+                Ok(back) => back,
+                Err(err) => {
+                    log::error!("swapchain GetBuffer failed: {err}");
+                    return None;
+                }
+            };
+            // SAFETY: `back` is a live render-target texture on this device; the
+            // out-pointer is a live local, written only on success.
             self.rtv = unsafe {
-                let back: ID3D11Texture2D = match self.swap_chain.GetBuffer(0) {
-                    Ok(back) => back,
-                    Err(err) => {
-                        log::error!("swapchain GetBuffer failed: {err}");
-                        return None;
-                    }
-                };
                 let mut rtv: Option<ID3D11RenderTargetView> = None;
                 match self
                     .device
@@ -364,6 +478,19 @@ impl Swapchain {
     /// root cause, so the caller can surface it — after one, every subsequent frame
     /// silently fails.
     pub(crate) fn present(&mut self, vsync: bool) -> PresentStatus {
+        #[cfg_attr(
+            not(feature = "headless"),
+            expect(
+                clippy::infallible_destructuring_match,
+                reason = "the window is the only surface without the headless feature"
+            )
+        )]
+        let chain = match &self.surface {
+            Surface::Window(chain) => chain,
+            // Nothing to show it on; the frame stays in the texture for `read_back`.
+            #[cfg(feature = "headless")]
+            Surface::Offscreen(_) => return PresentStatus::Presented,
+        };
         // Tearing is only legal with a sync interval of 0, and only on a chain
         // created with the matching flag.
         let flags = if !vsync && self.tearing {
@@ -372,7 +499,7 @@ impl Swapchain {
             DXGI_PRESENT(0)
         };
         // SAFETY: presenting the live swapchain; no resources are mapped.
-        let hr = unsafe { self.swap_chain.Present(u32::from(vsync), flags) };
+        let hr = unsafe { chain.Present(u32::from(vsync), flags) };
         if hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET {
             // SAFETY: pure query on the live device; returns the driver's root cause
             // for the removal (hung, reset, driver error, ...).
@@ -698,7 +825,8 @@ fn create_query(
 }
 
 // ---------------------------------------------------------------------------
-// The readback leaf, for the offline bake only (Platform decisions D19)
+// The readback leaf, for the offline bake (Platform decisions D19) and the
+// headless `review-snapshot` tool only
 // ---------------------------------------------------------------------------
 
 /// Copy one subresource of a sokol image back to the CPU as tight, row-padding-free
@@ -758,12 +886,37 @@ pub(crate) fn read_image_subresource(
     let mips = sg::query_image_num_mipmaps(image).max(1) as u32;
     let subresource = mip + slice * mips;
 
+    read_texture(
+        device,
+        context,
+        source,
+        subresource,
+        (width, height),
+        dxgi_format(format),
+        bpp,
+    )
+}
+
+/// Copy one subresource of a D3D11 texture back to the CPU as tight, row-padding-free
+/// bytes, through a staging copy and `Map(READ)`. The format must be the source's
+/// own: a staging texture in any other makes `CopySubresourceRegion` a silent no-op
+/// (see [`dxgi_format`]).
+#[cfg(any(feature = "bake", feature = "headless"))]
+fn read_texture(
+    device: &ID3D11Device,
+    context: &ID3D11DeviceContext,
+    source: &ID3D11Texture2D,
+    subresource: u32,
+    (width, height): (u32, u32),
+    format: DXGI_FORMAT,
+    bpp: u32,
+) -> GpuResult<Vec<u8>> {
     let desc = D3D11_TEXTURE2D_DESC {
         Width: width,
         Height: height,
         MipLevels: 1,
         ArraySize: 1,
-        Format: dxgi_format(format),
+        Format: format,
         SampleDesc: DXGI_SAMPLE_DESC {
             Count: 1,
             Quality: 0,

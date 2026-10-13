@@ -108,6 +108,10 @@ sha2.workspace = true
 # backend, and the `bake_ibl` binary. Off by default — a normal build compiles none of
 # it, and the viewer embeds the committed baked maps instead.
 bake = ["dep:intel_tex_2"]
+# A windowless `Gpu` (`Gpu::headless`) whose frames land in an offscreen backbuffer
+# that `Gpu::read_back` copies to the CPU — what the `review-snapshot` dev tool
+# renders through. Off by default: the viewer compiles none of it.
+headless = []
 
 [[bin]]
 name = "bake_ibl"

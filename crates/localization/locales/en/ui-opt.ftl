@@ -39,11 +39,13 @@ ui-opt-exclude = Exclude from optimization
 
 ui-opt-simplifier-options = Simplifier options
 ui-opt-algorithm = Algorithm
-    .description = Standard keeps the model's shape connected and only watches how far the
-        surface moves. Preserve Attributes also tries to keep the shading, texture
-        layout and colors from drifting. Sloppy does not care about keeping the shape
-        connected: it is much faster and nearly always reaches the target, but it can
-        close up holes.
+    .description = Preserve Attributes, the default, keeps the model's shape connected,
+        weighs the shading, texture layout and colors as well as the shape, and moves the
+        points it keeps to where they best fit the original surface, so the shading stays
+        clean. Standard only watches how far the surface moves and leaves every point it
+        keeps exactly as it was, which can leave dark patches on flat faces. Sloppy does
+        not care about keeping the shape connected: it is much faster and nearly always
+        reaches the target, but it can close up holes.
 ui-opt-triangles = Triangles
     .description = What share of the triangles to keep.
 ui-opt-error-limit = Error limit
@@ -70,11 +72,12 @@ ui-opt-preserve-folds = Preserve folds
         slower.
 ui-opt-clamp-attribute-error = Clamp attribute error
     .description = Stops the shading, texture layout and colors from counting for more than
-        the shape itself. A busy texture area then no longer holds the whole model back, and
-        the error figure stays close to how far the surface really moved.
+        the shape itself when the simplifier chooses what to remove, so a busy texture area
+        does not keep all the detail to itself.
 ui-opt-attribute-weights = Attribute weights
     .description = How hard each kind of data pushes back against being changed. A higher
-        number protects it more, at the cost of a less accurate shape. Zero ignores it.
+        number protects it more, at the cost of a less accurate shape. At zero it no longer
+        decides what is removed, but it still follows the points that move.
 ui-opt-normals = Normals
 ui-opt-uvs = UVs
 ui-opt-colors = Colors
@@ -261,9 +264,11 @@ ui-opt-bake-ao-explained = Objects whose names end in _LOD and a number are shad
     surface can be and still cast a shadow, in meters; 0 means no limit. Intensity above 1
     makes the shadows darker. The alpha channel is always stored as-is. To see the result,
     switch to the Vertex Colors material. If a Preserve Attributes simplify runs after
-    this bake, raise its Colors weight above zero or it will ignore the baked shadows.
+    this bake, raise its Colors weight above zero so it keeps the detail of the baked
+    shadows; at zero it only carries them along.
 ui-opt-attribute-weights-explained = A higher weight protects that kind of data more, at
-    the cost of a less accurate shape. Zero ignores it completely.
+    the cost of a less accurate shape. At zero it no longer decides what is removed, but
+    it is still moved along with the points, so textures and colors stay in place.
 ui-opt-reduce-explained = Triangles is a share of this object's count at this point in the
     list. The simplifier stops early rather than go past the error limit. Unlike Generate
     LODs, this changes the model itself: every operation below it works on the reduced

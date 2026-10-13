@@ -18,7 +18,9 @@
 //!   bring-up thread (D8).
 //! * `Swapchain` — `new(&Device, &Window, w, h)`, `size()`, `resize(w, h)`,
 //!   `set_scale_factor(f64)`, `acquire(&mut sg::Swapchain) -> bool`,
-//!   `present(vsync) -> PresentStatus`.
+//!   `present(vsync) -> PresentStatus`; and, under the `headless` feature only,
+//!   `offscreen(&Device, w, h)` + `read_back() -> Vec<u8>` (tight RGBA8 rows) for
+//!   the windowless `review-snapshot` tool.
 
 #[cfg(windows)]
 mod d3d11;
