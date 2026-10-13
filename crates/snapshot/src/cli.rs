@@ -41,6 +41,13 @@ OPTIONS
   --inspect             report how each subject's vertices and normals relate to
                         the first subject's (kept or moved, copied or recomputed)
   --no-render           skip the images (with --inspect)
+  --clip <n>[:<frame>]  pose every subject on its clip n (0-based) at that frame
+                        (default the first), framing on the clip's whole motion
+  --curves              with --clip: draw the clip's animation curves
+  --skeleton            draw the skeleton overlay
+  --select <names>      ','-separated node names, selected as an Outliner click
+                        would: bones narrow the curves to their own, a mesh or group
+                        to everything under it
 ";
 
 /// Everything the command line asked for.
@@ -60,6 +67,18 @@ pub struct Args {
     pub singles: bool,
     pub inspect: bool,
     pub render: bool,
+    pub clip: Option<ClipSpec>,
+    pub curves: bool,
+    pub skeleton: bool,
+    pub select: Vec<String>,
+}
+
+/// Which clip to pose the subjects on, and on which of its frames.
+#[derive(Clone, Copy)]
+pub struct ClipSpec {
+    pub index: usize,
+    /// 0-based; the first frame when `None`, clamped to the last.
+    pub frame: Option<usize>,
 }
 
 /// One `INPUT` argument, parsed.
@@ -142,6 +161,10 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
         singles: false,
         inspect: false,
         render: true,
+        clip: None,
+        curves: false,
+        skeleton: false,
+        select: Vec::new(),
     };
     while let Some(argument) = arguments.next() {
         let mut value = |flag: &str| {
@@ -181,12 +204,25 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
             "--singles" => args.singles = true,
             "--inspect" => args.inspect = true,
             "--no-render" => args.render = false,
+            "--clip" => args.clip = Some(parse_clip(&value("--clip")?)?),
+            "--curves" => args.curves = true,
+            "--skeleton" => args.skeleton = true,
+            "--select" => args.select.extend(
+                value("--select")?
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned),
+            ),
             flag if flag.starts_with("--") => bail!("unknown option {flag}"),
             input => args.inputs.push(parse_input(input)?),
         }
     }
     if args.inputs.is_empty() {
         return Ok(None);
+    }
+    if args.curves && args.clip.is_none() {
+        bail!("--curves draws a clip's motion: it needs --clip");
     }
     let [left, top, right, bottom] = args.chrome;
     if left + right >= args.size.0 || top + bottom >= args.size.1 {
@@ -204,6 +240,19 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
         args.looks.push(Look::Shaded);
     }
     Ok(Some(args))
+}
+
+fn parse_clip(text: &str) -> Result<ClipSpec> {
+    let (index, frame) = match text.split_once(':') {
+        Some((index, frame)) => (index, Some(frame)),
+        None => (text, None),
+    };
+    Ok(ClipSpec {
+        index: index.trim().parse().context("--clip takes a clip index")?,
+        frame: frame
+            .map(|frame| frame.trim().parse().context("--clip's frame is a number"))
+            .transpose()?,
+    })
 }
 
 fn parse_size(text: &str) -> Result<(u32, u32)> {

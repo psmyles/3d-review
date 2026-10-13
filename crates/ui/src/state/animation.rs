@@ -61,6 +61,12 @@ pub struct AnimationUiState {
     /// Whether the loaded model carries any clip — gates the Animations tab. Set
     /// on load by [`crate::UiState::reset_animation_state`].
     pub has_clips: bool,
+    /// Whether the selected clip's animation curves are drawn — the path each
+    /// bone or animated object takes, in a color of its own that its bone
+    /// shares. The transport's toggle; off to begin with, and kept across clip
+    /// changes so stepping through clips compares their paths. `app` samples the
+    /// paths while it is on and frees them when it goes off (invariant 3).
+    pub show_curves: bool,
 }
 
 impl Default for AnimationUiState {
@@ -72,6 +78,7 @@ impl Default for AnimationUiState {
             speed: PlaybackSpeed::default(),
             time: 0.0,
             has_clips: false,
+            show_curves: false,
         }
     }
 }

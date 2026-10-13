@@ -120,6 +120,14 @@ pub(super) const OVERLAY_LINE_WIDTH: f32 = 1.0;
 pub(super) const AUDIT_EDGE_WIDTH: f32 = 2.5;
 /// Size, in points, of the Aud workspace's offender dots.
 pub(super) const AUDIT_DOT_WIDTH: f32 = 7.0;
+/// Width, in points, of an animation curve. Heavier than an overlay line: a curve
+/// is read by its colour, and a one-point line is too thin to carry one.
+pub(super) const TRAJECTORY_WIDTH: f32 = 1.5;
+/// Size, in points, of the dot on every frame of an animation curve — clearly
+/// wider than the curve, so the spacing between them reads as speed.
+pub(super) const TRAJECTORY_DOT_WIDTH: f32 = 4.0;
+/// Size, in points, of the marker at the current frame of each curve.
+pub(super) const TRAJECTORY_MARKER_WIDTH: f32 = 9.0;
 
 /// The line programs' uniforms for one view: the wireframe at the user's width and
 /// every other line at [`OVERLAY_LINE_WIDTH`], both against the view's target size.
@@ -133,6 +141,10 @@ pub(super) struct LineWidths {
     /// The Aud workspace's offender dots — zero-length lines, drawn as squares of
     /// this width.
     pub(super) audit_dot: LineUniforms,
+    /// The animation curves, their frame dots and their current-frame markers.
+    pub(super) trajectory: LineUniforms,
+    pub(super) trajectory_dot: LineUniforms,
+    pub(super) trajectory_marker: LineUniforms,
 }
 
 impl LineWidths {
@@ -146,6 +158,17 @@ impl LineWidths {
             overlay: line_uniforms(target_size, OVERLAY_LINE_WIDTH, scene.pixels_per_point),
             audit_edge: line_uniforms(target_size, AUDIT_EDGE_WIDTH, scene.pixels_per_point),
             audit_dot: line_uniforms(target_size, AUDIT_DOT_WIDTH, scene.pixels_per_point),
+            trajectory: line_uniforms(target_size, TRAJECTORY_WIDTH, scene.pixels_per_point),
+            trajectory_dot: line_uniforms(
+                target_size,
+                TRAJECTORY_DOT_WIDTH,
+                scene.pixels_per_point,
+            ),
+            trajectory_marker: line_uniforms(
+                target_size,
+                TRAJECTORY_MARKER_WIDTH,
+                scene.pixels_per_point,
+            ),
         }
     }
 }

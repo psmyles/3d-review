@@ -110,6 +110,34 @@ pub(super) struct SkeletonParams {
     pub(super) color: [f32; 4],
     pub(super) selected_color: [f32; 4],
     pub(super) hover_color: [f32; 4],
+    /// The animation curves the bones are coloured to match, as the overlay's
+    /// [`TrajectoryParams`]; `None` while the curves are off.
+    pub(super) curves: Option<TrajectoryParams>,
+}
+
+/// Bake key for the animation-curve overlay, and the part of the skeleton's that
+/// follows it: which sampling of which clip (`revision`), and which of its paths
+/// the selection leaves showing. Colours are derived from the node, so they need
+/// no key of their own.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct TrajectoryParams {
+    pub(super) revision: u64,
+    pub(super) shown: Vec<u32>,
+}
+
+impl TrajectoryParams {
+    /// Whether this key describes `overlay` — compared against the borrowed
+    /// frame input, so a steady-state frame allocates nothing.
+    pub(super) fn matches(&self, overlay: &crate::TrajectoryOverlay<'_>) -> bool {
+        self.revision == overlay.revision && self.shown == overlay.shown
+    }
+
+    pub(super) fn of(overlay: &crate::TrajectoryOverlay<'_>) -> Self {
+        Self {
+            revision: overlay.revision,
+            shown: overlay.shown.to_vec(),
+        }
+    }
 }
 
 /// Bake key for the skin-weight heat map. Only the model and the selected bone
@@ -220,6 +248,15 @@ pub(super) struct DerivedViews {
     pub(super) skeleton_fill_buf: Option<VertexBuffer>,
     pub(super) skeleton_line_buf: Option<VertexBuffer>,
     pub(super) skeleton_baked: Option<SkeletonParams>,
+    /// The animation curves: each shown path, a dot on every frame of it, and a
+    /// marker per path riding its node to the current frame. Three buffers
+    /// because each draws at its own width. All `None` while the transport's
+    /// toggle is off (invariant 3). Drawn always-on-top, like the skeleton whose
+    /// bones they colour.
+    pub(super) trajectory_line_buf: Option<VertexBuffer>,
+    pub(super) trajectory_dot_buf: Option<VertexBuffer>,
+    pub(super) trajectory_marker_buf: Option<VertexBuffer>,
+    pub(super) trajectory_baked: Option<TrajectoryParams>,
     /// The model's UV edges for the active channel and the laid-out nodes.
     pub(super) uv_wireframe_buf: Option<VertexBuffer>,
     pub(super) uv_wireframe_baked: Option<UvViewParams>,

@@ -223,9 +223,10 @@ const OCTAHEDRON_EDGES: [[usize; 2]; 12] = [
     [1, 5],
 ];
 
-/// How a bone is coloured: the base colour, the selected one, and the hover
-/// preview — bundled because every builder needs all of them and threading five
-/// loose arguments through each was already at the limit.
+/// How a bone is coloured: the base colour, the selected one, the hover
+/// preview, and the colour of its animation curve — bundled because every
+/// builder needs all of them and threading them loose through each was already
+/// at the limit.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BoneTint<'a> {
     /// Sorted selected-bone set.
@@ -235,18 +236,28 @@ pub(crate) struct BoneTint<'a> {
     pub(crate) color: [f32; 4],
     pub(crate) selected_color: [f32; 4],
     pub(crate) hover_color: [f32; 4],
+    /// Per node, the colour of its animation curve while that curve is shown
+    /// (`trajectory_node_colors`); empty while the curves are off.
+    pub(crate) curves: &'a [Option<[f32; 4]>],
 }
 
 impl BoneTint<'_> {
-    /// The colour bone `node` is drawn in. Selection wins over hover: a selected
-    /// bone the pointer happens to rest on must not stop looking selected.
+    /// The colour bone `node` is drawn in.
+    ///
+    /// A bone whose curve is shown takes the curve's colour, which is what ties
+    /// the two together on screen — selected or not, since selecting bones is how
+    /// the curves are narrowed down, and a selected bone in the selection colour
+    /// would be the one bone that matched nothing. Otherwise selection wins over
+    /// hover: a selected bone the pointer happens to rest on must not stop
+    /// looking selected.
     fn color_for(&self, node: usize) -> [f32; 4] {
+        let curve = self.curves.get(node).copied().flatten();
         if self.selected.binary_search(&(node as u32)).is_ok() {
-            self.selected_color
+            curve.unwrap_or(self.selected_color)
         } else if self.hovered == Some(node as u32) {
             self.hover_color
         } else {
-            self.color
+            curve.unwrap_or(self.color)
         }
     }
 }
@@ -476,6 +487,7 @@ mod tests {
             color,
             selected_color,
             hover_color: [0.0; 4],
+            curves: &[],
         }
     }
 
@@ -673,6 +685,7 @@ mod tests {
                     color: plain,
                     selected_color: selected,
                     hover_color: hover,
+                    curves: &[],
                 },
                 1.0,
             )
@@ -694,6 +707,47 @@ mod tests {
             lines.iter().filter(|v| v.vertex_color == selected).count(),
             12 * 2
         );
+    }
+
+    /// While the animation curves are on, a bone with a shown curve is drawn in
+    /// that curve's color - selected or not, since selecting is how the curves
+    /// are narrowed down - and a bone without one keeps the usual tints.
+    #[test]
+    fn a_bone_with_a_shown_curve_takes_its_color() {
+        let model = chain();
+        let plain = [0.0, 0.0, 1.0, 1.0];
+        let selected = [1.0, 0.0, 0.0, 1.0];
+        let curve = [0.0, 1.0, 1.0, 1.0];
+        let mut curves = vec![None; model.nodes.len()];
+        curves[1] = Some(curve);
+        let lines = |selected_set: &[u32]| {
+            skeleton_lines(
+                &model,
+                BoneTint {
+                    selected: selected_set,
+                    hovered: None,
+                    color: plain,
+                    selected_color: selected,
+                    hover_color: [0.0; 4],
+                    curves: &curves,
+                },
+                1.0,
+            )
+        };
+        let count = |lines: &[SceneVertex], color: [f32; 4]| {
+            lines.iter().filter(|v| v.vertex_color == color).count()
+        };
+
+        // Hips (node 1) has a curve: its octahedron takes the curve's color.
+        let unselected = lines(&[]);
+        assert_eq!(count(&unselected, curve), 12 * 2);
+        // Selected, it still matches its curve rather than the selection.
+        let chosen = lines(&[1]);
+        assert_eq!(count(&chosen, curve), 12 * 2);
+        assert_eq!(count(&chosen, selected), 0);
+        // The spine has no curve, so selecting it tints it as before.
+        let spine = lines(&[2]);
+        assert_eq!(count(&spine, selected), 12 * 2);
     }
 
     /// The pick must hit the bone the ray passes through, and report the head

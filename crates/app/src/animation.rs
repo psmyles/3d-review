@@ -11,7 +11,7 @@
 
 use std::time::Instant;
 
-use review_model::{AnimContext, DeformPose, Pose, anim};
+use review_model::{AnimContext, DeformPose, NodePath, Pose, anim};
 
 use crate::App;
 
@@ -43,6 +43,19 @@ pub(crate) struct AnimationSubsystem {
     /// The `(clip, time bits)` the current pose was evaluated for, so a paused
     /// clip re-evaluates nothing.
     evaluated: Option<(Option<usize>, u64)>,
+    /// The selected clip's motion paths while the animation curves are on;
+    /// `None` otherwise (invariant 3). See [`App::sync_animation_paths`].
+    pub(crate) paths: Option<ClipPaths>,
+    /// Bumped whenever `paths` changes; the renderer keys its curve buffers on
+    /// it.
+    pub(crate) paths_revision: u64,
+}
+
+/// One clip's motion paths, and the `(model revision, clip)` they were sampled
+/// for.
+pub(crate) struct ClipPaths {
+    key: (u64, usize),
+    pub(crate) paths: Vec<NodePath>,
 }
 
 impl Default for AnimationSubsystem {
@@ -56,6 +69,8 @@ impl Default for AnimationSubsystem {
             pose_revision: 0,
             last_tick: None,
             evaluated: None,
+            paths: None,
+            paths_revision: 0,
         }
     }
 }
@@ -164,6 +179,59 @@ impl App {
             anim.evaluated = Some(key);
             anim.active = true;
         }
+    }
+
+    /// Sample the selected clip's motion paths while the animation curves are
+    /// on, and drop them the moment they are not wanted (invariant 3).
+    ///
+    /// Runs after the egui pass rather than in [`Self::tick_animation`], so the
+    /// transport's toggle and a clip picked in the Outliner draw in the frame
+    /// they were clicked in. Resampled only when the clip or the model changes:
+    /// the selection narrows the paths at draw time
+    /// ([`Self::shown_animation_paths`]), and playback never touches them.
+    pub(crate) fn sync_animation_paths(&mut self) {
+        let state = &self.ui.animation;
+        let key = state
+            .selected_clip
+            .filter(|_| state.show_curves && self.ui.mode.shows_pose())
+            .map(|clip| (self.scene_revision, clip));
+        let anim = &mut self.animation;
+        if anim.paths.as_ref().map(|paths| paths.key) == key {
+            return;
+        }
+        // Sampled against the context `tick_animation` built for this very
+        // model; a load that landed since waits a frame for its own.
+        let model = &self.scene_model;
+        let next = key.and_then(|key| {
+            let context = anim
+                .context
+                .as_ref()
+                .filter(|_| anim.model_revision == key.0)?;
+            let clip = model.animations.get(key.1)?;
+            let paths = anim::clip_paths(model, context, clip, model.frame_rate_or_default());
+            Some(ClipPaths { key, paths })
+        });
+        if anim.paths.is_none() && next.is_none() {
+            return;
+        }
+        anim.paths = next;
+        anim.paths_revision = anim.paths_revision.wrapping_add(1);
+    }
+
+    /// Which of the sampled paths the animation curves show, as indices into
+    /// them: the selection's, when it names something with a path, and every
+    /// path otherwise — see [`anim::selected_paths`] for the rule.
+    pub(crate) fn shown_animation_paths(&self) -> Vec<u32> {
+        let Some(sampled) = self.animation.paths.as_ref() else {
+            return Vec::new();
+        };
+        anim::selected_paths(
+            &self.scene_model,
+            &sampled.paths,
+            &self.ui.selected_bone_nodes(),
+            &self.ui.selected_node_set(),
+            &self.ui.hidden_mesh_nodes(),
+        )
     }
 
     /// Space: play / pause the selected clip. Resuming restarts the clock so the

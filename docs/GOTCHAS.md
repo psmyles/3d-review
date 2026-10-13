@@ -91,6 +91,19 @@ Keep the two halves in step: `corner_moves` mirrors `deform_corner`'s three
 sources, and a new deform source added to one must be added to the other, or its
 vertices will be measured at rest and the clip's envelope will come out too small.
 
+### A golden-ratio palette keyed on the node table gives a chain one colour
+
+Stepping hues by the golden-ratio conjugate spreads *consecutive* indices well,
+and the worst case is the Fibonacci distances: 5, 8 or 13 apart lands within a
+few percent of the wheel. ufbx lays a rig out breadth-first, so a chain's bones
+sit as many entries apart as there are chains beside it — on the dog fixture the
+front-left knee, ankle and foot were 5 and 8 apart and came out the same
+yellow-green. The animation curves therefore key each node's colour on its
+depth-first rank in the hierarchy (`geometry/trajectory.rs`'s `hierarchy_ranks`),
+which puts a bone next to its parent and sends it to the far side of the wheel.
+`a_chain_laid_out_breadth_first_gets_distinct_hues` pins it. Any other per-node
+palette should do the same.
+
 ### `ufbx_bake_anim` facts
 
 - Linear keys are kept as authored; only cubic segments resample.

@@ -54,7 +54,7 @@ impl<'a> UvNodeScope<'a> {
         let mut include = if selected_nodes.is_empty() {
             vec![true; node_count]
         } else {
-            subtree_union(model, selected_nodes)
+            model.node_subtree_union(selected_nodes)
         };
         for &hidden in hidden_nodes {
             if let Some(slot) = include.get_mut(hidden as usize) {
@@ -94,37 +94,6 @@ impl<'a> UvNodeScope<'a> {
     fn includes_everything(&self) -> bool {
         self.include.is_none()
     }
-}
-
-/// Per-node mask of the union of the subtrees rooted at `roots`, in one
-/// O(nodes × depth) pass however many roots there are (rather than one
-/// [`ModelData::node_subtree_mask`] walk per root). A guard bounds a malformed
-/// parent cycle.
-fn subtree_union(model: &ModelData, roots: &[u32]) -> Vec<bool> {
-    let node_count = model.nodes.len();
-    let mut is_root = vec![false; node_count];
-    for &root in roots {
-        if let Some(slot) = is_root.get_mut(root as usize) {
-            *slot = true;
-        }
-    }
-    (0..node_count)
-        .map(|index| {
-            let mut current = Some(index);
-            let mut guard = 0;
-            while let Some(node) = current {
-                if is_root[node] {
-                    return true;
-                }
-                current = model.nodes.get(node).and_then(|node| node.parent);
-                guard += 1;
-                if guard > node_count || current.is_some_and(|parent| parent >= node_count) {
-                    break;
-                }
-            }
-            false
-        })
-        .collect()
 }
 
 /// The model's UV edges for `channel`, traced over each *original* polygon (like

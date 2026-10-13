@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use review_model::ModelData;
 use review_render::{
     ActiveMaterial, CameraProjection, OptSceneFrame, OptView, ProcessedModelRef, Renderer,
-    SceneFrame, SceneViewport, TexBackground, TexImage, UvFrame, UvTexture,
+    SceneFrame, SceneViewport, TexBackground, TexImage, TrajectoryOverlay, UvFrame, UvTexture,
 };
 use review_ui::{
     ComparisonSide, OptLayout, OptOverlayLevel, OptOverlayView, TextureBackground, UiOutput,
@@ -103,6 +103,9 @@ impl App {
             let _z = prof::zone!("Apply UI Output");
             self.apply_ui_output(ui_output);
         }
+        // The animation curves follow the toggle and the clip the pass may just
+        // have changed, so they draw in the frame that was clicked.
+        self.sync_animation_paths();
         // The pass may have opened or closed the Log window.
         self.watch_log_window();
 
@@ -454,6 +457,20 @@ impl App {
             (workspace.shows_pose() && self.animation.active).then_some(&self.animation.deform);
         let pose_revision = self.animation.pose_revision;
         let scene_bounds = self.ui.bounds;
+        // The selected clip's animation curves, narrowed to the selection. They
+        // exist only where the pose is drawn (`sync_animation_paths` drops them
+        // elsewhere — Opt shows the bind pose). Borrowed as a disjoint field, like
+        // the pose.
+        let shown_paths = self.shown_animation_paths();
+        let trajectories = self
+            .animation
+            .paths
+            .as_ref()
+            .map(|sampled| TrajectoryOverlay {
+                revision: self.animation.paths_revision,
+                paths: &sampled.paths,
+                shown: &shown_paths,
+            });
 
         // The Aud focus's offenders, borrowed from the highlight `app` resolved.
         // Only in the Issues view: a density or overdraw view is itself the
@@ -578,6 +595,7 @@ impl App {
                         scene_bounds,
                         pixels_per_point: full_output.pixels_per_point,
                         audit: audit_overlay,
+                        trajectories,
                     };
                     if let Some((channel, nodes, overlay)) = aud_split.as_ref() {
                         let uv = UvFrame {

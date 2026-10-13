@@ -18,13 +18,38 @@ own frame rate, and nothing is thrown away.
 Click a clip in the Outliner's Animations tab to select it. The model pauses on
 the clip's first frame and the playback controls appear in the status bar: go
 to start, step back, play/pause, step forward, a scrubber you can drag, a
-readout showing `frame / total   seconds`, a loop switch (on to begin with) and
-a speed control. Click the clip again to return the model to its resting pose.
+readout showing `frame / total   seconds`, a loop switch (on to begin with), a
+speed control and the animation curves switch (see below). Click the clip again
+to return the model to its resting pose.
 
 If the window is narrow, the scrubber shrinks first, and then the readout
 tucks itself into the scrubber's tooltip, so the controls always stay reachable.
 
 `Space` plays and pauses; `,` and `.` step one frame back or forward.
+
+## Animation curves
+
+The last button in the playback controls shows the animation's curves: the path
+each moving bone or animated object takes from the first frame to the last. It
+is off to begin with, and it stays on while you switch between animations, so
+you can compare their paths.
+
+Every path has a color of its own, and while the curves are on the skeleton's
+bones take the same colors (turn the [skeleton](panels/skeleton.md) on to see
+them). Along each path there is a dot on every frame, so dots spread far apart
+mean fast movement and bunched-up dots mean slow, and a larger dot sits where
+the bone or object is on the current frame. It slides along its path as the
+animation plays.
+
+A path follows the point the bone or object turns around: a bone's joint, or an
+object's pivot. A bone that only turns in place, or an object that never moves,
+has no path.
+
+To look at just a few paths, [select](selection.md) them: pick bones in the
+Outliner, or click them in the viewport with the skeleton on, and only their
+paths are drawn. Selecting an object or a group shows the paths of everything
+inside it. If nothing you select has a path, all of them stay on screen. An
+object you hide in the Outliner hides its path too.
 
 ## Framing an animation
 

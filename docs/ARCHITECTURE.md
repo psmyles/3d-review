@@ -81,7 +81,7 @@ One `impl App` block per concern, one file each:
 | `gate.rs` | The performance gate stamp (`--gate-out <file>`) |
 | `dialog.rs` | Every native file dialog |
 | `texture_manager.rs` | Scene texture pool, off-thread decode, disk auto-reload |
-| `animation.rs` | The animation clock and pose evaluation |
+| `animation.rs` | The animation clock and pose evaluation, and the selected clip's motion paths while the transport's animation-curve toggle is on (sampled after the egui pass, so a click draws in its own frame; freed when the toggle goes off) |
 | `window_state.rs` | Window position/size restore (saved on exit, never in a gate run), monitor validation, refresh-rate query |
 | `settings.rs` | The per-user `settings.cfg`: the locale, **Remember settings** and the option values it keeps, the recent-files list. A read error other than "not found" skips the next save rather than overwriting lines the viewer does not own |
 | `recent.rs` | File > Open Recent |
@@ -165,6 +165,12 @@ Host-agnostic data only. Depends on `glam` and nothing else: no GPU API, no
   (parents-first recomposition, hold outside keys, ufbx's in-between blend rule
   via `channel_effective_weights`), `build_palette` → `DeformPose`, and the CPU
   reference `deform_corner` / `clip_bounds` that the shader and the tests mirror.
+  `anim/paths.rs` is the animation curves' half of it: `clip_paths` samples each
+  moving node's **pivot** once per frame of a clip (a skinned mesh's own node,
+  and a node that holds still, get none), and `selected_paths` is the rule for
+  which of them a selection leaves showing — bones exactly, a mesh or group with
+  its subtree (`ModelData::node_subtree_union`), every path when the selection
+  names none.
 - `bvh.rs` — a per-mesh-part triangle BVH, used for occlusion of the dimension
   labels and by the Opt AO bake.
 - The mesh facts more than one crate measures, written once: `topology.rs`
@@ -387,6 +393,13 @@ between mismatched formats is a silent no-op.
   line lists (a dot is a zero-length line, so the line program draws it as a
   square of the line's width) and the per-face density heat values, both
   copying each corner's deform lane so they move with a playing clip.
+- `geometry/trajectory.rs` — the animation curves (`SceneFrame::trajectories`):
+  each shown path as a line list, a dot per frame and a current-frame marker,
+  drawn always-on-top beside the skeleton. The path is world-space and static
+  (`NO_DEFORM`); the marker sits at the node's rest pivot on the node's own lane,
+  so the pose moves it with no CPU rebuild during playback. Each node's colour is
+  keyed on its depth-first rank in the hierarchy, and the skeleton tints a bone
+  whose curve is shown to match (`BoneTint::curves`).
 - `scene/` — `gpu.rs` (`SceneGpu`, the frame's sync and pass recording),
   `slot.rs` (`ModelSlot`: per-model GPU state — mesh buffers, derived views,
   selection/visibility draw lists, each with its bake key), `resources.rs` (the
@@ -462,8 +475,8 @@ picked in the Textures tab, and its measured properties are in the Inspector.
 
 Modules: `theme`, `state`, `assets`, `widgets`, `overlay`, `toolbar`,
 `status_bar`, `stats`, `texture_view`, `gizmo`, `dimensions`, `help`, `transport`
-(the playback controls, drawn in the status bar's centre span only while a clip
-is selected in the 3D workspace), `notifications`, plus `panels/` (one file per tool: `anti_aliasing`,
+(the playback controls and the animation-curve toggle, drawn in the status bar's
+centre span only while a clip is selected in the 3D workspace), `notifications`, plus `panels/` (one file per tool: `anti_aliasing`,
 `bounding_box`, `camera` (the projection button's right-click: field of view and
 gesture speeds), `environment`, `normals`, `gtao`, `tonemap`, `uv_checker`,
 `vertex_colors`, `wireframe`, `material_mode`; plus `inspector`, `outliner`, and
@@ -750,7 +763,11 @@ was matched against a commercial tool's output, and they are the way to check a
 change to it: e.g. `review-snapshot --look matte --compare src.fbx src.fbx@lods`.
 `--chrome l,t,r,b` frames each view into what the viewer's panels and bars would
 leave, at their pixel sizes, and dims the covered bands. That is how framing is
-checked against a real model without the window.
+checked against a real model without the window. `--clip n[:frame]` poses every
+subject on one frame of a clip and frames on its whole motion, and `--curves`,
+`--skeleton` and `--select names` draw the animation curves, the skeleton and a
+selection over it (`animation.rs`, through the same `selected_paths` rule the
+viewer uses): e.g. `review-snapshot --clip 4:6 --curves --skeleton dog.fbx`.
 
 ### Vendored trees
 

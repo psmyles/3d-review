@@ -15,6 +15,10 @@ use crate::{
     frame_rate_or_default,
 };
 
+mod paths;
+
+pub use paths::{NodePath, clip_paths, selected_paths};
+
 /// Everything about a model that pose evaluation needs but that never changes
 /// between poses: the parents-first node order, the inverse rest world matrices,
 /// and the corner / node lookups that project a pose onto the mesh. Build once
