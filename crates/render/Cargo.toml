@@ -18,6 +18,9 @@ image.workspace = true
 # Diagnostics - sokol's validation output, swapchain failures - go through the
 # standard facade; `app` installs the logger that writes them down.
 log.workspace = true
+# Unpacks the UV checker's BC7 mip chains, which the build script deflated
+# (`build/uv_checker.rs`, `src/scene/checker.rs`).
+miniz_oxide.workspace = true
 # PSD source art is decoded through the vendored psd_sdk FFI crate (invariant 9's
 # third sanctioned FFI site) — replaces the old bundled-ImageMagick shell-out.
 review-psd.workspace = true
@@ -94,13 +97,24 @@ objc2-quartz-core = { workspace = true, features = [
 # Bake-only: it trades offline encode time for an ~8x smaller, sample-bandwidth-cheaper
 # runtime map, and never ships in the viewer.
 [dependencies.intel_tex_2]
-version = "0.5"
+workspace = true
 optional = true
 
 [build-dependencies]
 # The shader-bytecode manifest keys freshness on file content rather than on
 # mtimes, which stop meaning anything the moment two hosts commit blobs (D5).
+# The UV checker bake uses it too, to tell whether its inputs changed.
 sha2.workspace = true
+# The UV checker bake (`build/uv_checker.rs`): decode the checker PNGs, build each
+# one's mip chain with the runtime's own sRGB box filter (`src/rhi/mips.rs`, which
+# needs `review-model`'s colour transfer), BC7-encode it and deflate the result.
+# `image` is narrowed to PNG here, rather than inheriting the workspace's six
+# codecs: a build dependency is compiled a second time for the build host's
+# profile, and the bake reads nothing else.
+image = { version = "0.25", default-features = false, features = ["png"] }
+intel_tex_2.workspace = true
+miniz_oxide.workspace = true
+review-model = { path = "../model" }
 
 [features]
 # The offline IBL precompute (Platform decisions D19): the bake half of `src/ibl.rs`,

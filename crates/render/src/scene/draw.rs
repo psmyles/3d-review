@@ -22,10 +22,13 @@ const VERTICES_PER_LINE: usize = 6;
 impl SceneGpu {
     /// The bindings a draw running `fs_main` needs: the checker, the four IBL maps,
     /// one material's seven slots, the three samplers, and the deform tables.
+    ///
+    /// The checker's sampler slot takes the material table's anisotropic one: a
+    /// tiled checker at a grazing angle is exactly the case it exists for.
     pub(super) fn mesh_bindings(&self, checker: &Texture, material: &MaterialEntry) -> Bindings {
         let mut bindings = Bindings::new();
         bindings.texture(generated::VIEW_CHECKER_TEXTURE, checker);
-        bindings.sampler(generated::SMP_CHECKER_SAMPLER, &self.checker_sampler);
+        bindings.sampler(generated::SMP_CHECKER_SAMPLER, self.materials.sampler());
         self.ibl.bind_shading(&mut bindings);
         bindings.sampler(generated::SMP_IBL_SAMPLER, &self.sampler);
         material.bind_textures(&mut bindings);
