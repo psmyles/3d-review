@@ -2,19 +2,19 @@
 //! categories, severities, skip reasons, parameters and measured figures.
 //!
 //! Every map is an exhaustive `match` with no fall-through arm, the same rule
-//! `labels.rs` keeps: a rule added to `review-audit` is a compile error here
-//! rather than English on a translated screen, and a catalog message nothing
-//! names is `dead_code`.
+//! `ui`'s `labels.rs` keeps: a rule added to `review-audit` is a compile error
+//! here rather than English on a translated screen, and a catalog message
+//! nothing names is `dead_code`.
 
 use review_audit::{
-    AuditProfile, AuditReport, Axis, Category, DiagnosticView, Engine, Measured, RuleId, Severity,
-    Skip, Status, Threshold,
+    AuditError, AuditProfile, AuditReport, Axis, Category, DiagnosticView, Engine, Measured,
+    RuleId, Severity, Skip, Status, Threshold,
 };
 use review_localization::{Key, tr};
 
-use crate::keys::ui_audit as k;
+use crate::keys::labels_audit as k;
 
-pub(crate) fn category(category: Category) -> Key {
+pub fn category(category: Category) -> Key {
     match category {
         Category::Geometry => k::CATEGORY_GEOMETRY,
         Category::Transforms => k::CATEGORY_TRANSFORMS,
@@ -26,7 +26,7 @@ pub(crate) fn category(category: Category) -> Key {
     }
 }
 
-pub(crate) fn severity(severity: Severity) -> Key {
+pub fn severity(severity: Severity) -> Key {
     match severity {
         Severity::Error => k::SEVERITY_ERROR,
         Severity::Warning => k::SEVERITY_WARNING,
@@ -34,7 +34,7 @@ pub(crate) fn severity(severity: Severity) -> Key {
     }
 }
 
-pub(crate) fn skip(skip: Skip) -> Key {
+pub fn skip(skip: Skip) -> Key {
     match skip {
         Skip::Disabled => k::SKIP_DISABLED,
         Skip::SourcePropertiesUnavailable => k::SKIP_NO_PROPERTIES,
@@ -47,7 +47,7 @@ pub(crate) fn skip(skip: Skip) -> Key {
 }
 
 /// A diagnostic view's name and its one-paragraph description.
-pub(crate) fn view(view: DiagnosticView) -> (Key, Key) {
+pub fn view(view: DiagnosticView) -> (Key, Key) {
     match view {
         DiagnosticView::Issues => (k::VIEW_ISSUES, k::VIEW_ISSUES_DESCRIPTION),
         DiagnosticView::TexelDensity => (k::VIEW_TEXEL_DENSITY, k::VIEW_TEXEL_DENSITY_DESCRIPTION),
@@ -60,7 +60,7 @@ pub(crate) fn view(view: DiagnosticView) -> (Key, Key) {
     }
 }
 
-pub(crate) fn engine(engine: Engine) -> Key {
+pub fn engine(engine: Engine) -> Key {
     match engine {
         Engine::Unity => k::ENGINE_UNITY,
         Engine::Unreal => k::ENGINE_UNREAL,
@@ -68,7 +68,7 @@ pub(crate) fn engine(engine: Engine) -> Key {
     }
 }
 
-pub(crate) fn axis(axis: Axis) -> Key {
+pub fn axis(axis: Axis) -> Key {
     match axis {
         Axis::PositiveX => k::AXIS_X,
         Axis::NegativeX => k::AXIS_NEGATIVE_X,
@@ -80,7 +80,7 @@ pub(crate) fn axis(axis: Axis) -> Key {
 }
 
 /// A check's short name, as listed.
-pub(crate) fn rule_name(rule: RuleId) -> Key {
+pub fn rule_name(rule: RuleId) -> Key {
     match rule {
         RuleId::DegenerateTriangles => k::RULE_DEGENERATE_TRIANGLES,
         RuleId::NonManifoldEdges => k::RULE_NON_MANIFOLD_EDGES,
@@ -129,7 +129,7 @@ pub(crate) fn rule_name(rule: RuleId) -> Key {
 }
 
 /// What a check looks for, in one sentence.
-pub(crate) fn rule_what(rule: RuleId) -> Key {
+pub fn rule_what(rule: RuleId) -> Key {
     match rule {
         RuleId::DegenerateTriangles => k::RULE_DEGENERATE_TRIANGLES_WHAT,
         RuleId::NonManifoldEdges => k::RULE_NON_MANIFOLD_EDGES_WHAT,
@@ -179,7 +179,7 @@ pub(crate) fn rule_what(rule: RuleId) -> Key {
 
 /// Why a check matters, worded for the profile's target engine where the
 /// engines differ.
-pub(crate) fn rule_why(rule: RuleId, target: Engine) -> String {
+pub fn rule_why(rule: RuleId, target: Engine) -> String {
     let e = target.as_str();
     let plain = |key: Key| tr(key).into_owned();
     match rule {
@@ -230,7 +230,7 @@ pub(crate) fn rule_why(rule: RuleId, target: Engine) -> String {
 }
 
 /// How to fix a finding in the modelling program, in general terms.
-pub(crate) fn rule_fix(rule: RuleId) -> Key {
+pub fn rule_fix(rule: RuleId) -> Key {
     match rule {
         RuleId::DegenerateTriangles => k::RULE_DEGENERATE_TRIANGLES_FIX,
         RuleId::NonManifoldEdges => k::RULE_NON_MANIFOLD_EDGES_FIX,
@@ -279,7 +279,7 @@ pub(crate) fn rule_fix(rule: RuleId) -> Key {
 }
 
 /// A rule parameter's label and explanation, by its profile key.
-pub(crate) fn param(key: &str) -> (Key, Key) {
+pub fn param(key: &str) -> (Key, Key) {
     match key {
         "tolerance" => (k::PARAM_TOLERANCE, k::PARAM_TOLERANCE_DESCRIPTION),
         "max_ratio" => (k::PARAM_MAX_RATIO, k::PARAM_MAX_RATIO_DESCRIPTION),
@@ -322,7 +322,7 @@ fn number(value: f64, digits: usize) -> String {
 }
 
 /// A measured figure, with its unit.
-pub(crate) fn measured(value: &Measured) -> String {
+pub fn measured(value: &Measured) -> String {
     match value {
         Measured::Count(count) => k::value_count(*count as f64),
         Measured::Ratio(ratio) => k::value_percent(number(ratio * 100.0, 1)),
@@ -348,7 +348,7 @@ pub(crate) fn measured(value: &Measured) -> String {
 
 /// The bound a figure was judged against, or `None` for a check that has none
 /// to state.
-pub(crate) fn threshold(value: &Threshold) -> Option<String> {
+pub fn threshold(value: &Threshold) -> Option<String> {
     match value {
         Threshold::None => None,
         Threshold::Max(limit) => Some(k::value_at_most(measured(limit))),
@@ -361,7 +361,7 @@ pub(crate) fn threshold(value: &Threshold) -> Option<String> {
 
 /// The profile's display name: its own, or its engine's when it has none, with
 /// a marker when it differs from that engine's built-in.
-pub(crate) fn profile_name(profile: &AuditProfile) -> String {
+pub fn profile_name(profile: &AuditProfile) -> String {
     let name = if profile.name.trim().is_empty() {
         tr(engine(profile.base)).into_owned()
     } else {
@@ -377,15 +377,21 @@ pub(crate) fn profile_name(profile: &AuditProfile) -> String {
 /// The plain-text summary "Copy summary" puts on the clipboard: a heading, the
 /// counts, then one line per failing check, worst first.
 pub fn audit_summary_text(report: &AuditReport, profile: &AuditProfile, file: &str) -> String {
-    let mut lines = vec![
-        k::text_heading(file.to_owned(), profile_name(profile)),
-        k::text_counts(
-            f64::from(report.summary.failed[Severity::Error.index()]),
-            f64::from(report.summary.failed[Severity::Info.index()]),
-            f64::from(report.summary.passed),
-            f64::from(report.summary.failed[Severity::Warning.index()]),
-        ),
-    ];
+    let mut lines = vec![k::text_heading(file.to_owned(), profile_name(profile))];
+    lines.extend(summary_lines(report));
+    lines.join("\n")
+}
+
+/// [`audit_summary_text`] without its heading: the counts, then one line per
+/// failing check, worst first - what `review-cli audit` prints under each
+/// model's name.
+pub fn summary_lines(report: &AuditReport) -> Vec<String> {
+    let mut lines = vec![k::text_counts(
+        f64::from(report.summary.failed[Severity::Error.index()]),
+        f64::from(report.summary.failed[Severity::Info.index()]),
+        f64::from(report.summary.passed),
+        f64::from(report.summary.failed[Severity::Warning.index()]),
+    )];
     let mut failing: Vec<_> = report
         .results
         .iter()
@@ -402,7 +408,18 @@ pub fn audit_summary_text(report: &AuditReport, profile: &AuditProfile, file: &s
             tr(severity(result.severity)).into_owned(),
         ));
     }
-    lines.join("\n")
+    lines
+}
+
+/// What to show the user for an audit error: a newer profile says what to do
+/// about it; everything else keeps the library's own diagnostic.
+pub fn explain_audit_error(error: &AuditError) -> String {
+    match error {
+        AuditError::ProfileVersion { found, supported } => {
+            k::profile_newer(f64::from(*found), f64::from(*supported))
+        }
+        other => other.to_string(),
+    }
 }
 
 #[cfg(test)]

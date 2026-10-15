@@ -43,7 +43,20 @@ pub fn to_json(
     profile: &AuditProfile,
     source: &ReportSource,
 ) -> Result<String, AuditError> {
-    let document = json!({
+    let document = to_value(report, model, extras, profile, source)?;
+    serde_json::to_string_pretty(&document).map_err(|error| AuditError::Report(error.to_string()))
+}
+
+/// [`to_json`]'s document as a value, for a caller that carries it inside a
+/// document of its own - `review-cli`'s run report holds one per model.
+pub fn to_value(
+    report: &AuditReport,
+    model: &ModelData,
+    extras: Option<&SourceExtras>,
+    profile: &AuditProfile,
+    source: &ReportSource,
+) -> Result<Value, AuditError> {
+    Ok(json!({
         "schema": REPORT_SCHEMA,
         "version": REPORT_VERSION,
         "generator": source.generator,
@@ -64,7 +77,7 @@ pub fn to_json(
         },
         "profile": {
             "digest": format!("{:016x}", report.profile_digest),
-            "resolved": to_value(profile)?,
+            "resolved": serialized(profile)?,
         },
         "summary": {
             "failed": {
@@ -81,11 +94,10 @@ pub fn to_json(
             .iter()
             .map(|result| result_value(result, model, extras))
             .collect::<Result<Vec<_>, _>>()?,
-    });
-    serde_json::to_string_pretty(&document).map_err(|error| AuditError::Report(error.to_string()))
+    }))
 }
 
-fn to_value(value: &impl Serialize) -> Result<Value, AuditError> {
+fn serialized(value: &impl Serialize) -> Result<Value, AuditError> {
     serde_json::to_value(value).map_err(|error| AuditError::Report(error.to_string()))
 }
 
@@ -97,10 +109,10 @@ fn result_value(
     Ok(json!({
         "rule": result.rule.as_str(),
         "category": result.rule.category(),
-        "status": to_value(&result.status)?,
+        "status": serialized(&result.status)?,
         "severity": result.severity,
-        "measured": to_value(&result.measured)?,
-        "threshold": to_value(&result.threshold)?,
+        "measured": serialized(&result.measured)?,
+        "threshold": serialized(&result.threshold)?,
         "total": result.total,
         "offenders": result
             .offenders
@@ -171,8 +183,8 @@ fn offender_value(
         "node": node,
         "name": node.and_then(|node| model.nodes.get(node)).map(|node| node.name.clone()),
         "count": offender.count,
-        "measured": to_value(&offender.measured)?,
-        "detail": to_value(&offender.detail)?,
+        "measured": serialized(&offender.measured)?,
+        "detail": serialized(&offender.detail)?,
         "elements": elements,
     }))
 }

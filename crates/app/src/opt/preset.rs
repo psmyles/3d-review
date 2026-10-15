@@ -3,35 +3,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use review_optimize::{RebindReport, preset};
+use review_optimize::preset;
 
 use super::*;
-
-/// What to tell the user about a loaded preset's per-object overrides, one line
-/// per thing that happened. A preset that landed cleanly produces nothing.
-///
-/// The two halves are separate warnings because they mean different things: a
-/// dropped override is a setting the user has lost, while one matched by
-/// position is a setting that *may* have landed on the wrong object — only an
-/// old preset can produce it, and only the user can tell whether it is right.
-fn rebind_notes(report: RebindReport) -> Vec<String> {
-    // Both notes read differently for one override than for several. That is a
-    // plural rule, so it belongs in the catalog's own `{ $count -> }` selector
-    // rather than in hand-picked `if count == 1` fragments here — English needs
-    // two forms, and other languages need more or fewer.
-    let mut notes = Vec::new();
-    if report.dropped > 0 {
-        notes.push(keys::app_notifications::overrides_dropped(
-            report.dropped as f64,
-        ));
-    }
-    if report.by_position > 0 {
-        notes.push(keys::app_notifications::overrides_by_position(
-            report.by_position as f64,
-        ));
-    }
-    notes
-}
 
 impl App {
     /// Ask where to save the operation stack as a preset.
@@ -52,7 +26,7 @@ impl App {
             Err(error) => {
                 self.notifications
                     .error(keys::app_notifications::preset_build_failed(
-                        crate::explain::explain_opt_error(&error),
+                        review_labels::opt::explain_opt_error(&error),
                     ));
                 return;
             }
@@ -106,7 +80,7 @@ impl App {
             Err(error) => {
                 self.notifications
                     .error(keys::app_notifications::preset_load_failed(
-                        crate::explain::explain_opt_error(&error),
+                        review_labels::opt::explain_opt_error(&error),
                     ));
                 return;
             }
@@ -126,7 +100,7 @@ impl App {
             .success(keys::app_notifications::preset_loaded(
                 crate::loading::file_label(path),
             ));
-        for line in rebind_notes(report) {
+        for line in review_labels::opt::rebind_notes(report) {
             self.notifications.warning(line);
         }
     }

@@ -10,7 +10,6 @@ mod audit;
 mod dialog;
 mod docs_dir;
 mod events;
-mod explain;
 mod flycam;
 mod frame;
 mod gate;

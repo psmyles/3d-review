@@ -23,6 +23,9 @@ review-model = { path = "../model" }
 review-optimize = { path = "../optimize" }
 # The Aud workspace shows the audit engine's typed report and edits its profile.
 review-audit = { path = "../audit" }
+# What each typed value from the audit and the optimizer is called, shared with
+# `review-cli` (invariant 12).
+review-labels.workspace = true
 # `Key` and `tr`; the `egui` feature is what lets a key be handed straight to a
 # widget as an `impl Into<WidgetText>`.
 review-localization = { workspace = true, features = ["egui"] }

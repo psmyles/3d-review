@@ -1,10 +1,11 @@
-//! Turns the optimizer errors a user can act on into text that says what to do
-//! about them.
+//! Catalog text for the optimizer's typed values: an operation's name and what
+//! it does, a run's warnings, an export's notes, and the errors a reader can act
+//! on.
 //!
 //! Everything else keeps its library diagnostic verbatim (invariant 12). That is
 //! deliberate: an `OptError` is written for whoever debugs it, it is what a bug
 //! report quotes, and `review-optimize` must not learn about catalogs to say it.
-//! But some of its variants are not really diagnostics — they describe a
+//! But some of its variants are not really diagnostics - they describe a
 //! situation the reader can resolve, and "preset could not be read (version 4,
 //! this build reads 3)" tells them less than "open it with the build that wrote
 //! it" does.
@@ -12,34 +13,65 @@
 //! A further variant that turns out to need this is one more arm here, not a
 //! trait spread across four crates.
 
-use review_audit::AuditError;
-use review_optimize::{ExportNote, OptError, OptWarning};
+use review_localization::{Key, tr};
+use review_optimize::{ExportNote, OpKind, OptError, OptWarning, RebindReport};
 
-use crate::keys;
+use crate::keys::labels_opt as k;
 
-/// What to show the user for an audit error: a newer profile says what to do
-/// about it; everything else keeps the library's own diagnostic.
-pub(crate) fn explain_audit_error(error: &AuditError) -> String {
-    match error {
-        AuditError::ProfileVersion { found, supported } => {
-            keys::app_audit::profile_newer(f64::from(*found), f64::from(*supported))
-        }
-        other => other.to_string(),
+/// An operation's name: the stack row, the "Add operation" menu, the heading
+/// over its parameters, the optimizing card's stage line and a console line.
+pub fn op_kind(kind: &OpKind) -> Key {
+    match kind {
+        OpKind::Weld(_) => k::OP_WELD,
+        OpKind::FilterTriangles => k::OP_FILTER_TRIANGLES,
+        OpKind::PruneComponents { .. } => k::OP_PRUNE_COMPONENTS,
+        OpKind::Reduce(_) => k::OP_REDUCE,
+        OpKind::Remesh(_) => k::OP_REMESH,
+        OpKind::Shrinkwrap(_) => k::OP_SHRINKWRAP,
+        OpKind::RecalculateNormals(_) => k::OP_RECALCULATE_NORMALS,
+        OpKind::SimplifyLod(_) => k::OP_SIMPLIFY_LOD,
+        OpKind::BakeAo(_) => k::OP_BAKE_AO,
+        OpKind::VertexCache => k::OP_VERTEX_CACHE,
+        OpKind::Overdraw { .. } => k::OP_OVERDRAW,
+        OpKind::VertexFetch => k::OP_VERTEX_FETCH,
+    }
+}
+
+/// [`op_kind`], resolved.
+pub fn op_kind_name(kind: &OpKind) -> String {
+    tr(op_kind(kind)).into_owned()
+}
+
+/// What an operation does, in a sentence - the stack row's tooltip and the
+/// heading text over its parameters. Paired with [`op_kind`] so the name and the
+/// explanation cannot drift apart.
+pub fn op_description(kind: &OpKind) -> Key {
+    match kind {
+        OpKind::Weld(_) => k::OP_WELD_DESCRIPTION,
+        OpKind::FilterTriangles => k::OP_FILTER_TRIANGLES_DESCRIPTION,
+        OpKind::PruneComponents { .. } => k::OP_PRUNE_COMPONENTS_DESCRIPTION,
+        OpKind::Reduce(_) => k::OP_REDUCE_DESCRIPTION,
+        OpKind::Remesh(_) => k::OP_REMESH_DESCRIPTION,
+        OpKind::Shrinkwrap(_) => k::OP_SHRINKWRAP_DESCRIPTION,
+        OpKind::RecalculateNormals(_) => k::OP_RECALCULATE_NORMALS_DESCRIPTION,
+        OpKind::SimplifyLod(_) => k::OP_SIMPLIFY_LOD_DESCRIPTION,
+        OpKind::BakeAo(_) => k::OP_BAKE_AO_DESCRIPTION,
+        OpKind::VertexCache => k::OP_VERTEX_CACHE_DESCRIPTION,
+        OpKind::Overdraw { .. } => k::OP_OVERDRAW_DESCRIPTION,
+        OpKind::VertexFetch => k::OP_VERTEX_FETCH_DESCRIPTION,
     }
 }
 
 /// What to show the user for an optimizer error.
-pub(crate) fn explain_opt_error(error: &OptError) -> String {
+pub fn explain_opt_error(error: &OptError) -> String {
     match error {
-        OptError::Unavailable => {
-            review_localization::tr(keys::app_notifications::OPT_UNAVAILABLE).into_owned()
-        }
+        OptError::Unavailable => tr(k::OPT_UNAVAILABLE).into_owned(),
         OptError::PresetVersion { found, supported } => {
-            keys::app_notifications::preset_newer(f64::from(*found), f64::from(*supported))
+            k::preset_newer(f64::from(*found), f64::from(*supported))
         }
-        // `ExportIncomplete` is deliberately absent: `handle_opt_exported` gives
-        // it a report of its own that names every file this run did replace, and
-        // a one-line summary here would say less.
+        // `ExportIncomplete` is deliberately absent: the viewer gives it a report
+        // of its own that names every file the run did replace, and a one-line
+        // summary here would say less.
         //
         // Genuine diagnostics: the library's own wording, unchanged.
         other => other.to_string(),
@@ -51,29 +83,22 @@ pub(crate) fn explain_opt_error(error: &OptError) -> String {
 /// Exhaustive, with no fall-through arm: a warning added to `review-optimize` is a
 /// compile error here rather than English on a translated screen. The library's
 /// `Display` stays the English diagnostic the log records.
-pub(crate) fn explain_opt_warning(warning: &OptWarning) -> String {
-    use keys::app_opt as k;
+pub fn explain_opt_warning(warning: &OptWarning) -> String {
     let count = |value: usize| value as f64;
     match warning {
         OptWarning::DeformDropped { detail } => k::warning_deform_dropped(detail.clone()),
         OptWarning::MeasureFailed { detail } => k::warning_measure_failed(detail.clone()),
         OptWarning::IndexFailed { detail } => k::warning_index_failed(detail.clone()),
         OptWarning::OperationFailed { operation, detail } => {
-            k::warning_operation_failed(review_ui::op_kind_name(operation), detail.clone())
+            k::warning_operation_failed(op_kind_name(operation), detail.clone())
         }
-        OptWarning::BakeBeforeSimplify => {
-            review_localization::tr(k::WARNING_BAKE_BEFORE_SIMPLIFY).into_owned()
-        }
-        OptWarning::QuadsLostToSimplify => {
-            review_localization::tr(k::WARNING_QUADS_LOST).into_owned()
-        }
+        OptWarning::BakeBeforeSimplify => tr(k::WARNING_BAKE_BEFORE_SIMPLIFY).into_owned(),
+        OptWarning::QuadsLostToSimplify => tr(k::WARNING_QUADS_LOST).into_owned(),
         OptWarning::ShrinkwrapBelowShapeChange => {
-            review_localization::tr(k::WARNING_SHRINKWRAP_BELOW_SHAPE_CHANGE).into_owned()
+            tr(k::WARNING_SHRINKWRAP_BELOW_SHAPE_CHANGE).into_owned()
         }
         OptWarning::LodEmpty { level } => k::warning_lod_empty(count(*level)),
-        OptWarning::SimplifierStalledOnSeams => {
-            review_localization::tr(k::WARNING_SIMPLIFIER_STALLED).into_owned()
-        }
+        OptWarning::SimplifierStalledOnSeams => tr(k::WARNING_SIMPLIFIER_STALLED).into_owned(),
         OptWarning::TangentsFailed { detail } => k::warning_tangents_failed(detail.clone()),
         OptWarning::NormalsKeptForBlendShapes { object } => {
             k::warning_normals_kept_for_blend_shapes(object.clone())
@@ -137,19 +162,12 @@ pub(crate) fn explain_opt_warning(warning: &OptWarning) -> String {
 
 /// What to show the user for an export note. Exhaustive for the reason
 /// [`explain_opt_warning`] is.
-pub(crate) fn explain_export_note(note: &ExportNote) -> String {
-    use keys::app_opt as k;
+pub fn explain_export_note(note: &ExportNote) -> String {
     let count = |value: usize| value as f64;
     match note {
-        ExportNote::CaptureNotLoaded => {
-            review_localization::tr(k::NOTE_CAPTURE_NOT_LOADED).into_owned()
-        }
-        ExportNote::DeformNotWrittenFlat => {
-            review_localization::tr(k::NOTE_DEFORM_NOT_WRITTEN_FLAT).into_owned()
-        }
-        ExportNote::AnimationNotWrittenFlat => {
-            review_localization::tr(k::NOTE_ANIMATION_NOT_WRITTEN_FLAT).into_owned()
-        }
+        ExportNote::CaptureNotLoaded => tr(k::NOTE_CAPTURE_NOT_LOADED).into_owned(),
+        ExportNote::DeformNotWrittenFlat => tr(k::NOTE_DEFORM_NOT_WRITTEN_FLAT).into_owned(),
+        ExportNote::AnimationNotWrittenFlat => tr(k::NOTE_ANIMATION_NOT_WRITTEN_FLAT).into_owned(),
         ExportNote::WrittenAsTriangles { level, mesh } => {
             k::note_written_as_triangles(count(*level), mesh.clone())
         }
@@ -177,18 +195,50 @@ pub(crate) fn explain_export_note(note: &ExportNote) -> String {
         ExportNote::NestedLayeredTextures { count: textures } => {
             k::note_nested_layered_textures(count(*textures))
         }
-        ExportNote::ParentChainLooped => {
-            review_localization::tr(k::NOTE_PARENT_CHAIN_LOOPED).into_owned()
-        }
+        ExportNote::ParentChainLooped => tr(k::NOTE_PARENT_CHAIN_LOOPED).into_owned(),
         ExportNote::NonInvertibleTransform { node } => {
             k::note_non_invertible_transform(node.clone())
         }
     }
 }
 
+/// What to tell the user about a loaded preset's per-object overrides, one line
+/// per thing that happened. A preset that landed cleanly produces nothing.
+///
+/// The two halves are separate warnings because they mean different things: a
+/// dropped override is a setting the user has lost, while one matched by
+/// position is a setting that *may* have landed on the wrong object - only an
+/// old preset can produce it, and only the user can tell whether it is right.
+pub fn rebind_notes(report: RebindReport) -> Vec<String> {
+    // Both notes read differently for one override than for several. That is a
+    // plural rule, so it belongs in the catalog's own `{ $count -> }` selector
+    // rather than in hand-picked `if count == 1` fragments here - English needs
+    // two forms, and other languages need more or fewer.
+    let mut notes = Vec::new();
+    if report.dropped > 0 {
+        notes.push(k::overrides_dropped(report.dropped as f64));
+    }
+    if report.by_position > 0 {
+        notes.push(k::overrides_by_position(report.by_position as f64));
+    }
+    notes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every operation has a name and a description in the catalog.
+    #[test]
+    fn every_operation_has_its_text() {
+        // `OpKind::ALL` is a table of builders, because several variants carry
+        // parameters and there is no bare value to list.
+        for make in OpKind::ALL {
+            let kind = make();
+            assert!(!tr(op_kind(&kind)).is_empty());
+            assert!(!tr(op_description(&kind)).is_empty());
+        }
+    }
 
     /// The actionable variants must not fall through to the library's own
     /// `Display`, and everything else must.

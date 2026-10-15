@@ -2,7 +2,6 @@
 - read FBX built in textures
 - generate UVs - xatlas?
 - generate colliders?
-- Headless batch mode (preset × files → export + report)
 - UV view during opt mode?
 - animation curves
 - onion skin mode for animation review
