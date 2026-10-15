@@ -101,6 +101,14 @@ image = { version = "0.25", default-features = false, features = [
     "jpeg",
     "pnm",
 ] }
+# Intel's ISPC Texture Compressor (prebuilt kernels): BC7 for the UV checker in
+# `render`'s build script, BC6H for the offline IBL bake. Build-time only - no part
+# of it is linked into the viewer.
+intel_tex_2 = "0.5"
+# Raw deflate: `render`'s build script packs the UV checker's BC7 mip chains with it
+# and the viewer unpacks them. Already in the graph through `png`'s `flate2`, so the
+# viewer links no new code for it.
+miniz_oxide = "0.8"
 notify = "8"
 # Build-script only: records where each manual page's images and intra-book links
 # sit, so the runtime splices in resolved image paths without parsing markdown per

@@ -2,7 +2,7 @@
 //!
 //! [`Sampler::new`] is the general one — egui sets a filter pair and a wrap mode per
 //! texture, and picking the wrong one shows as a blurred icon or a bled atlas edge.
-//! The scene's four are named constructors below, because each is a decision with a
+//! The scene's three are named constructors below, because each is a decision with a
 //! reason rather than a combination.
 
 use std::ffi::CStr;
@@ -102,16 +102,6 @@ impl Sampler {
         )
     }
 
-    /// Trilinear, repeat — the UV checker, whose tiled UVs run past 0..1.
-    pub(crate) fn linear_repeat() -> GpuResult<Self> {
-        Self::new(
-            Filter::Linear,
-            Filter::Linear,
-            Wrap::Repeat,
-            c"linear-repeat",
-        )
-    }
-
     /// Point, clamp — the GTAO passes. View normals and depths must **not** be
     /// blended across geometry edges (that would bleed occlusion); clamp keeps border
     /// samples from wrapping.
@@ -124,7 +114,8 @@ impl Sampler {
         )
     }
 
-    /// Anisotropic, repeat — the material sampler. With the per-texture mip chain
+    /// Anisotropic, repeat — the material sampler, which the UV checker (whose tiled
+    /// UVs run past 0..1) samples through as well. With the per-texture mip chain
     /// this is what removes grazing-angle shimmer; 16× is the common hardware
     /// ceiling.
     pub(crate) fn aniso_repeat() -> GpuResult<Self> {

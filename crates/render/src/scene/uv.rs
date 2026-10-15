@@ -45,6 +45,7 @@ impl SceneGpu {
         self.activate(SlotId::Source);
         self.release_opt_views();
         self.release_overdraw();
+        self.release_checker();
         let size = frame.size();
         self.sync_targets(frame, size, uv.anti_aliasing.effective_sample_count())?;
         self.sync_uv_frame(uv, size)?;
@@ -166,7 +167,7 @@ impl SceneGpu {
         .flatten()
         {
             let material = self.materials.fallback();
-            let mut bindings = self.mesh_bindings(&self.checker_greyscale, material);
+            let mut bindings = self.mesh_bindings(self.checker.texture(), material);
             bindings.mesh_vertices(fill);
             frame.apply_pipeline(&self.scene.uv_fill);
             frame.apply_bindings(&bindings);
@@ -231,7 +232,7 @@ impl SceneGpu {
         ];
         // No buffer view (-1), no skin-weight heat map.
         flat.projection_params = [1.0, 0.0, -1.0, 0.0];
-        let mut bindings = self.mesh_bindings(&self.checker_greyscale, material);
+        let mut bindings = self.mesh_bindings(self.checker.texture(), material);
         bindings.mesh_vertices(quad);
         frame.apply_pipeline(&self.scene.uv_fill);
         frame.apply_bindings(&bindings);

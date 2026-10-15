@@ -33,10 +33,22 @@
 //! there must not also have to be added here. Compiling them is what makes a broken
 //! shader a build error (D5) rather than a runtime surprise; nothing compiles a
 //! shader at run time.
+//!
+//! It also bakes the UV checker's textures (`build/uv_checker.rs`): each checker
+//! PNG's mip chain, BC7-encoded and deflated into `OUT_DIR`, so the viewer neither
+//! decodes the PNG nor builds the chain. Unlike the shaders that needs no external
+//! tool, so it runs on every host and nothing it produces is committed.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+// The run-time's own mip filter, so the checker's baked chain is the one the viewer
+// would have built.
+#[path = "src/rhi/mips.rs"]
+mod mips;
+#[path = "build/uv_checker.rs"]
+mod uv_checker;
 
 /// One shader to compile: the source file, its stage profile, and the committed
 /// output blob (both paths absolute). There is no entry-point field because the
@@ -62,6 +74,9 @@ fn main() {
 
     println!("cargo:rerun-if-env-changed=FXC_FORCE");
     println!("cargo:rerun-if-changed=build.rs");
+
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
+    uv_checker::bake(&crate_dir, &out_dir);
 
     let jobs = generated_jobs(&generated_dir);
     warn_if_shader_source_changed(&crate_dir, &generated_dir);

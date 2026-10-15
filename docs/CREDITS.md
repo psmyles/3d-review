@@ -163,7 +163,8 @@ Used to build 3D Review; not linked into the binary.
   compilers.
 - **[intel_tex_2](https://github.com/Traverse-Research/intel-tex-rs-2)** - Traverse Research,
   over Intel's ISPC Texture Compressor, with **[ispc-rs](https://github.com/Twinklebear/ispc-rs)**
-  by Will Usher. BC6H encoding in the offline IBL bake.
+  by Will Usher. BC6H encoding in the offline IBL bake, and BC7 encoding of the UV checker
+  textures at build time.
 - **[winresource](https://github.com/BenjaminRi/winresource)** - Benjamin Richner. Windows version
   resource and icon.
 - **[sha2](https://github.com/RustCrypto/hashes)** - the RustCrypto developers. The

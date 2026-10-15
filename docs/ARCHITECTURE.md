@@ -439,7 +439,10 @@ between mismatched formats is a silent no-op.
   uniforms and `SceneVertex`), `opt.rs` (the Opt split and overlay views),
   `aud.rs` (the Aud split: the model in the left half, its UV layout with the
   offending triangles filled in the right, through `uv.rs`'s `record_uv_view`),
-  `overdraw.rs` (the two overdraw views — see invariant 4). Each
+  `overdraw.rs` (the two overdraw views — see invariant 4), `checker.rs` (the
+  UV-checker material's texture: the build script's baked BC7 chain, inflated and
+  uploaded as it stands — only the picked one, and only while the material is on).
+  Each
   derived resource's `sync_*` sits beside the thing it builds, and every one has
   a free arm on the path that leaves its view (invariant 3).
 - `ibl.rs` — HDR image-based lighting. At runtime the env cube, irradiance,
@@ -468,6 +471,21 @@ block) — and `build.rs` compiles this host's half to committed bytecode beside
 freshness-gated, with jobs *discovered* by filename rather than listed in a table.
 The runtime `include_bytes!`s the bytecode; nothing compiles a shader at run time,
 and a broken shader is a build error.
+
+**The UV checker is baked at build time** (`build/uv_checker.rs`, run from the same
+`build.rs`). Each checker PNG in `assets/textures/` becomes its full mip chain —
+built by the runtime's own `rhi/mips.rs`, compiled into the build script by path,
+so it is the sRGB box filter every material map gets — BC7-encoded with the
+encoder's slowest profile and deflated into `OUT_DIR`; `scene/checker.rs`
+`include!`s the description the script writes beside it. Loading a checker is then
+an inflate and an upload: 2-3 ms and 5.6 MB of VRAM per 2048² checker, against
+21 ms (PNG decode plus building the chain) and 22 MB for the RGBA8 chain it
+replaced, and 150-180 KB of binary each — barely more than deflating the RGBA8
+chain, since BC7's blocks repeat as often as the checker's cells. The BC7 chain
+measures 61-67 dB PSNR against the RGBA8 one. Unlike the shaders this needs no
+external tool, so it runs on every host and nothing it produces is committed; the
+encode (~11 s of work per checker, spread across every core) is skipped while a
+digest of the PNGs and the bake's own code matches the last one.
 
 ### `ui` — `review-ui`
 
@@ -920,7 +938,7 @@ arm on the paths that leave them: `sync_uv_view` is called from `render_uv`
 and the Aud split (`render_aud_split`), so `release_uv_views` runs from the plain
 3D `render`, `render_opt` and `render_texture`; the Aud overdraw views are built
 only in a 3D frame, so `release_overdraw` runs from `render_uv` and
-`render_texture`.
+`render_texture`, and so does `release_checker` for the UV checker's texture.
 
 **4. Heavy derived views are GPU passes and capability-gated.** Views that need
 more than a recoloured mesh run as GPU passes — raster or compute — over buffers
@@ -1130,7 +1148,9 @@ output accuracy are what matter. Always prefer the highest-quality,
 most-precomputed option for anything done ahead of runtime: the IBL maps are baked
 offline with no startup precompute, and the BC6H cubes use the encoder's slowest,
 **highest-quality** profile, because that work happens once on a dev machine and
-only sharpens what runs.
+only sharpens what runs. The UV checker follows the same rule at build time: its
+mip chains are BC7-encoded in `render`'s build script rather than built when the
+checker is first shown.
 
 **Native stack: direct winit plus sokol_gfx as the one drawing API on both
 Windows and macOS** (Direct3D 11 and Metal underneath), with one small device
@@ -1209,7 +1229,8 @@ the quad merge is ever extended.
 Artists test *source* assets (PNG, TGA, …); KTX2 and DDS are produced inside an
 engine's content pipeline and never hand-authored or carried, so the viewer is
 never handed one. We do use GPU block compression internally — the baked IBL cubes
-are BC6H — but that is our own offline bake, not an import path.
+are BC6H and the UV checker's chains BC7 — but those are our own bakes, not an
+import path.
 
 ---
 
