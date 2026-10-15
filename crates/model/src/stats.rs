@@ -7,6 +7,17 @@
 
 use crate::*;
 
+/// Size in bytes of one *engine-equivalent* vertex: position, normal, UV,
+/// tangent and color - the tuple a game engine's vertex buffer would hold for
+/// this mesh.
+///
+/// What the Opt workspace's overfetch figure is measured against: meshoptimizer
+/// reports "bytes fetched / vertex buffer size", which describes the asset's
+/// real cost only when given the size an engine would fetch. Here rather than
+/// in `render` so a caller with no renderer - `review-cli` - measures the same
+/// figure the viewer shows; `render` pins its own vertex layout against it.
+pub const ENGINE_VERTEX_BYTES: usize = 64;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ModelStats {
     pub polygon_count: usize,

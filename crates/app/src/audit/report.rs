@@ -43,7 +43,7 @@ impl App {
                 stem: self.scene_model.name.clone(),
             }),
             Err(error) => self.notifications.error(keys::app_audit::report_failed(
-                crate::explain::explain_audit_error(&error),
+                review_labels::audit::explain_audit_error(&error),
             )),
         }
     }

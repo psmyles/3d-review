@@ -58,6 +58,10 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+; The "addtopath" task edits the user's PATH: this is what has Setup (and the
+; uninstaller) tell open Explorer windows and terminals started from them to
+; reload it, rather than leave the change unseen until the next sign-in.
+ChangesEnvironment=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -65,6 +69,9 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "associate"; GroupDescription: "File associations:"; \
   Description: "Associate .fbx files with {#MyAppName}"
+Name: "addtopath"; GroupDescription: "Command line:"; \
+  Description: "Add {#MyAppName} to my PATH, so ""review-cli"" runs from any terminal"; \
+  Flags: unchecked
 Name: "desktopicon"; GroupDescription: "Additional icons:"; \
   Description: "Create a desktop shortcut"; Flags: unchecked
 
@@ -73,6 +80,10 @@ Name: "desktopicon"; GroupDescription: "Additional icons:"; \
 ; maps, the message catalogs and every manual page's *text* are all
 ; include_bytes!-embedded.
 Source: "..\target\release\{#MyAppExe}"; DestDir: "{app}"; Flags: ignoreversion
+; The console tool (docs\cli.md): the Opt and Aud workspaces for scripts,
+; pipelines and Launcher. Beside the viewer, so anything that finds the install
+; through its Uninstall key's InstallLocation finds this too.
+Source: "..\target\release\review-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; The manual's images are the one exception (invariant 12): embedding
 ; screenshots would put megabytes in a binary whose startup time is a feature.
 ; An install without them still shows every page — each image renders as its
@@ -114,3 +125,125 @@ Root: HKA; Subkey: "Software\Classes\.fbx\OpenWithProgIds"; ValueType: string; V
 [Run]
 Filename: "{app}\{#MyAppExe}"; Description: "Launch {#MyAppName}"; \
   Flags: nowait postinstall skipifsilent
+
+[Code]
+// The PATH entry behind the "addtopath" task, so `review-cli` runs from any
+// terminal. Only the per-user PATH is touched, whichever install scope was
+// chosen: an all-users install would need the machine variable, and appending to
+// that from a setup that may be running unelevated is not safe. Launcher and other
+// tools need none of it - they find review-cli.exe beside the viewer through the
+// Uninstall key. The entry is removed on uninstall. (The same code as Bite's
+// installer.)
+
+const
+  EnvironmentKey = 'Environment';
+
+function PathDirs(const Path: string): TArrayOfString;
+var
+  Remaining, Item: string;
+  Count, Position: Integer;
+begin
+  SetArrayLength(Result, 0);
+  Remaining := Path;
+  Count := 0;
+  while Remaining <> '' do
+  begin
+    Position := Pos(';', Remaining);
+    if Position = 0 then
+    begin
+      Item := Remaining;
+      Remaining := '';
+    end
+    else
+    begin
+      Item := Copy(Remaining, 1, Position - 1);
+      Remaining := Copy(Remaining, Position + 1, Length(Remaining) - Position);
+    end;
+    Item := Trim(Item);
+    if Item <> '' then
+    begin
+      SetArrayLength(Result, Count + 1);
+      Result[Count] := Item;
+      Count := Count + 1;
+    end;
+  end;
+end;
+
+// True when Directory is already listed in Path. Compared case-insensitively and
+// without any trailing slash, so a second install does not add a duplicate entry.
+function PathContains(const Path, Directory: string): Boolean;
+var
+  Dirs: TArrayOfString;
+  Wanted, Item: string;
+  I: Integer;
+begin
+  Result := False;
+  Wanted := Lowercase(RemoveBackslashUnlessRoot(Directory));
+  Dirs := PathDirs(Path);
+  for I := 0 to GetArrayLength(Dirs) - 1 do
+  begin
+    Item := Lowercase(RemoveBackslashUnlessRoot(Dirs[I]));
+    if Item = Wanted then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
+procedure AddToUserPath(const Directory: string);
+var
+  Path: string;
+begin
+  if not RegQueryStringValue(HKCU, EnvironmentKey, 'Path', Path) then
+    Path := '';
+  if PathContains(Path, Directory) then
+    Exit;
+  if (Path <> '') and (Copy(Path, Length(Path), 1) <> ';') then
+    Path := Path + ';';
+  // REG_EXPAND_SZ: an existing PATH commonly holds %USERPROFILE% and friends, and
+  // rewriting it as a plain string would freeze those at today's values.
+  RegWriteExpandStringValue(HKCU, EnvironmentKey, 'Path', Path + Directory);
+end;
+
+procedure RemoveFromUserPath(const Directory: string);
+var
+  Path, Rebuilt, Wanted, Item: string;
+  Dirs: TArrayOfString;
+  I: Integer;
+begin
+  if not RegQueryStringValue(HKCU, EnvironmentKey, 'Path', Path) then
+    Exit;
+  Wanted := Lowercase(RemoveBackslashUnlessRoot(Directory));
+  Dirs := PathDirs(Path);
+  Rebuilt := '';
+  for I := 0 to GetArrayLength(Dirs) - 1 do
+  begin
+    Item := Dirs[I];
+    if Lowercase(RemoveBackslashUnlessRoot(Item)) <> Wanted then
+    begin
+      if Rebuilt <> '' then
+        Rebuilt := Rebuilt + ';';
+      Rebuilt := Rebuilt + Item;
+    end;
+  end;
+  if Rebuilt = Path then
+    Exit;
+  if Rebuilt = '' then
+    RegDeleteValue(HKCU, EnvironmentKey, 'Path')
+  else
+    RegWriteExpandStringValue(HKCU, EnvironmentKey, 'Path', Rebuilt);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  // ssPostInstall, so the install directory exists and the task selection is final.
+  if (CurStep = ssPostInstall) and WizardIsTaskSelected('addtopath') then
+    AddToUserPath(ExpandConstant('{app}'));
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+    RemoveFromUserPath(ExpandConstant('{app}'));
+end;

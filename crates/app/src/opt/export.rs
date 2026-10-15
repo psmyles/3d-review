@@ -151,7 +151,7 @@ impl App {
                 let notes = report
                     .notes
                     .iter()
-                    .map(crate::explain::explain_export_note)
+                    .map(review_labels::opt::explain_export_note)
                     .collect();
                 self.notifications.report(NoticeKind::Success, title, notes);
             }
@@ -192,7 +192,7 @@ impl App {
                 log::error!("FBX export failed: {error}");
                 self.notifications
                     .error(keys::app_notifications::export_failed(
-                        crate::explain::explain_opt_error(&error),
+                        review_labels::opt::explain_opt_error(&error),
                     ));
             }
         }

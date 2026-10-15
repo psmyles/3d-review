@@ -85,16 +85,6 @@ app-notifications-couldnt-save = Couldn't save { $file }
 app-notifications-couldnt-read = Couldn't read { $file }
 app-notifications-preset-loaded = Loaded { $file }
 
-# Per-object overrides that could not be reattached when a preset was loaded.
-app-notifications-overrides-dropped = { $count ->
-        [one] One per-object setting in the preset referred to an object this model doesn't have, so it was left out.
-       *[other] { $count } per-object settings in the preset referred to objects this model doesn't have, so they were left out.
-    }
-app-notifications-overrides-by-position = { $count ->
-        [one] One per-object setting came from an older preset that did not store object names, so it was matched by its place in the list - please check it landed on the object you meant.
-       *[other] { $count } per-object settings came from an older preset that did not store object names, so they were matched by their place in the list - please check they landed on the objects you meant.
-    }
-
 ## Updates
 
 app-notifications-checking-for-updates = Checking for updates...
@@ -119,17 +109,6 @@ app-notifications-device-lost-startup = The GPU stopped responding while startin
 
 # Named after the key that switched the view, so it is one word and always fits.
 app-notifications-buffer-mode = Buffer: { $buffer }
-
-## The errors a user can act on
-
-# Everything else keeps its library diagnostic verbatim; these tell the reader
-# what to *do*, which a diagnostic written for a bug report does not.
-app-notifications-opt-unavailable = Mesh optimization is not available in this build.
-    It was built without the optimizer library, so the Opt workspace can measure a
-    model but cannot change one.
-app-notifications-preset-newer = This preset was saved by a newer version of the viewer.
-    It is version { $found }, and this build understands up to version { $supported }.
-    Open it with the version that saved it, or set the operations up again here.
 
 ## The export's own report
 

@@ -19,12 +19,12 @@ use review_render::{ActiveMaterial, VertexColorMode};
 
 use crate::docs::Page;
 use crate::keys;
-use crate::labels;
 use crate::opt_state::{OptIntent, StackItem};
 use crate::state::UiState;
 use crate::theme;
 use crate::theme::{color, size};
 use crate::widgets::{self, Tip, tip, tip_body, wide_button};
+use review_labels::opt::{op_description, op_kind};
 
 /// Draw the pane. Returns the preset/export intent raised this frame, if any.
 pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> {
@@ -96,12 +96,12 @@ fn add_menu(ui: &mut egui::Ui, state: &mut UiState) {
             let kind = make();
             let is_lod = matches!(kind, OpKind::SimplifyLod(_));
             let enabled = !(is_lod && has_lod);
-            let response = ui.add_enabled(enabled, egui::Button::new(labels::op_kind(&kind)));
+            let response = ui.add_enabled(enabled, egui::Button::new(op_kind(&kind)));
             let response = if enabled {
                 tip(
                     response,
-                    Tip::new(labels::op_kind(&kind))
-                        .describe(labels::op_description(&kind))
+                    Tip::new(op_kind(&kind))
+                        .describe(op_description(&kind))
                         .page(Page::OptOperations),
                 )
             } else {
@@ -169,8 +169,8 @@ fn operation_rows(ui: &mut egui::Ui, state: &mut UiState) {
         }
         tip(
             response,
-            Tip::new(labels::op_kind(&op.kind))
-                .describe(labels::op_description(&op.kind))
+            Tip::new(op_kind(&op.kind))
+                .describe(op_description(&op.kind))
                 .page(Page::OptOperations),
         );
 
@@ -194,7 +194,7 @@ fn operation_rows(ui: &mut egui::Ui, state: &mut UiState) {
 
         // A disabled operation is dimmed so a stack that is half switched off
         // reads at a glance.
-        let text = egui::RichText::from(labels::op_kind(&op.kind)).color(if !op.enabled {
+        let text = egui::RichText::from(op_kind(&op.kind)).color(if !op.enabled {
             color::TEXT_MUTED
         } else if is_selected {
             color::TEXT_PRIMARY

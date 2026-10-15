@@ -47,7 +47,7 @@ pub use scene::{
     Axis, BoneInfo, CoordinateAxes, LocalTransform, MaterialImportDefaults, NodeKind, SceneNode,
 };
 pub use skin::{SkinCluster, SkinData, SkinDeformerInfo, SkinningMethod};
-pub use stats::{MeshGroupStats, ModelStats, ScopeStats, StatsScope};
+pub use stats::{ENGINE_VERTEX_BYTES, MeshGroupStats, ModelStats, ScopeStats, StatsScope};
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModelData {

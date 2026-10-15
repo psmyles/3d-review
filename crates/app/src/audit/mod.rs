@@ -269,7 +269,7 @@ impl App {
                 Err(error) => {
                     log::error!("audit failed: {error}");
                     self.notifications.error(keys::app_audit::failed(
-                        crate::explain::explain_audit_error(&error),
+                        review_labels::audit::explain_audit_error(&error),
                     ));
                 }
             }
