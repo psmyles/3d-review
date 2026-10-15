@@ -54,15 +54,14 @@ use crate::geometry::{scene_lines, uv_grid_lines};
 use crate::ibl::IblMaps;
 use crate::material::{MaterialKey, MaterialState, MaterialTable, effective_materials};
 use crate::rhi::{
-    Bindings, Cull, DEPTH_MIP_COLORS, Depth, DepthBias, Format, Frame, GBUFFER_COLORS, GpuResult,
+    Bindings, Cull, DEPTH_MIP_COLORS, Depth, DepthBias, Frame, GBUFFER_COLORS, GpuResult,
     OCCLUSION_COLORS, Pipeline, PipelineDesc, Sampler, StorageBuffer, Texture, Topology,
     VertexBuffer, Zone, shader,
 };
 use crate::shaders::generated;
-use crate::{
-    CheckerTexture, EnvironmentSettings, GhostStyle, OrbitCamera, SceneFrame, ShadingMode,
-};
+use crate::{EnvironmentSettings, GhostStyle, OrbitCamera, SceneFrame, ShadingMode};
 
+use super::checker::CheckerGpu;
 use super::gpu_types::{InfluenceEntry, MorphEntry, PaletteEntry, SceneUniforms};
 use super::opt::ghost_tint;
 use super::pipelines::{
@@ -72,14 +71,6 @@ use super::pipelines::{
 use super::slot::{ModelSlot, SlotId};
 use super::targets::{BackbufferRect, TargetSet, TargetSetId};
 use super::uniforms::{LineWidths, flat_display, post_uniforms, scene_uniforms};
-
-/// The greyscale + colour UV-checker PNGs (baked in; invariant: assets via
-/// `include_bytes!`), uploaded once as sRGB textures and picked per frame.
-pub(super) const CHECKER_GREYSCALE_PNG: &[u8] =
-    include_bytes!("../../../../assets/textures/T_UV_Checker_BW.png");
-
-pub(super) const CHECKER_COLOR_PNG: &[u8] =
-    include_bytes!("../../../../assets/textures/T_UV_Checker_CLR.png");
 
 /// Vertices in a fullscreen triangle — the skybox and the composite, both of which
 /// build their corners from `gl_VertexIndex`.
@@ -145,14 +136,12 @@ pub(crate) struct SceneGpu {
     pub(super) gtao_denoise_pipeline: Pipeline,
     /// Linear clamp — the composite's input sampler and the IBL sampler.
     pub(super) sampler: Sampler,
-    /// Repeat sampler for the UV checker.
-    pub(super) checker_sampler: Sampler,
     /// Point-clamp sampler for the GTAO passes, so view normals and depths are never
     /// blended across geometry edges.
     pub(super) gtao_sampler: Sampler,
-    /// The two baked UV-checker textures, picked per frame.
-    pub(super) checker_greyscale: Texture,
-    pub(super) checker_color: Texture,
+    /// The UV-checker material's texture, loaded only while that material is on.
+    /// It is sampled through the material table's anisotropic sampler.
+    pub(super) checker: CheckerGpu,
     /// The image-based-lighting maps, reloaded on environment change.
     pub(super) ibl: IblMaps,
     /// The editable per-material table.
@@ -271,10 +260,8 @@ impl SceneGpu {
             gtao_pipeline,
             gtao_denoise_pipeline,
             sampler: Sampler::linear_clamp()?,
-            checker_sampler: Sampler::linear_repeat()?,
             gtao_sampler: Sampler::point_clamp()?,
-            checker_greyscale: decode_checker(CHECKER_GREYSCALE_PNG)?,
-            checker_color: decode_checker(CHECKER_COLOR_PNG)?,
+            checker: CheckerGpu::new()?,
             ibl: IblMaps::from_baked(EnvironmentSettings::default().map)?,
             materials: MaterialTable::new()?,
             dummies: DeformDummies::new()?,
@@ -460,8 +447,8 @@ impl SceneGpu {
 
     /// Reconcile every GPU resource with this frame's inputs: the offscreen targets,
     /// the Unique-mode part key, the mesh buffers + effective material table, the
-    /// pose, the derived line views, the selection / visibility draw lists, and the
-    /// IBL maps.
+    /// pose, the derived line views, the selection / visibility draw lists, the IBL
+    /// maps and the UV checker.
     pub(super) fn sync_frame(
         &mut self,
         frame: &Frame<'_>,
@@ -552,11 +539,12 @@ impl SceneGpu {
             scene.debug.material_mode,
         )?;
 
-        // Reload the IBL maps when the chosen environment changes (a pure upload).
+        // Reload the IBL maps when the chosen environment changes (a pure upload),
+        // and load or drop the UV checker with its material (invariant 3).
         if self.ibl.environment != scene.environment.map {
             self.ibl = IblMaps::from_baked(scene.environment.map)?;
         }
-        Ok(())
+        self.checker.sync(&scene.debug)
     }
 
     /// The offscreen 2-MRT scene pass — skybox, the mesh draw list, the hover and
@@ -589,10 +577,7 @@ impl SceneGpu {
             c"scene",
         );
 
-        let checker = match scene.debug.uv_checker_texture {
-            CheckerTexture::Greyscale => &self.checker_greyscale,
-            CheckerTexture::Color => &self.checker_color,
-        };
+        let checker = self.checker.texture();
 
         // Back to front: the skybox behind everything, the mesh, the hover and
         // selection fills over it, then the ghost.
@@ -938,29 +923,4 @@ pub(super) struct LineViews<'a> {
 /// shading mode, which draws the edges as the only geometry.
 pub(super) fn wireframe_on(scene: &SceneFrame<'_>) -> bool {
     scene.debug.wireframe_overlay || matches!(scene.debug.shading_mode, ShadingMode::Wireframe)
-}
-
-/// Decode a baked UV-checker PNG into an sRGB GPU texture. A decode failure is a
-/// packaging bug — fall back to a 1×1 white texel rather than failing the build of
-/// the scene resources.
-pub(super) fn decode_checker(png_bytes: &[u8]) -> GpuResult<Texture> {
-    match image::load_from_memory(png_bytes) {
-        Ok(image) => {
-            let rgba = image.to_rgba8();
-            let (width, height) = rgba.dimensions();
-            Texture::immutable_2d(&rgba, width, height, Format::Rgba8Srgb, c"uv checker")
-        }
-        Err(error) => {
-            // Degrading to flat white is deliberate, but not silently: a corrupt baked
-            // checker is a packaging bug worth seeing in the log.
-            log::warn!("baked UV-checker PNG failed to decode: {error}");
-            Texture::immutable_2d(
-                &[255, 255, 255, 255],
-                1,
-                1,
-                Format::Rgba8Srgb,
-                c"uv checker",
-            )
-        }
-    }
 }

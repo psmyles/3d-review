@@ -2,8 +2,8 @@
 //! [`crate::rhi`] has to spell a backend enum.
 //!
 //! This is deliberately a *closed* list, not a mapping of everything the backend
-//! offers: it is exactly the nine formats the scene, GTAO, IBL and Tex paths draw
-//! into or sample from. Adding a format means adding a variant here and its
+//! offers: it is exactly the ten formats the scene, GTAO, IBL, UV checker and Tex
+//! paths draw into or sample from. Adding a format means adding a variant here and its
 //! translation below — which is the point, since that translation is the only place
 //! a format ever has to be named twice.
 //!
@@ -50,6 +50,11 @@ pub enum Format {
     /// GPU-native, so sampling costs nothing and there is no decode step; core in
     /// Direct3D 11 feature level 11_0 and on Apple silicon, the renderer's floors.
     Bc6hUf16,
+    /// BC7 block compression, sampled with hardware sRGB conversion — the UV
+    /// checker's mip chains, baked at build time. A quarter of [`Self::Rgba8Srgb`]'s
+    /// memory and no decode step; core in Direct3D 11 feature level 11_0 and on Apple
+    /// silicon, like BC6H.
+    Bc7Srgb,
     /// 32-bit float depth. Scene depth, cleared to 0 and tested `GreaterEqual`
     /// (Reversed-Z).
     Depth32F,
@@ -77,6 +82,7 @@ impl Format {
             Self::R16F => sg::PixelFormat::R16f,
             Self::R32F => sg::PixelFormat::R32f,
             Self::Bc6hUf16 => sg::PixelFormat::Bc6hRgbuf,
+            Self::Bc7Srgb => sg::PixelFormat::Bc7Srgba,
             Self::Depth32F => sg::PixelFormat::Depth,
             Self::Swapchain => super::backend::SWAPCHAIN_FORMAT,
         }
@@ -85,7 +91,7 @@ impl Format {
     /// Whether the format is block-compressed (4×4 texels per block), which is what
     /// decides whether a mip's row pitch is counted in texels or in blocks.
     pub(in crate::rhi) const fn is_block_compressed(self) -> bool {
-        matches!(self, Self::Bc6hUf16)
+        matches!(self, Self::Bc6hUf16 | Self::Bc7Srgb)
     }
 
     /// Whether the device can render into this format *and* blend there — what an
@@ -107,8 +113,8 @@ impl Format {
             | Self::Depth32F
             | Self::Swapchain => 4,
             Self::Rgba16F => 8,
-            // BC6H: one 16-byte block per 4×4 texels.
-            Self::Bc6hUf16 => 16,
+            // BC6H and BC7: one 16-byte block per 4×4 texels.
+            Self::Bc6hUf16 | Self::Bc7Srgb => 16,
         }
     }
 }

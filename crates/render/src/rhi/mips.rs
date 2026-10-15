@@ -18,14 +18,22 @@
 //! an odd (or 1-texel) axis repeats its last row/column rather than reading past it.
 //! D3D11's own non-power-of-two kernel is slightly wider than that; the difference is
 //! a fraction of a code in a minified mip.
+//!
+//! The UV checker's chains are built from this same file at *build* time
+//! (`build/uv_checker.rs` includes it by path), so the module names nothing from the
+//! drawing API: its one sokol fact, [`MAX_LEVELS`], is a plain constant here that
+//! `texture.rs` pins to sokol's own.
 
 use review_model::color::linear_to_srgb;
-use sokol::gfx as sg;
+
+/// The most mip levels an image can hold — sokol's `SG_MAX_MIPMAPS`, asserted equal
+/// beside the uploads that rely on it.
+pub(crate) const MAX_LEVELS: u32 = 16;
 
 /// Levels in a full chain for a `width`×`height` texture: `floor(log2(max)) + 1`,
 /// capped at what sokol can hold.
 pub(crate) fn level_count(width: u32, height: u32) -> u32 {
-    (32 - width.max(height).max(1).leading_zeros()).min(sg::MAX_MIPMAPS as u32)
+    (32 - width.max(height).max(1).leading_zeros()).min(MAX_LEVELS)
 }
 
 /// Every level *below* level 0, tightly packed RGBA8, largest first.

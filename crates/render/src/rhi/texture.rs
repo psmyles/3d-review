@@ -15,6 +15,13 @@ use super::format::Format;
 use super::make;
 use super::mips;
 
+// `mips` stays free of sokol so the build script can compile it; this is where its
+// level cap is held to the one sokol actually has.
+const _: () = assert!(
+    mips::MAX_LEVELS as usize == sg::MAX_MIPMAPS,
+    "mips::MAX_LEVELS no longer matches sokol's SG_MAX_MIPMAPS"
+);
+
 /// An immutable 2D texture and its sampling view.
 pub(crate) struct Texture {
     image: sg::Image,
@@ -44,7 +51,8 @@ impl Texture {
             })?;
         if format.is_block_compressed() {
             return Err(GpuError::invalid_arg(format!(
-                "'{name}' asks for a block-compressed 2D upload, which has no caller yet"
+                "'{name}' asks for a block-compressed upload from texel rows; \
+                 a block-compressed 2D texture goes through `block_compressed_2d`"
             )));
         }
         if pixels.len() != expected {
@@ -110,6 +118,69 @@ impl Texture {
         }
         desc.label = label.as_ptr();
         // `levels` is alive across the call, which is what the ranges above point at.
+        Self::from_desc(&desc, label)
+    }
+
+    /// Upload an immutable block-compressed 2D texture with `levels` mips from
+    /// level-major block bytes, largest first — the UV checker's chains, as the build
+    /// script wrote them. Each level is its own block grid, rounded up to whole 4×4
+    /// blocks, so the 2×2 and 1×1 levels still take one block apiece.
+    ///
+    /// `width` and `height` must be whole blocks: Direct3D 11 refuses a
+    /// block-compressed texture whose top level is not, and so this does too, before
+    /// sokol is handed anything.
+    pub(crate) fn block_compressed_2d(
+        width: u32,
+        height: u32,
+        levels: u32,
+        format: Format,
+        data: &[u8],
+        label: &CStr,
+    ) -> GpuResult<Self> {
+        let name = label.to_str().unwrap_or("texture");
+        debug_assert!(
+            format.is_block_compressed(),
+            "block_compressed_2d needs a block-compressed format"
+        );
+        if width == 0 || height == 0 || !width.is_multiple_of(4) || !height.is_multiple_of(4) {
+            return Err(GpuError::invalid_arg(format!(
+                "'{name}' is {width}x{height}, which is not a whole number of 4x4 blocks"
+            )));
+        }
+        if levels == 0 || levels > mips::level_count(width, height) {
+            return Err(GpuError::invalid_arg(format!(
+                "'{name}' asks for {levels} levels, which a {width}x{height} image cannot have"
+            )));
+        }
+        let block_bytes = format.block_bytes() as usize;
+        let level_len = |level: u32| -> usize {
+            let blocks_wide = (width >> level).max(1).div_ceil(4) as usize;
+            let blocks_high = (height >> level).max(1).div_ceil(4) as usize;
+            blocks_wide * blocks_high * block_bytes
+        };
+        // The whole payload, checked before any range into it is made.
+        let total: usize = (0..levels).map(level_len).sum();
+        if data.len() != total {
+            return Err(GpuError::invalid_arg(format!(
+                "'{name}' is {} bytes but its {levels}-level layout needs {total}",
+                data.len()
+            )));
+        }
+
+        let mut desc = sg::ImageDesc::new();
+        desc._type = sg::ImageType::Dim2;
+        desc.usage.immutable = true;
+        desc.width = width as i32;
+        desc.height = height as i32;
+        desc.num_mipmaps = levels as i32;
+        desc.pixel_format = format.sg();
+        desc.label = label.as_ptr();
+        let mut offset = 0usize;
+        for level in 0..levels {
+            let len = level_len(level);
+            desc.data.mip_levels[level as usize] = sg::slice_as_range(&data[offset..offset + len]);
+            offset += len;
+        }
         Self::from_desc(&desc, label)
     }
 

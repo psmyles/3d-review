@@ -20,9 +20,9 @@ document, together with the [`../licenses/`](../licenses/) directory, is how the
 The crate table is derived from `Cargo.lock` (runtime dependencies only, for the union of the
 two shipped targets `x86_64-pc-windows-msvc` and `aarch64-apple-darwin` - a crate that appears on
 only one of them is still listed, since both binaries are built from this tree). Build-time-only
-tooling - `cc`, `sha2`, `winresource`, `sokol-shdc`, `fxc`, `xcrun metal`, the IBL bake's
-`intel_tex_2`, ImageMagick - is excluded: it produces the binary but no part of it is linked into
-the binary.
+tooling - `cc`, `sha2`, `winresource`, `sokol-shdc`, `fxc`, `xcrun metal`, `intel_tex_2` (the
+IBL bake and the UV checker bake), ImageMagick - is excluded: it produces the binary but no part
+of it is linked into the binary.
 
 ---
 
@@ -186,7 +186,8 @@ licenses apply to those parts. Each ported function says so in a comment beside 
   (`assets/icons/application-logo.png` / `.ico`) - original to 3D Review, covered by its MIT
   license.
 * **UV checker textures** (`assets/textures/T_UV_Checker_BW.png`, `T_UV_Checker_CLR.png`),
-  embedded by `crates/render` - original to 3D Review, covered by its MIT license.
+  embedded by `crates/render` as BC7 mip chains baked from them at build time - original to
+  3D Review, covered by its MIT license.
 * **Lighting environments** - six equirectangular Radiance HDR images
   (`assets/textures/T_HDR_01.hdr` ... `T_HDR_06.hdr`) from **Poly Haven**
   (<https://polyhaven.com>), released under **CC0** (<https://polyhaven.com/license>). The HDRs
@@ -504,10 +505,11 @@ is affected. Full text: [`licenses/MPL-2.0.txt`](../licenses/MPL-2.0.txt).
 * **Build-time tooling.** `cc` (compiles the vendored C/C++), `sha2` (the shader-bytecode
   manifest), `winresource` (the Windows version resource and icon), `sokol-shdc` (generates the
   per-backend shader sources), `fxc.exe` and `xcrun metal` (compile them to bytecode offline) run
-  during the build and contribute no code to the binary. The offline IBL bake (`bake_ibl`, behind
-  `review-render`'s `bake` feature) additionally uses `intel_tex_2` and `ispc_rt` - the Intel ISPC
-  Texture Compressor's BC6H encoder - on a developer machine; its output is the `.bin` maps, and
-  none of its code is in the shipped binary. ImageMagick (vendored as a binary under
+  during the build and contribute no code to the binary. `intel_tex_2` and `ispc_rt` - the Intel
+  ISPC Texture Compressor's encoders - run in two places: `review-render`'s build script, whose BC7
+  encode of the UV checker textures is embedded as data, and the offline IBL bake (`bake_ibl`,
+  behind `review-render`'s `bake` feature), whose BC6H output is the `.bin` maps. None of their
+  code is in the shipped binary. ImageMagick (vendored as a binary under
   `packaging/magick/`, with its own `LICENSE.txt` and `NOTICE.txt`) generates the HDR thumbnails
   and the application icons at packaging time and is not installed. The manual's website is built
   with mdBook. Inno Setup builds the Windows installer; its license permits distributing the
