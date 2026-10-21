@@ -8,7 +8,7 @@ use crate::ibl::PREFILTER_MAX_LOD;
 use crate::selection::SelectionView;
 use crate::{
     ActiveMaterial, CameraProjection, EnvironmentSettings, GtaoSettings, OrbitCamera,
-    SceneDebugOptions, SceneFrame, TonemapSettings, UvCamera, ViewportBackground,
+    SceneDebugOptions, SceneFrame, ShadingMode, TonemapSettings, UvCamera, ViewportBackground,
 };
 
 use super::ao_accum::{AoPlan, temporal_pattern};
@@ -23,11 +23,17 @@ use super::gpu_types::{
 /// They bypass lighting, the composite's tone map and GTAO entirely — a value shown
 /// through a tone curve is no longer the value — so the composite blits straight
 /// through and the occlusion passes are skipped.
+///
+/// Never in Wireframe shading, which draws no surface for one to show: the frame is
+/// lines and the skybox, and passing those straight through would leave them alone
+/// untone-mapped, so a wireframe would look different for a material it does not
+/// draw. `ui`'s `UiState::flat_view` is the same rule, for the chrome.
 pub(super) fn flat_display(frame: &SceneFrame<'_>) -> bool {
-    matches!(
-        frame.debug.active_material,
-        ActiveMaterial::Buffers | ActiveMaterial::SkinWeights
-    ) || frame.debug.heat_map.is_active()
+    !matches!(frame.debug.shading_mode, ShadingMode::Wireframe)
+        && (matches!(
+            frame.debug.active_material,
+            ActiveMaterial::Buffers | ActiveMaterial::SkinWeights
+        ) || frame.debug.heat_map.is_active())
 }
 
 /// Build the composite pass's [`PostUniforms`] from the live settings.
@@ -87,11 +93,7 @@ pub(super) fn scene_uniforms(
         env_params: [
             if environment.ibl_enabled { 1.0 } else { 0.0 },
             environment.intensity.max(0.0),
-            if environment.show_background {
-                1.0
-            } else {
-                0.0
-            },
+            if environment.draws_skybox() { 1.0 } else { 0.0 },
             PREFILTER_MAX_LOD,
         ],
         projection_params: [

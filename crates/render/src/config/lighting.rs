@@ -48,7 +48,8 @@ impl EnvironmentMap {
 /// path falls back to the analytic neutral-hemisphere lighting. `show_background`
 /// draws the chosen map as a skybox behind the model (off by default — the
 /// neutral background is kept so the model stands out, while the surface still
-/// reflects the environment). `intensity` scales the IBL contribution.
+/// reflects the environment); it asks for the skybox, and IBL being on is what
+/// grants it ([`Self::draws_skybox`]). `intensity` scales the IBL contribution.
 /// `rotation_degrees` spins the environment about the world Y axis (0..360, 0 =
 /// as-authored); applied live at sample time in the scene shader, so it never
 /// rebuilds the precomputed IBL maps.
@@ -71,6 +72,15 @@ impl Default for EnvironmentSettings {
             intensity: 1.0,
             rotation_degrees: 0.0,
         }
+    }
+}
+
+impl EnvironmentSettings {
+    /// Whether the environment is drawn as the background. Only while IBL is on:
+    /// with it off nothing on screen comes from the environment, so it is not
+    /// drawn behind the model either.
+    pub fn draws_skybox(&self) -> bool {
+        self.ibl_enabled && self.show_background
     }
 }
 

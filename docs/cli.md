@@ -90,7 +90,7 @@ workspace's Export does.
 |---|---|
 | `--out <folder>` | Required. Where the models are written. A model found in a folder keeps its place below it: `props/crates/a.fbx` under `--out build` is written to `build/crates/a.fbx`. |
 | `--preset <file>` | A preset saved from the Opt workspace (**Save preset**). Its per-object settings are matched to each model's objects by name, as **Load preset** does. One that matches nothing is dropped, with a warning. |
-| `--lods <ratios>\|none` | The LOD chain, as shares of the triangles: `0.5,0.25` or `50%,25%`, at most 8. Replaces the preset's chain. A level the preset already has keeps its error limit, and a new one gets twice the one before it. `none` turns the preset's chain off. |
+| `--lods <ratios>\|none` | The LOD chain, as shares of the triangles: `0.5,0.25` or `50%,25%`, at most 8. Replaces the preset's chain. A level the preset already has keeps its error limit, and a new one gets the one before it (0.01 by default, at every level). `none` turns the preset's chain off. |
 | `--reduce <ratio>` | Simplify the model itself to this share of its triangles before any LODs are made. Sets the preset's Reduce, or adds one before the chain. |
 | `--packaging single-file\|file-per-lod` | `single-file` writes one FBX holding `Name_LOD0`...`Name_LODn`. `file-per-lod` writes `name_LOD0.fbx`, `name_LOD1.fbx`... A run with no chain writes `name.fbx` either way. |
 | `--hierarchy rebuild\|flat` | `rebuild` keeps the model's hierarchy; `flat` writes every mesh at the top level, in world space. |

@@ -44,7 +44,8 @@ it and faint where something is in front of it, so nothing hidden is missed.
 If none of the problem is on screen, the camera moves to it. Press `F` to frame
 it at any time. Click a part under the check, or in the Inspector's **Parts**
 list, to look at only that part's problems. Click the finding again, or press
-`Esc`, to go back to the plain model.
+`Esc`, to let go of it. The model stays grey until you pick a material button,
+such as **Source Material**, which shows its own materials again.
 
 In Select mode, clicking a highlighted problem in the viewport - a tinted face,
 or close to a marked edge or dot - picks it in the list; clicking anywhere else

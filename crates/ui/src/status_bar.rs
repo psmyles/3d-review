@@ -14,13 +14,14 @@ use crate::docs::Page;
 use crate::keys;
 use crate::labels;
 use crate::opt_state::OptLayout;
-use crate::state::{OptionPanel, TexViewRequest, TextureBackground, UiState, WorkspaceMode};
+use crate::state::{
+    OptionPanel, TexViewRequest, TextureBackground, UiState, ViewControl, WorkspaceMode,
+};
 use crate::theme::{color, font, size};
 use crate::transport;
 use crate::widgets::{
     Tip, bar_group_rect, bar_group_rect_centered, bar_group_scope, compact_combo,
-    icon_toggle_button, icon_toggle_button_with_options, option_toggle, segment_button, tip,
-    toolbar_group_shell,
+    icon_toggle_button, option_toggle, segment_button, tip, toolbar_group_shell, view_toggle,
 };
 use review_model::ModelData;
 use review_render::ViewportBackground;
@@ -114,13 +115,21 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, model: &ModelData) 
                 quint_icon_group_width,
                 group_height,
             );
+            // What the view on screen overrides — an overdraw count every one of
+            // these, a flat view the lighting and tone map — dims its tile
+            // (`state::view_rules`).
+            let background_overridden = state.override_reason(ViewControl::Background);
+            let ibl_overridden = state.override_reason(ViewControl::Ibl);
+            let ao_overridden = state.override_reason(ViewControl::AmbientOcclusion);
+            let tonemap_overridden = state.override_reason(ViewControl::Tonemap);
+            let aa_overridden = state.override_reason(ViewControl::AntiAliasing);
             bar_group_scope(ui, right_rect, group_height, |ui| {
                 toolbar_group_shell(ui, quint_icon_group_width, |ui| {
                     // Viewport background. Left-click cycles the presets (not a
                     // plain toggle, so it stays hand-wired), right-click opens the
                     // Background options panel; highlighted while a non-default
                     // (non-black) background is active.
-                    let background = icon_toggle_button_with_options(
+                    let background = view_toggle(
                         ui,
                         &ICON_BACKGROUND,
                         state.viewport_background != ViewportBackground::Black,
@@ -128,6 +137,8 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, model: &ModelData) 
                             .describe(keys::ui_status_bar::VIEWPORT_BACKGROUND_DESCRIPTION)
                             .with_options()
                             .page(Page::PanelsBackground),
+                        true,
+                        background_overridden,
                     );
                     if background.clicked() {
                         state.viewport_background = state.viewport_background.next();
@@ -152,6 +163,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, model: &ModelData) 
                                 .describe(keys::ui_status_bar::IBL_DESCRIPTION)
                                 .with_options()
                                 .page(Page::PanelsEnvironment),
+                            ibl_overridden,
                         );
                     });
 
@@ -171,6 +183,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, model: &ModelData) 
                                 .describe(keys::ui_status_bar::AO_DESCRIPTION)
                                 .with_options()
                                 .page(Page::PanelsAmbientOcclusion),
+                            ao_overridden,
                         );
                     });
 
@@ -185,6 +198,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, model: &ModelData) 
                             .describe(keys::ui_status_bar::TONEMAP_DESCRIPTION)
                             .with_options()
                             .page(Page::PanelsTonemapper),
+                        tonemap_overridden,
                     );
                     option_toggle(
                         ui,
@@ -196,6 +210,7 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, model: &ModelData) 
                             .describe(keys::ui_status_bar::ANTI_ALIASING_DESCRIPTION)
                             .with_options()
                             .page(Page::PanelsAntiAliasing),
+                        aa_overridden,
                     );
                 });
             });

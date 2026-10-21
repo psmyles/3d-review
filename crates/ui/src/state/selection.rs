@@ -106,14 +106,18 @@ impl UiState {
     /// highlight — from the scene selection. The two are exclusive like the
     /// Opt stack pane and the Outliner: a finding's severity colours and the
     /// selection's orange would otherwise compete on the same mesh. Focusing
-    /// sets the view to the one that shows the finding best.
+    /// sets the view to the one that shows the finding best; letting go leaves
+    /// the view alone, since the toolbar shows it lit and changing it unasked
+    /// would be a second thing the click did.
     pub fn select_audit_focus(&mut self, focus: Option<crate::aud_state::AuditFocus>) {
         self.clear_selection();
         self.aud.focus = focus;
-        self.aud.view = focus.and_then(crate::aud_state::AuditFocus::rule).map_or(
-            review_audit::DiagnosticView::Issues,
-            review_audit::RuleId::related_view,
-        );
+        if let Some(focus) = focus {
+            self.aud.view = Some(focus.rule().map_or(
+                review_audit::DiagnosticView::Issues,
+                review_audit::RuleId::related_view,
+            ));
+        }
     }
 
     /// Open the audit profile in the Inspector.
@@ -352,13 +356,20 @@ mod tests {
         state.select_only(4, SelectionKind::Node);
         state.select_audit_focus(Some(AuditFocus::Rule(RuleId::TexelDensity)));
         assert!(!state.has_selection(), "the finding takes the viewport");
-        assert_eq!(state.aud.view, DiagnosticView::TexelDensity);
+        assert_eq!(state.aud.view, Some(DiagnosticView::TexelDensity));
 
         state.select_only(4, SelectionKind::Node);
         assert_eq!(state.aud.focus, None, "a part click takes it back");
 
         state.select_audit_focus(Some(AuditFocus::Offender(RuleId::NonManifoldEdges, 2)));
-        assert_eq!(state.aud.view, DiagnosticView::Issues);
+        assert_eq!(state.aud.view, Some(DiagnosticView::Issues));
+        state.select_audit_focus(None);
+        assert_eq!(
+            state.aud.view,
+            Some(DiagnosticView::Issues),
+            "letting go of a finding leaves the view the toolbar shows lit"
+        );
+        state.select_audit_focus(Some(AuditFocus::Offender(RuleId::NonManifoldEdges, 2)));
         state.select_material(Selection::Material(1));
         assert_eq!(state.aud.focus, None, "so does a material click");
 

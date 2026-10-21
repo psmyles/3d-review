@@ -19,7 +19,10 @@ use crate::keys;
 use crate::keys::ui_audit as k;
 use crate::state::UiState;
 use crate::theme::{color, size};
-use crate::widgets::{Tip, grid_control, grid_label_tip, panel_grid, tip, value_row, wide_button};
+use crate::widgets::{
+    Tip, grid_control, grid_label_tip, list_row, list_row_label, panel_grid, tip, value_row,
+    wide_button,
+};
 
 /// What the Aud inspector emitted this frame.
 #[derive(Debug, Clone, Default)]
@@ -155,7 +158,50 @@ fn finding_body(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData, focus
     }
 }
 
-/// Every finding of one object, each a link to that object's share of it.
+/// One row of the Inspector's lists of objects and findings, drawn like the
+/// Issues tab's: a full-width [`list_row`] carrying an optional severity glyph,
+/// the name, and its count at the right edge. Returns the row's click.
+fn count_row(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    selected: bool,
+    severity: Option<Severity>,
+    name: String,
+    count: u64,
+) -> egui::Response {
+    let (response, content, trailing) = list_row(
+        ui,
+        id,
+        selected,
+        size::AUD_COUNT_COLUMN,
+        size::OUTLINER_ROW_HEIGHT,
+    );
+    let mut name_rect = content;
+    if let Some(severity) = severity {
+        let glyph = egui::Rect::from_min_size(
+            content.left_top(),
+            egui::vec2(size::AUD_GLYPH_COLUMN, content.height()),
+        );
+        crate::panels::outliner::paint_severity_glyph(ui.painter(), glyph, severity);
+        name_rect.set_left(glyph.right());
+    }
+    let name_color = if selected {
+        color::TEXT_PRIMARY
+    } else {
+        color::TEXT_BODY
+    };
+    list_row_label(ui, name_rect, egui::RichText::new(name).color(name_color));
+    ui.painter().text(
+        egui::pos2(trailing.right(), trailing.center().y),
+        egui::Align2::RIGHT_CENTER,
+        k::row_count(count as f64),
+        egui::FontId::monospace(crate::theme::font::STATS),
+        color::TEXT_MUTED,
+    );
+    response
+}
+
+/// Every finding of one object, each a row selecting that object's share of it.
 fn object_body(
     ui: &mut egui::Ui,
     state: &mut UiState,
@@ -166,26 +212,27 @@ fn object_body(
     ui.heading(node_label(model, Some(node as u32)));
     ui.add_space(size::PANEL_ROW_GAP);
     let mut picked = None;
-    for result in report.results.iter().filter(|result| result.failed()) {
-        let Some(offender) = result.offender(node as u32) else {
-            continue;
-        };
-        ui.horizontal(|ui| {
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(size::AUD_GLYPH_COLUMN, size::OUTLINER_ROW_HEIGHT),
-                egui::Sense::hover(),
-            );
-            crate::panels::outliner::paint_severity_glyph(ui.painter(), rect, result.severity);
-            let text = format!(
-                "{}  {}",
-                review_localization::tr(audit_labels::rule_name(result.rule)),
-                k::row_count(offender.count as f64)
-            );
-            if ui.link(text).clicked() {
+    ui.scope(|ui| {
+        // Rows abut, as the Issues tab's do, so the hover bands tile.
+        ui.spacing_mut().item_spacing.y = 0.0;
+        for result in report.results.iter().filter(|result| result.failed()) {
+            let Some(offender) = result.offender(node as u32) else {
+                continue;
+            };
+            let clicked = count_row(
+                ui,
+                egui::Id::new(("aud_inspector_finding", result.rule)),
+                false,
+                Some(result.severity),
+                review_localization::tr(audit_labels::rule_name(result.rule)).into_owned(),
+                offender.count,
+            )
+            .clicked();
+            if clicked {
                 picked = Some(AuditFocus::Offender(result.rule, node));
             }
-        });
-    }
+        }
+    });
     if let Some(focus) = picked {
         state.select_audit_focus(Some(focus));
     }
@@ -258,7 +305,7 @@ fn rule_body(
             ui.label(egui::RichText::from(k::SEE_ALSO).color(color::TEXT_MUTED));
             let response = ui.add_enabled(
                 supported,
-                egui::Button::selectable(state.aud.view == view, title),
+                egui::Button::selectable(state.shown_diagnostic() == Some(view), title),
             );
             if supported {
                 if tip(
@@ -267,7 +314,7 @@ fn rule_body(
                 )
                 .clicked()
                 {
-                    state.aud.view = view;
+                    state.aud.view = Some(view);
                 }
             } else {
                 response.on_disabled_hover_ui(|ui| {
@@ -287,24 +334,32 @@ fn rule_body(
                 .page(Page::AudIssues),
         );
         let mut picked = None;
-        for candidate in result
-            .offenders
-            .iter()
-            .take(size::AUD_INSPECTOR_MAX_OBJECTS)
-        {
-            let selected = candidate.node.map(|node| node as usize) == node;
-            let text = format!(
-                "{}  {}",
-                node_label(model, candidate.node),
-                k::row_count(candidate.count as f64)
-            );
-            if ui.selectable_label(selected, text).clicked() {
-                picked = Some(match (candidate.node, selected) {
-                    (Some(node), false) => AuditFocus::Offender(rule, node as usize),
-                    _ => AuditFocus::Rule(rule),
-                });
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for (index, candidate) in result
+                .offenders
+                .iter()
+                .take(size::AUD_INSPECTOR_MAX_OBJECTS)
+                .enumerate()
+            {
+                let selected = candidate.node.map(|node| node as usize) == node;
+                let clicked = count_row(
+                    ui,
+                    egui::Id::new(("aud_inspector_object", index)),
+                    selected,
+                    None,
+                    node_label(model, candidate.node),
+                    candidate.count,
+                )
+                .clicked();
+                if clicked {
+                    picked = Some(match (candidate.node, selected) {
+                        (Some(node), false) => AuditFocus::Offender(rule, node as usize),
+                        _ => AuditFocus::Rule(rule),
+                    });
+                }
             }
-        }
+        });
         if result.offenders.len() > size::AUD_INSPECTOR_MAX_OBJECTS {
             ui.weak(k::truncated(
                 size::AUD_INSPECTOR_MAX_OBJECTS as f64,

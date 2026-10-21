@@ -130,14 +130,14 @@ pub struct SceneDebugOptions {
     /// double-sided — and picks one per frame from this flag, so toggling it
     /// allocates nothing.
     pub render_backfaces: bool,
-    /// A diagnostic colour map drawn in place of the material — the Aud
-    /// workspace's density views. `None` everywhere else.
+    /// A diagnostic colour map drawn in place of the material — the Aud and Opt
+    /// workspaces' density views. `None` everywhere else.
     pub heat_map: HeatMap,
     /// The heat map's three ramp stops (gamma rgb): below the target, on it,
     /// above it. Owned by the chrome's theme.
     pub heat_ramp: [[f32; 3]; 3],
-    /// An overdraw count drawn in place of the whole scene — the Aud workspace's
-    /// overdraw views. `None` everywhere else.
+    /// An overdraw count drawn in place of the whole scene — the Aud and Opt
+    /// workspaces' overdraw views. `None` everywhere else.
     pub overdraw: OverdrawView,
     /// The overdraw views' colours. Owned by the chrome's theme.
     pub overdraw_ramp: OverdrawRamp,

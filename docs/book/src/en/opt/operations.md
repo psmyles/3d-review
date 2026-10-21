@@ -33,7 +33,9 @@ with and without it.
 - **Generate LODs** - makes a chain of simpler copies of the model (levels of
   detail) for a game to show at a distance. Operations above it run once on the
   base model; operations below it run on every level. You can only have one in
-  the list. The starting chain is three levels at 50%, 25% and 12.5%.
+  the list. The starting chain is three levels at 50%, 25% and 12.5%, each
+  with an error limit of 0.01. A level you add keeps the limit of the one
+  above it.
 - **Bake AO to Vertex Colors** - works out [soft shadows](ao.md) for each point
   and stores them as colors on the points. Does not change the shape.
 - **Optimize Vertex Cache** - reorders the triangles so the GPU can

@@ -6,6 +6,13 @@ severity tint the Issues view draws. Pick one from the view group at the
 end of the toolbar's left-hand tools, or click the finding it belongs to; a
 key at the top of the viewport shows what the colours mean.
 
+The view group and the material buttons before it are one choice, because
+only one of them can paint the model at a time. **Issues** shows the model in
+plain grey with the finding you picked tinted on it; a material button, such
+as **Source Material**, shows that material with no finding drawn. Picking a
+finding in the Issues list switches to the view that shows it best. Letting go
+of the finding leaves the view as it is.
+
 - **Texel density** colours each face by its texture pixels per meter, for
   the texture size in the profile: blue below the target, green on it, red
   above it.
@@ -29,3 +36,7 @@ target. On one that cannot, their buttons are greyed out.
 
 Findings about UVs split the viewport: the model on the left and its UV
 layout on the right, with the problem drawn in both.
+
+The Opt workspace has the same views, without **Issues**, so you can compare a
+simplified model with the original. See
+[Comparing the result](../opt/comparison.md#diagnostic-views).

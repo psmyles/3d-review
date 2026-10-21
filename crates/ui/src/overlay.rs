@@ -187,7 +187,10 @@ pub fn draw_overlay(
             side.left_inset,
             side.right_inset,
         );
-        draw_overlay_legend(
+        // Both legends are centred under the toolbar; in Opt's overlay layout
+        // with a diagnostic view on, both are up, so the view's key stacks under
+        // the solid/ghost one rather than over it.
+        let legend_bottom = draw_overlay_legend(
             ctx,
             state,
             toolbar_height,
@@ -197,7 +200,7 @@ pub fn draw_overlay(
         draw_heat_legend(
             ctx,
             state,
-            toolbar_height,
+            legend_bottom.map_or(toolbar_height, |bottom| bottom - screen.top()),
             side.left_inset,
             side.right_inset,
         );
@@ -276,7 +279,13 @@ fn dimension_views<'a>(
     screen: egui::Rect,
     viewport: egui::Rect,
 ) -> Vec<DimensionView<'a>> {
-    if !state.debug.show_bounding_box {
+    // The labels belong to the drawn box, so a view that draws over it (an
+    // overdraw count) takes them with it.
+    if !state.debug.show_bounding_box
+        || state
+            .overridden(crate::state::ViewControl::BoundingBox)
+            .is_some()
+    {
         return Vec::new();
     }
     let source_bounds = state.measured_bounds(model);
@@ -533,27 +542,29 @@ fn draw_side_panels(
             .default_size(size::SIDE_PANEL_DEFAULT_WIDTH)
             .size_range(size::SIDE_PANEL_MIN_WIDTH..=size::OUTLINER_MAX_WIDTH)
             .show(root, |ui| {
-                // Opt retargets the Inspector at whatever the stack pane has
-                // selected — an operation's parameters, the export settings, or
-                // the selected object's overrides. A material selection still
-                // reaches the material editor, since Opt keeps the full 3D
-                // chrome and materials remain inspectable.
-                if opt_mode && !matches!(state.selection, Selection::Material(_)) {
-                    let out = panels::opt_inspector::body(ui, state, model);
-                    opt.intent = opt.intent.take().or(out.intent);
-                    opt.edit_active |= out.edit_active;
-                    panels::inspector::InspectorOutput::default()
-                } else if aud_mode && panels::aud_inspector::wants_inspector(state) {
-                    // Aud retargets the Inspector at the focused finding or the
-                    // profile; a part selected in the Scene tab or the viewport
-                    // still gets the ordinary part view.
-                    let out = panels::aud_inspector::body(ui, state, model);
-                    aud.intent = aud.intent.take().or(out.intent);
-                    aud.edit_active |= out.edit_active;
-                    panels::inspector::InspectorOutput::default()
-                } else {
-                    panels::inspector::body(ui, state, model)
-                }
+                pinned_to_panel_width(ui, |ui| {
+                    // Opt retargets the Inspector at whatever the stack pane has
+                    // selected — an operation's parameters, the export settings,
+                    // or the selected object's overrides. A material selection
+                    // still reaches the material editor, since Opt keeps the full
+                    // 3D chrome and materials remain inspectable.
+                    if opt_mode && !matches!(state.selection, Selection::Material(_)) {
+                        let out = panels::opt_inspector::body(ui, state, model);
+                        opt.intent = opt.intent.take().or(out.intent);
+                        opt.edit_active |= out.edit_active;
+                        panels::inspector::InspectorOutput::default()
+                    } else if aud_mode && panels::aud_inspector::wants_inspector(state) {
+                        // Aud retargets the Inspector at the focused finding or
+                        // the profile; a part selected in the Scene tab or the
+                        // viewport still gets the ordinary part view.
+                        let out = panels::aud_inspector::body(ui, state, model);
+                        aud.intent = aud.intent.take().or(out.intent);
+                        aud.edit_active |= out.edit_active;
+                        panels::inspector::InspectorOutput::default()
+                    } else {
+                        panels::inspector::body(ui, state, model)
+                    }
+                })
             });
         right_inset = response.response.rect.width();
         inspector = response.inner;
@@ -566,6 +577,29 @@ fn draw_side_panels(
         left_inset,
         right_inset,
     }
+}
+
+/// Lay a side panel's body out at exactly the width the panel already has, so
+/// what the body happens to be showing never decides how wide the panel is.
+///
+/// egui's `Panel` takes its frame from the body's measured size and stores it as
+/// the panel's width for the next frame. A body narrower than the panel shrank it
+/// (a one-line "nothing selected" left the Inspector 262pt wide in 3D and 196pt in
+/// Tex, against 300pt in Opt), and one wider grew it (Opt's export settings, 329pt)
+/// — so the Inspector changed width with every workspace and selection. Here the
+/// whole rect is claimed up front and the body goes into a child `Ui` over it,
+/// whose size is never reported back, the way the widgets' value box bounds a
+/// number: the panel is only ever as wide as the user dragged it. Anything that
+/// still overflows is cut off at the panel's edge, which egui already clips it to.
+fn pinned_to_panel_width<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let rect = ui.available_rect_before_wrap();
+    ui.allocate_space(rect.size());
+    let mut body = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    add(&mut body)
 }
 
 fn draw_stats_overlay(
@@ -612,19 +646,25 @@ fn draw_stats_overlay(
 /// which — and the `X` swap silently exchanges them, so a reader who looked away
 /// has no way back to the answer. Centred between the two stats cards, and drawn
 /// only for the overlay, since the split labels its halves by their own cards.
+///
+/// An overdraw view draws the solid mesh's count in place of the scene, ghost
+/// included, so then the legend names only the mesh being counted.
+///
+/// Returns the card's bottom edge, for anything stacked beneath it.
 fn draw_overlay_legend(
     ctx: &egui::Context,
     state: &UiState,
     toolbar_height: f32,
     left_inset: f32,
     right_inset: f32,
-) {
+) -> Option<f32> {
     if state.mode != WorkspaceMode::Opt
         || state.opt.layout != OptLayout::Overlay
         || !state.opt.has_result()
     {
-        return;
+        return None;
     }
+    let ghost_drawn = !state.replaces_scene();
 
     // The solid mesh is the one the A/B swap is *not* showing as the ghost.
     let solid = state.opt.side;
@@ -636,7 +676,7 @@ fn draw_overlay_legend(
     // The card is centred in the free viewport, so the panels' insets shift it by
     // half their difference rather than by either one.
     let offset = (left_inset - right_inset) * 0.5;
-    crate::widgets::stats_overlay_card_at(
+    let card = crate::widgets::stats_overlay_card_at(
         ctx,
         "opt_overlay_legend",
         crate::widgets::StatsCardSide::TopCenter,
@@ -652,36 +692,42 @@ fn draw_overlay_legend(
                     review_localization::tr(solid.label()).into_owned(),
                 ),
             );
-            legend_row(
-                ui,
-                color::GHOST_XRAY,
-                &crate::keys::ui_opt::legend_ghost(
-                    review_localization::tr(ghost.label()).into_owned(),
-                    ghost_style.into_owned(),
-                ),
-            );
+            if ghost_drawn {
+                legend_row(
+                    ui,
+                    color::GHOST_XRAY,
+                    &crate::keys::ui_opt::legend_ghost(
+                        review_localization::tr(ghost.label()).into_owned(),
+                        ghost_style.into_owned(),
+                    ),
+                );
+            }
         },
     );
+    Some(card.bottom())
 }
 
-/// The Aud density views' key: the colour ramp and what its ends and middle
-/// mean, in the profile's own numbers. Centred like the overlay legend.
+/// The diagnostic views' key (Aud and Opt): the colour ramp and what its ends
+/// and middle mean, in the profile's own numbers. Centred like the overlay
+/// legend, `top` below the window's top edge.
 fn draw_heat_legend(
     ctx: &egui::Context,
     state: &UiState,
-    toolbar_height: f32,
+    top: f32,
     left_inset: f32,
     right_inset: f32,
 ) {
     use review_audit::{DiagnosticView, Measured, RuleId};
-    if state.mode != WorkspaceMode::Aud {
+    // The view actually drawn, not merely chosen: a density map Wireframe Only
+    // shading leaves no surface for has nothing on screen to key.
+    let Some(view) = state.shown_diagnostic() else {
         return;
-    }
+    };
     let profile = &state.aud.profile;
     let mut ramp: &[egui::Color32] = &HEAT_RAMP;
     // The header is one title, or (texel density) a pair of facts at the
     // card's two ends; the three labels under the bar name its ends and middle.
-    let ((title, title_right), low, mid, high) = match state.aud.view {
+    let ((title, title_right), low, mid, high) = match view {
         DiagnosticView::TexelDensity => {
             let rule = profile.rule(RuleId::TexelDensity);
             let size = rule.number("texture_size").unwrap_or(1024.0);
@@ -715,7 +761,7 @@ fn draw_heat_legend(
             )
         }
         DiagnosticView::Overdraw | DiagnosticView::QuadOverdraw => {
-            let (title, render_view) = if state.aud.view == DiagnosticView::Overdraw {
+            let (title, render_view) = if view == DiagnosticView::Overdraw {
                 (
                     crate::keys::ui_audit::LEGEND_OVERDRAW,
                     review_render::OverdrawView::Layered,
@@ -751,7 +797,7 @@ fn draw_heat_legend(
         "aud_heat_legend",
         crate::widgets::StatsCardSide::TopCenter,
         offset,
-        toolbar_height,
+        top,
         size::AUD_LEGEND_WIDTH,
         |ui| {
             ui.spacing_mut().item_spacing.y = size::STATS_ROW_SPACING;
@@ -917,6 +963,93 @@ mod tests {
         ctx.read_response(id)
             .unwrap_or_else(|| panic!("{mode:?}: no Outliner tab was laid out"))
             .rect
+    }
+
+    /// The Inspector's width once the overlay has settled with `setup` applied.
+    fn inspector_width(setup: impl FnOnce(&mut UiState)) -> f32 {
+        let ctx = egui::Context::default();
+        crate::theme::init_style(&ctx);
+        let model = review_model::demo_cube_model();
+        let mut state = UiState::default();
+        setup(&mut state);
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1600.0, 900.0),
+            )),
+            ..Default::default()
+        };
+        // Panels size from the previous pass, and a grid learns its columns a
+        // pass late too, so a few passes let any growth show.
+        for _ in 0..4 {
+            let mut output = ctx.run_ui(input(), |ui| {
+                draw_overlay(ui, &mut state, OrbitCamera::default(), &model, None, None);
+            });
+            output.textures_delta.clear();
+        }
+        egui::containers::panel::PanelState::load(&ctx, egui::Id::new("inspector_panel"))
+            .expect("the Inspector was laid out")
+            .size()
+            .x
+    }
+
+    /// The Inspector is one width in every workspace, whatever it is showing.
+    ///
+    /// egui's `Panel` stores its body's measured width as its own, so a body that
+    /// did not fill the panel shrank it (262pt in 3D, 196pt in Tex) and one that
+    /// overflowed grew it (Opt's export settings, 329pt) — against 300pt in Opt
+    /// and Aud, which fill it.
+    #[test]
+    fn the_inspector_is_one_width_in_every_workspace() {
+        use crate::opt_state::StackItem;
+
+        let expected = size::SIDE_PANEL_DEFAULT_WIDTH;
+        let check = |what: &str, width: f32| {
+            assert!(
+                (width - expected).abs() < 0.5,
+                "{what}: the Inspector is {width}pt wide, not {expected}pt"
+            );
+        };
+        for mode in [
+            WorkspaceMode::ThreeD,
+            WorkspaceMode::Uv,
+            WorkspaceMode::Texture,
+            WorkspaceMode::Opt,
+            WorkspaceMode::Aud,
+        ] {
+            check(
+                &format!("{mode:?}"),
+                inspector_width(|state| state.mode = mode),
+            );
+        }
+        check(
+            "a selected part",
+            inspector_width(|state| state.selection = Selection::Node(0)),
+        );
+        check(
+            "the Aud profile",
+            inspector_width(|state| {
+                state.mode = WorkspaceMode::Aud;
+                state.aud.profile_open = true;
+            }),
+        );
+        check(
+            "the Opt export settings",
+            inspector_width(|state| {
+                state.mode = WorkspaceMode::Opt;
+                state.opt.selected = Some(StackItem::ExportSettings);
+            }),
+        );
+        for make in review_optimize::OpKind::ALL {
+            check(
+                make().label(),
+                inspector_width(|state| {
+                    state.mode = WorkspaceMode::Opt;
+                    let id = state.opt.edit_stack_with(|stack| stack.push_op(make()));
+                    state.opt.selected = Some(StackItem::Op(id));
+                }),
+            );
+        }
     }
 
     /// The Outliner's tab strip sits at the same place in every workspace.

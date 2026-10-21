@@ -7,7 +7,7 @@
 //! the renderer's internals beyond its public camera API (invariant 2).
 
 use review_render::{ShadingMode, selection_bounds};
-use review_ui::{Selection, TexViewRequest, WorkspaceMode};
+use review_ui::{Selection, TexViewRequest, ViewControl, WorkspaceMode};
 use winit::event::{ElementState, KeyEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -170,6 +170,20 @@ impl App {
 
         // Every remaining shortcut is an instant toggle / command on key-down.
         if event.state != ElementState::Pressed {
+            return;
+        }
+        // A view shortcut does what its tile does, so it does nothing while the
+        // view on screen overrides the tile — the tile is greyed out then, and
+        // flipping the setting would change nothing the user could see.
+        let control = match key.as_str() {
+            "`" => Some(ViewControl::WireframeOverlay),
+            "1" => Some(ViewControl::WireframeShading),
+            "2" => Some(ViewControl::UnlitShading),
+            "3" => Some(ViewControl::ShadedShading),
+            "g" => Some(ViewControl::Grid),
+            _ => None,
+        };
+        if control.is_some_and(|control| self.ui.overridden(control).is_some()) {
             return;
         }
         match key.as_str() {

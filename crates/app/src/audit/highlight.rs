@@ -352,20 +352,22 @@ impl App {
         }
     }
 
-    /// The density view the Aud toolbar has chosen, as the renderer's heat map,
-    /// parameterised by the checks it mirrors.
+    /// The density view on screen (Aud's or Opt's — `UiState::shown_diagnostic`),
+    /// as the renderer's heat map, parameterised by the checks it mirrors.
     pub(crate) fn audit_heat_map(&self) -> review_render::HeatMap {
         let profile = &self.ui.aud.profile;
         let number = |rule: RuleId, key: &str, fallback: f64| {
             profile.rule(rule).number(key).unwrap_or(fallback) as f32
         };
-        match self.ui.aud.view {
-            review_audit::DiagnosticView::TexelDensity => review_render::HeatMap::TexelDensity {
-                texture_size: number(RuleId::TexelDensity, "texture_size", 1024.0),
-                target: number(RuleId::TexelDensity, "target", 1024.0),
-                tolerance: number(RuleId::TexelDensity, "tolerance", 2.0),
-            },
-            review_audit::DiagnosticView::TriangleDensity => {
+        match self.ui.shown_diagnostic() {
+            Some(review_audit::DiagnosticView::TexelDensity) => {
+                review_render::HeatMap::TexelDensity {
+                    texture_size: number(RuleId::TexelDensity, "texture_size", 1024.0),
+                    target: number(RuleId::TexelDensity, "target", 1024.0),
+                    tolerance: number(RuleId::TexelDensity, "tolerance", 2.0),
+                }
+            }
+            Some(review_audit::DiagnosticView::TriangleDensity) => {
                 review_render::HeatMap::TriangleDensity {
                     min_pixel_area: number(RuleId::TriangleLod, "min_pixel_area", 10.0),
                     screen_height: number(RuleId::TriangleLod, "screen_height", 1080.0),
@@ -375,19 +377,14 @@ impl App {
         }
     }
 
-    /// The overdraw view the Aud toolbar has chosen, as the renderer's — `None`
-    /// on an adapter that cannot draw it (invariant 4), whatever the state says.
+    /// The overdraw view on screen (Aud's or Opt's), as the renderer's.
+    /// `shown_diagnostic` already leaves out one the adapter cannot draw
+    /// (invariant 4), whatever the state says.
     pub(crate) fn audit_overdraw_view(&self) -> review_render::OverdrawView {
-        let view = self.ui.aud.view;
-        if !self.ui.aud.view_supported(view, &self.ui.capabilities) {
-            return review_render::OverdrawView::None;
-        }
-        match view {
-            review_audit::DiagnosticView::Overdraw => review_render::OverdrawView::Layered,
-            review_audit::DiagnosticView::QuadOverdraw => review_render::OverdrawView::Quad,
-            review_audit::DiagnosticView::Issues
-            | review_audit::DiagnosticView::TexelDensity
-            | review_audit::DiagnosticView::TriangleDensity => review_render::OverdrawView::None,
+        match self.ui.shown_diagnostic() {
+            Some(review_audit::DiagnosticView::Overdraw) => review_render::OverdrawView::Layered,
+            Some(review_audit::DiagnosticView::QuadOverdraw) => review_render::OverdrawView::Quad,
+            _ => review_render::OverdrawView::None,
         }
     }
 

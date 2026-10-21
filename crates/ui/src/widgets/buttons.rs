@@ -14,6 +14,66 @@ pub(crate) fn wide_button<'a>(label: impl Into<egui::WidgetText>, width: f32) ->
         .min_size(egui::vec2(width, 0.0))
 }
 
+/// A view tile's response, with its left click withheld while another view on
+/// screen overrides the setting it toggles ([`view_toggle`]).
+pub(crate) struct ViewTile {
+    pub(crate) response: egui::Response,
+    overridden: bool,
+}
+
+impl ViewTile {
+    /// A left click, unless the setting is overridden: flipping it then would
+    /// change nothing on screen.
+    pub(crate) fn clicked(&self) -> bool {
+        !self.overridden && self.response.clicked()
+    }
+
+    /// A right click, always: the options stay reachable while the setting is
+    /// overridden.
+    pub(crate) fn secondary_clicked(&self) -> bool {
+        self.response.secondary_clicked()
+    }
+}
+
+/// [`icon_toggle_button`] — or, `has_options`, [`icon_toggle_button_with_options`]
+/// — for a view setting another view can override (`state::view_rules`).
+///
+/// Overridden (`overridden` carries the reason), the tile is drawn dimmed and
+/// unlit whatever `selected` says, so the bar never shows a setting as on that
+/// the viewport is not showing; its tooltip leads with the reason, and its left
+/// click is withheld. Not disabled outright: right-click still has to open its
+/// options — the Environment window, say, is reached through the IBL tile.
+pub(crate) fn view_toggle(
+    ui: &mut egui::Ui,
+    icon: &AppIcon,
+    selected: bool,
+    tooltip: Tip,
+    has_options: bool,
+    overridden: Option<String>,
+) -> ViewTile {
+    let is_overridden = overridden.is_some();
+    let tooltip = tooltip.overridden(overridden);
+    let response = ui
+        .scope(|ui| {
+            if is_overridden {
+                ui.multiply_opacity(color::OVERRIDDEN_TILE_OPACITY);
+            }
+            icon_tile_button(
+                ui,
+                icon,
+                selected && !is_overridden,
+                tooltip,
+                egui::vec2(size::TOOLBAR_ICON_SIZE, size::TOOLBAR_ICON_SIZE),
+                has_options,
+            )
+        })
+        .inner;
+    ViewTile {
+        response,
+        overridden: is_overridden,
+    }
+}
+
 /// A square icon toggle sized to the standard toolbar tile.
 pub(crate) fn icon_toggle_button(
     ui: &mut egui::Ui,

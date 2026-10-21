@@ -319,18 +319,21 @@ impl App {
         // / overlay flags (synced during the egui pass); `projection` the
         // perspective/orthographic toggle; the model + revision drive the mesh.
         let mut debug = self.ui.debug;
-        // Aud's focus look: while a finding is highlighted the model turns neutral
-        // clay, so the severity colours are the only colour on it.
-        let audit_focused = self.ui.mode == WorkspaceMode::Aud
-            && !self.audit.highlight.is_empty()
-            && self.ui.aud.view == review_audit::DiagnosticView::Issues;
-        if audit_focused {
+        // Aud's Issues view: the model in neutral clay, so a highlighted
+        // finding's severity colours are the only colour on it. It is a tile of
+        // its own, one choice with the material tiles (none of which is lit
+        // while it is), so overriding the material here contradicts nothing on
+        // the toolbar.
+        let issues_view = self.ui.shown_diagnostic() == Some(review_audit::DiagnosticView::Issues);
+        if issues_view {
             debug.material_mode = review_render::MaterialMode::Standard;
             debug.active_material = ActiveMaterial::Source;
         }
-        // Aud's density views, with the matching checks' own parameters so the
-        // map and the findings measure the same thing.
-        if self.ui.mode == WorkspaceMode::Aud {
+        // The diagnostic views, with the matching checks' own parameters so the
+        // map and the findings measure the same thing. Opt draws them too, over
+        // both meshes it compares, from the same toolbar setting; every other
+        // workspace has none (`shown_diagnostic`).
+        {
             let stop = |token: egui::Color32| {
                 let [r, g, b, _] = token.to_normalized_gamma_f32();
                 [r, g, b]
@@ -478,10 +481,7 @@ impl App {
         // picture of the finding, and a severity tint over it would misread as
         // part of its ramp.
         let highlight = &self.audit.highlight;
-        let audit_overlay = (workspace == WorkspaceMode::Aud
-            && self.ui.aud.view == review_audit::DiagnosticView::Issues
-            && !highlight.is_empty())
-        .then(|| {
+        let audit_overlay = (issues_view && !highlight.is_empty()).then(|| {
             let color = |token: egui::Color32| {
                 let [r, g, b, _] = token.to_normalized_gamma_f32();
                 [r, g, b, theme::color::AUDIT_FILL_OPACITY]

@@ -16,6 +16,7 @@ under.
 - [The Opt workspace](#the-opt-workspace)
 - [Remesh](#remesh)
 - [The Aud workspace](#the-aud-workspace)
+- [The chrome](#the-chrome)
 - [Baked assets](#baked-assets)
 
 ---
@@ -689,6 +690,28 @@ the divider, the picking and the pointer routing. The split lays out both halves
 view exists whenever the workspace does; keying it on "a processed level exists"
 mis-projects the common empty-stack case.
 
+### A target either half of the split samples later belongs to its `TargetSet`
+
+Each half's composite — and the overdraw views' ramp — is a deferred
+`SwapchainJob`, so both halves' offscreen passes have been recorded before
+either job runs. Anything a job samples must therefore exist once per view. The
+overdraw count used to sit beside the count pipelines, one for the renderer;
+the split then counted the source into it, counted the processed mesh over it,
+and both ramps showed the second count. It is now `TargetSet::overdraw_count`
+(built by `sync_overdraw` for the primary set and `sync_split_targets` for the
+second), and the triangle list it is drawn from is per slot (`DerivedViews::
+overdraw_indices`), so alternating the slots within a frame rebuilds nothing.
+The pipelines stay shared: a draw issued is a draw done.
+
+### A processed level's heat map blends from face to face
+
+`heat_vertices` writes a colour per render vertex. Import gives every face
+corner its own vertex, so a face is one flat colour; an Opt level is indexed
+and shares a vertex between faces, so it cannot be. Each vertex takes the mean
+of its measured faces' ramp positions — the same value as before on an imported
+mesh, where a corner has one face — rather than whichever triangle was walked
+last, which coloured a shared vertex by an arbitrary neighbour.
+
 ### The UV-seam view finds a shared edge two ways, and both are exact
 
 A seam is an edge whose faces disagree about the UVs, so the question is which
@@ -973,6 +996,44 @@ object reads as several open ones. Weld by position first — `welded_edge_uses`
 - **A deferred draw's uniform block is capped.** `SwapchainJob` copies its
   uniforms into a fixed `MAX_JOB_UNIFORM_BYTES` buffer, checked at compile time;
   the overdraw ramp's 112-byte block is why it is 112.
+
+---
+
+## The chrome
+
+### An `egui::Panel` is as wide as its body measured, not as wide as it was
+
+egui 0.36's `Panel` lays its body out in a frame and stores the *frame's*
+measured rect as the panel's size for the next pass. A body that does not fill
+the width shrinks the panel, and one that overflows it grows it — so the
+Inspector came out 262pt in 3D (a one-line "nothing selected"), 196pt in Tex,
+300pt in Opt and Aud (whose bodies are `auto_shrink(false)` scroll areas) and
+329pt on Opt's export settings, all from the one stored width. `overlay.rs`'s
+`pinned_to_panel_width` claims the whole rect up front and lays the body out in
+a child `Ui` whose size is never reported back, so the panel is only ever the
+width the user dragged it to; `the_inspector_is_one_width_in_every_workspace`
+pins it. Long text that would overflow should still be made to fit —
+`labeled_combo` truncates its selected text, which was the export settings'
+29pt — because what overflows the pinned body is cut off at the panel's edge.
+
+### A view setting the view on screen ignores must never be shown lit
+
+The toolbar used to show two things on while the viewport drew one: UV Checker
+lit under a texel-density map, Shaded lit over a Buffers view, the grid lit
+under an overdraw count. `state/view_rules.rs` is the table that prevents it,
+and it is a *mirror* of the renderer's precedence, not a second opinion — each
+rule names the decision it copies (`record_overdraw`, `mesh_draw_list`,
+`wireframe_on`, `flat_display`, `draws_skybox` and the skybox's coverage). Add
+a precedence to the renderer and the table needs the matching rule, or a lit
+tile lies again.
+Two tests pin the shape: `one_tile_paints_the_model` (the material tiles and
+the diagnostic views are one choice, exactly one lit) and
+`every_override_can_be_left` (the controls that leave an overriding mode are
+never overridden themselves — greying out Unlit and Shaded in Wireframe Only
+would have trapped the user there). `flat_display` and `UiState::flat_view` are
+twins: both are false in Wireframe Only, where there is no surface to show
+flat, and the renderer used to pass a wireframe's lines through untone-mapped
+whenever Buffers or Skin Weights happened to be the active material.
 
 ---
 

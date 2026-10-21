@@ -765,11 +765,12 @@ fn lod_params(ui: &mut egui::Ui, params: LodParams) -> Option<LodParams> {
             {
                 // A new level continues the halving the defaults establish, so
                 // adding one lands somewhere sensible rather than at a duplicate
-                // of the level above it.
+                // of the level above it. It keeps that level's error limit: the
+                // defaults hold one limit down the chain.
                 let previous = edited.levels.last().copied().unwrap_or(LodLevel::default());
                 edited.levels.push(LodLevel {
                     target_ratio: (previous.target_ratio * 0.5).max(0.01),
-                    target_error: (previous.target_error * 2.0).min(1.0),
+                    target_error: previous.target_error,
                 });
             }
         });

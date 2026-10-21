@@ -17,6 +17,22 @@ moved the surface. A small legend tells you which is which.
 **LOD picker** - which level of the chain to show. Once you pick a level, later
 runs keep showing it.
 
+## Diagnostic views
+
+The toolbar's view group from the Aud workspace is here too: **Texel
+density**, **Triangle density**, **Overdraw** and **Quad overdraw**, described
+in [Diagnostic views](../aud/views.md). Each paints both models, so you can see
+how a level's triangle sizes or overdraw compare with the original's. The views
+and the material buttons before them are one choice: pick a material, such as
+**Source Material**, to go back to the shaded model.
+
+The views use the settings of the matching checks in the Aud profile. On a
+simplified level the density colours blend from face to face rather than
+changing at each face's edge, because its faces share their points.
+
+In the overlay layout, an overdraw view counts the solid model only, and the
+legend names only that model.
+
 ## The second stats card
 
 This card shows the processed model's measured numbers next to some figures

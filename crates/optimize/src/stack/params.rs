@@ -141,22 +141,18 @@ pub struct LodParams {
 
 impl Default for LodParams {
     fn default() -> Self {
+        // Every level starts at the same error limit, [`LodLevel::default`]'s:
+        // the ratio is what a chain steps down, and a limit that loosened per
+        // level let the smallest ones reach their counts by giving up shape.
         Self {
             simplify: SimplifySettings::default(),
-            levels: vec![
-                LodLevel {
-                    target_ratio: 0.5,
-                    target_error: 0.01,
-                },
-                LodLevel {
-                    target_ratio: 0.25,
-                    target_error: 0.02,
-                },
-                LodLevel {
-                    target_ratio: 0.125,
-                    target_error: 0.05,
-                },
-            ],
+            levels: [0.5, 0.25, 0.125]
+                .into_iter()
+                .map(|target_ratio| LodLevel {
+                    target_ratio,
+                    ..LodLevel::default()
+                })
+                .collect(),
         }
     }
 }

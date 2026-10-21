@@ -179,8 +179,8 @@ pub(crate) struct SceneGpu {
     pub(super) idle: ModelSlot,
     /// Which model `active` currently holds.
     pub(super) active_slot: SlotId,
-    /// The Aud overdraw views' pipelines, count target and index list, while one
-    /// is on (invariant 3).
+    /// The overdraw views' pipelines, while one is on (invariant 3). Their count
+    /// targets are the target sets' and their index lists the slots'.
     pub(super) overdraw: Option<super::overdraw::OverdrawGpu>,
 }
 
@@ -515,7 +515,7 @@ impl SceneGpu {
             scene.selected_bones,
         )?;
         self.sync_heat_map(scene.model, scene.model_revision, scene.debug)?;
-        self.sync_overdraw(scene, target_size)?;
+        self.sync_overdraw(scene)?;
         self.sync_audit_overlay(scene.model, scene.audit.as_ref())?;
         self.sync_selection(
             scene.model,
@@ -581,7 +581,7 @@ impl SceneGpu {
 
         // Back to front: the skybox behind everything, the mesh, the hover and
         // selection fills over it, then the ghost.
-        if scene.environment.show_background {
+        if scene.environment.draws_skybox() {
             self.draw_skybox(frame, uniforms);
         }
         self.draw_mesh_list(frame, scene, checker, uniforms);

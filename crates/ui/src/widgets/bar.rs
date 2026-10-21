@@ -13,7 +13,9 @@ use super::*;
 
 /// The standard "toggle with an options panel" tile: left-click flips `flag`,
 /// right-click toggles `panel` open. The triad (button + toggle + panel) repeats
-/// across the toolbar and status bar; written once here.
+/// across the toolbar and status bar; written once here. Every one of them is a
+/// view setting, so each says whether another view overrides it
+/// ([`view_toggle`]): `overridden` withholds the flip but not the options.
 pub(crate) fn option_toggle(
     ui: &mut egui::Ui,
     icon: &AppIcon,
@@ -21,15 +23,16 @@ pub(crate) fn option_toggle(
     panels_open: &mut PanelsOpen,
     panel: OptionPanel,
     tooltip: Tip,
-) -> egui::Response {
-    let response = icon_toggle_button_with_options(ui, icon, *flag, tooltip);
-    if response.clicked() {
+    overridden: Option<String>,
+) -> ViewTile {
+    let tile = view_toggle(ui, icon, *flag, tooltip, true, overridden);
+    if tile.clicked() {
         *flag = !*flag;
     }
-    if response.secondary_clicked() {
+    if tile.secondary_clicked() {
         panels_open.toggle(panel);
     }
-    response
+    tile
 }
 
 /// A chrome-bar group rect of `width`×`height`, vertically centered in

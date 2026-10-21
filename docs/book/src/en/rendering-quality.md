@@ -11,8 +11,8 @@ Right-click it to open its options.
 The model is lit by a photo of a real place wrapped all around it, which is
 what gives it natural-looking soft light and reflections. There are six of
 these environments to choose from, each with a small preview picture in the
-dropdown. You can show the environment behind the model as a backdrop, make it
-brighter or dimmer, and spin it around the model. Spinning is instant, so it is
+dropdown. While IBL is on you can show the environment behind the model as a
+backdrop, make it brighter or dimmer, and spin it around the model. Spinning is instant, so it is
 a nice way to see the model lit from different sides. See
 [Environment](panels/environment.md).
 

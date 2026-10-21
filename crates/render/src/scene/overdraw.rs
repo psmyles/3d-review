@@ -1,5 +1,5 @@
-//! The Aud workspace's overdraw views: a count of how much shading each pixel
-//! costs, drawn in place of the scene.
+//! The overdraw views (the Aud and Opt workspaces'): a count of how much shading
+//! each pixel costs, drawn in place of the scene.
 //!
 //! Both views count into a single-sample `R16F` target by additive blending, then
 //! colour the count onto the view's rectangle through a ramp. Every visible triangle
@@ -16,13 +16,16 @@
 //!
 //! Everything here — the pipelines, the count target and the index list — exists
 //! only while a view is on (invariant 3), and only on a device that can blend into
-//! a half-float target (invariant 4; `Gpu::supports_overdraw`).
+//! a half-float target (invariant 4; `Gpu::supports_overdraw`). The pipelines are
+//! shared; the count belongs to the view's [`TargetSet`] and the index list to the
+//! model's slot, so the Opt split counts its two meshes into two targets and both
+//! survive until the deferred ramps run.
 
 use bytemuck::{Pod, Zeroable};
 
 use crate::geometry::visible_triangle_indices;
 use crate::rhi::{
-    Bindings, Blend, ColorTarget, Cull, Depth, Format, Frame, GpuResult, Pipeline, PipelineDesc,
+    Bindings, Blend, Cull, Depth, Format, Frame, GpuResult, Pipeline, PipelineDesc,
     SCENE_DEPTH_FORMAT, StorageBuffer, SwapchainJob, shader,
 };
 use crate::shaders::generated;
@@ -141,22 +144,18 @@ impl CountPipelines {
     }
 }
 
-/// What the overdraw views draw with, while one is on.
+/// The pipelines the overdraw views draw with, while one is on. The count target
+/// is the view's ([`TargetSet::overdraw_count`]) and the triangle list the slot's.
 pub(super) struct OverdrawGpu {
     /// The count pipelines for the culling the frame asks for, and which that is.
     counts: CountPipelines,
     double_sided: bool,
     /// The count, as a colour, into the view's rectangle.
     ramp: Pipeline,
-    /// The per-pixel count, sized to the view's targets.
-    count: ColorTarget,
-    /// Three corner indices per visible triangle, and what they were built from.
-    indices: Option<StorageBuffer<u32>>,
-    indices_key: Option<(u64, Vec<u32>)>,
 }
 
 impl OverdrawGpu {
-    fn new(size: (u32, u32), double_sided: bool) -> GpuResult<Self> {
+    fn new(double_sided: bool) -> GpuResult<Self> {
         let ramp = Pipeline::new(&PipelineDesc::swapchain(
             shader::make(
                 generated::overdraw_ramp_shader_desc,
@@ -169,9 +168,6 @@ impl OverdrawGpu {
             counts: CountPipelines::new(cull(double_sided))?,
             double_sided,
             ramp,
-            count: ColorTarget::single_channel(size.0, size.1, Format::R16F, c"overdraw count")?,
-            indices: None,
-            indices_key: None,
         })
     }
 }
@@ -182,49 +178,57 @@ fn cull(double_sided: bool) -> Cull {
 
 impl SceneGpu {
     /// Drop the overdraw view's resources (invariant 3) — from the viewports that
-    /// never draw it, since leaving Aud is not an event the renderer sees.
+    /// never draw it, since leaving Aud or Opt is not an event the renderer sees.
     pub(crate) fn release_overdraw(&mut self) {
         self.overdraw = None;
+        self.targets.overdraw_count = None;
+        if let Some(split) = self.split_targets.as_mut() {
+            split.overdraw_count = None;
+        }
+        for slot in [&mut self.active, &mut self.idle] {
+            slot.views.overdraw_indices = None;
+            slot.views.overdraw_baked = None;
+        }
     }
 
     /// Build (or free) the overdraw view's resources for this frame: the pipelines
-    /// for its culling, the count target at `size`, and the visible index list.
-    pub(super) fn sync_overdraw(
-        &mut self,
-        scene: &SceneFrame<'_>,
-        size: (u32, u32),
-    ) -> GpuResult<()> {
-        if !scene.debug.overdraw.is_active() {
+    /// for its culling, the primary set's count target, and the active slot's
+    /// visible index list. The split's second count is reconciled with its set
+    /// (`sync_split_targets`).
+    pub(super) fn sync_overdraw(&mut self, scene: &SceneFrame<'_>) -> GpuResult<()> {
+        let active = scene.debug.overdraw.is_active();
+        self.targets.sync_overdraw_count(active)?;
+        if !active {
             self.overdraw = None;
+            self.active.views.overdraw_indices = None;
+            self.active.views.overdraw_baked = None;
             return Ok(());
         }
         let double_sided = scene.debug.render_backfaces;
         let overdraw = match &mut self.overdraw {
             Some(overdraw) => overdraw,
-            slot @ None => slot.insert(OverdrawGpu::new(size, double_sided)?),
+            slot @ None => slot.insert(OverdrawGpu::new(double_sided)?),
         };
         if overdraw.double_sided != double_sided {
             overdraw.counts = CountPipelines::new(cull(double_sided))?;
             overdraw.double_sided = double_sided;
         }
-        if overdraw.count.size() != (size.0.max(1), size.1.max(1)) {
-            overdraw.count =
-                ColorTarget::single_channel(size.0, size.1, Format::R16F, c"overdraw count")?;
-        }
-        let current = overdraw
-            .indices_key
+        // Drift check against the borrowed inputs — no per-frame key allocation.
+        let views = &mut self.active.views;
+        let current = views
+            .overdraw_baked
             .as_ref()
             .is_some_and(|(revision, hidden)| {
                 *revision == scene.model_revision && hidden.as_slice() == scene.hidden_meshes
             });
         if !current {
             let indices = visible_triangle_indices(scene.model, scene.hidden_meshes);
-            overdraw.indices = if indices.is_empty() {
+            views.overdraw_indices = if indices.is_empty() {
                 None
             } else {
                 Some(StorageBuffer::immutable(&indices, c"overdraw indices")?)
             };
-            overdraw.indices_key = Some((scene.model_revision, scene.hidden_meshes.to_vec()));
+            views.overdraw_baked = Some((scene.model_revision, scene.hidden_meshes.to_vec()));
         }
         Ok(())
     }
@@ -241,17 +245,22 @@ impl SceneGpu {
         dest: BackbufferRect,
     ) -> bool {
         let view = scene.debug.overdraw;
-        let Some(overdraw) = self.overdraw.as_ref().filter(|_| view.is_active()) else {
+        let (Some(overdraw), Some(count)) = (
+            self.overdraw.as_ref().filter(|_| view.is_active()),
+            targets.overdraw_count.as_ref(),
+        ) else {
             return false;
         };
         let quad = view == OverdrawView::Quad;
         frame.begin_offscreen_pass(
-            &[&overdraw.count],
+            &[count],
             quad.then_some(&targets.scratch_depth),
             [0.0; 4],
             c"overdraw count",
         );
-        if let (Some(mesh), Some(indices)) = (&self.active.mesh, &overdraw.indices) {
+        if let (Some(mesh), Some(indices)) =
+            (&self.active.mesh, &self.active.views.overdraw_indices)
+        {
             let mut bindings = self.line_bindings();
             if bindings.pulled_vertices(generated::VIEW_LINE_VERTICES, &mesh.vertices) {
                 bindings.storage(generated::VIEW_LINE_INDICES, indices);
@@ -265,7 +274,7 @@ impl SceneGpu {
                     frame.draw(0, indices.capacity());
                 };
                 if quad {
-                    let (width, height) = overdraw.count.size();
+                    let (width, height) = count.size();
                     draw(&overdraw.counts.prepass, None);
                     draw(
                         &overdraw.counts.quad,
@@ -284,7 +293,7 @@ impl SceneGpu {
         let ramp = scene.debug.overdraw_ramp;
         let stop = |rgb: [f32; 3]| [rgb[0], rgb[1], rgb[2], 1.0];
         let mut bindings = Bindings::new();
-        bindings.target(generated::VIEW_COUNT_TEX, &overdraw.count);
+        bindings.target(generated::VIEW_COUNT_TEX, count);
         bindings.sampler(generated::SMP_COUNT_SMP, &self.gtao_sampler);
         frame.queue(
             SwapchainJob::new(

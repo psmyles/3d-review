@@ -570,7 +570,25 @@ tab and `panels/aud_inspector.rs` the finding, object, summary and profile
 views. The Aud view group follows the 3D tools in the left cluster
 (`TOOLBAR_LEFT_AUD_WIDTH`; `toolbar::mode_group_left` keeps room for it in
 every workspace, so the workspace buttons never jump), and the Aud segment
-widens only while it has a count to show.
+widens only while it has a count to show. Opt shows the same group less its
+Issues tile (`TOOLBAR_LEFT_OPT_WIDTH`) over the one `AudUiState::view`, and `app`
+hands the renderer the density and overdraw views in both workspaces.
+
+**View rules.** `state/view_rules.rs` is the one table of which view settings
+the view on screen overrides: an overdraw count replaces the frame, Wireframe
+Only draws no surface, the flat views (Buffers, Skin Weights, the density maps)
+skip lighting, tone mapping and occlusion, Unlit skips lighting, and the skybox
+(drawn only with IBL on, `EnvironmentSettings::draws_skybox`) covers the
+background colour. `UiState::overridden(ViewControl)` answers it; the
+toolbar and status bar draw an overridden tile dimmed and unlit through
+`widgets::view_toggle` / `option_toggle` (left click withheld, right-click still
+opens its options, tooltip naming the override), an option window's checkbox
+greys out unticked through `labeled_checkbox` when its `Tip` is overridden, and
+`app` withholds the matching keyboard shortcuts. Each rule names the renderer decision it mirrors.
+The material tiles and the diagnostic views are peers rather than overrides:
+`AudUiState::view` is `None` while a material paints the model, so the two
+groups are one choice (`shows_material`, `shown_diagnostic`), and what
+`shown_diagnostic` says is what `app` hands the renderer.
 
 **Opt state.** `opt_state.rs` holds the `OptStack` the chrome edits, the
 comparison-view settings and the last run's measured figures. Ownership follows
@@ -936,17 +954,17 @@ upload, `scene/slot.rs` the per-model state and bake keys, `scene/draw_lists.rs`
 the selection and visibility index ordering). A builder reached from only *one* viewport still needs its free
 arm on the paths that leave them: `sync_uv_view` is called from `render_uv`
 and the Aud split (`render_aud_split`), so `release_uv_views` runs from the plain
-3D `render`, `render_opt` and `render_texture`; the Aud overdraw views are built
-only in a 3D frame, so `release_overdraw` runs from `render_uv` and
-`render_texture`, and so does `release_checker` for the UV checker's texture.
+3D `render`, `render_opt` and `render_texture`; the overdraw views (Aud's and
+Opt's) are built only in a 3D frame, so `release_overdraw` runs from `render_uv`
+and `render_texture`, and so does `release_checker` for the UV checker's texture.
 
 **4. Heavy derived views are GPU passes and capability-gated.** Views that need
 more than a recoloured mesh run as GPU passes — raster or compute — over buffers
 already on the GPU, writing transient targets or storage buffers. Gate them on
 what the device reports — sokol's `query_features` / `query_limits` /
 `query_pixelformat` — and disable them in the UI when the active device cannot
-run them. Never crash. The Aud overdraw views are the first such views: additive
-raster passes into a single-sample `R16F` count target, pulling the mesh's own
+run them. Never crash. The overdraw views (Aud and Opt) are the first such views: additive
+raster passes into a single-sample `R16F` count target, one per view, pulling the mesh's own
 vertex buffer, gated on `Gpu::supports_overdraw` (`Format::renders_blended`, which
 asks `query_pixelformat` for render *and* blend) and surfaced to the chrome as
 `Capabilities::overdraw`, which disables both view buttons with the reason. The

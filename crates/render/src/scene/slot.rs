@@ -279,6 +279,13 @@ pub(super) struct DerivedViews {
     pub(super) audit_dots_hidden: Option<VertexBuffer>,
     /// The overlay revision the buffers above were built for.
     pub(super) audit_baked: Option<u64>,
+    /// The overdraw views' triangle list: three corner indices per visible
+    /// triangle, pulled from the mesh's own vertex buffer (invariant 1), and the
+    /// model revision and hidden set it was built for. Per slot because the Opt
+    /// split counts both of its meshes in one frame. `None` while no overdraw
+    /// view is on (invariant 3).
+    pub(super) overdraw_indices: Option<StorageBuffer<u32>>,
+    pub(super) overdraw_baked: Option<(u64, Vec<u32>)>,
     /// The Aud workspace's offending triangles laid out in UV space, and the
     /// overlay revision and UV set they were built for. Part of the UV view, so
     /// freed with it (`release_uv_views`).

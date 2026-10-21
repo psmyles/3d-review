@@ -15,7 +15,7 @@ use crate::docs::Page;
 use crate::keys;
 use crate::labels;
 use crate::state::{
-    UiState,
+    UiState, ViewControl,
     range::{ENV_INTENSITY_MAX, ENV_INTENSITY_MIN, ENV_ROTATION_MAX, ENV_ROTATION_MIN},
 };
 use crate::theme::size;
@@ -29,11 +29,13 @@ const PAGE: Page = Page::PanelsEnvironment;
 pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
     panel_grid(ui, "environment", |ui| {
         environment_row(ui, state);
+        let background_overridden = state.override_reason(ViewControl::EnvironmentBackground);
         labeled_checkbox(
             ui,
             Tip::new(keys::ui_panels::ENVIRONMENT_BACKGROUND)
                 .describe(keys::ui_panels::ENVIRONMENT_BACKGROUND_DESCRIPTION)
-                .page(PAGE),
+                .page(PAGE)
+                .overridden(background_overridden),
             &mut state.environment.show_background,
         );
         labeled_slider_with_value(

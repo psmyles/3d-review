@@ -80,9 +80,11 @@ pub struct AudUiState {
     /// Whether the Inspector is showing the profile editor (the Issues tab's
     /// Profile row) rather than the focus.
     pub profile_open: bool,
-    /// The diagnostic view the viewport shows. Selecting a finding sets it to
-    /// that finding's related view.
-    pub view: DiagnosticView,
+    /// The diagnostic view painting the model, shared with Opt (which has no
+    /// Issues view; `UiState::diagnostic_view` reads it per workspace). `None`
+    /// while a material tile paints it instead: the two groups are one choice.
+    /// Selecting a finding sets it to that finding's related view.
+    pub view: Option<DiagnosticView>,
     pub grouping: AudGrouping,
     /// Whether checks that passed (or did not run) are listed too.
     pub show_passed: bool,
@@ -100,7 +102,7 @@ impl Default for AudUiState {
             running: false,
             focus: None,
             profile_open: false,
-            view: DiagnosticView::Issues,
+            view: None,
             grouping: AudGrouping::default(),
             show_passed: false,
             toggled: BTreeSet::new(),
@@ -128,7 +130,7 @@ impl AudUiState {
         self.report = None;
         self.running = false;
         self.focus = None;
-        self.view = DiagnosticView::Issues;
+        self.view = None;
     }
 
     /// Whether the active adapter can draw `view` (invariant 4): the overdraw
@@ -149,7 +151,7 @@ impl AudUiState {
     /// Whether the viewport is split into the model and its UV layout: a UV
     /// finding is focused in the Issues view.
     pub fn split(&self) -> bool {
-        self.view == DiagnosticView::Issues
+        self.view == Some(DiagnosticView::Issues)
             && self
                 .focus
                 .and_then(AuditFocus::rule)

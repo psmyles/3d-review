@@ -164,3 +164,20 @@ ui-toolbar-uv-islands = UV Islands
 ui-toolbar-has-options = Right-click for options.
 # Appended to a tool whose left-click cycles through several values.
 ui-toolbar-cycles = Click again to cycle.
+
+## Why a viewport tool is greyed out: another view on screen overrides it
+
+# $view is the view drawn in place of everything else, such as "Overdraw".
+ui-toolbar-overridden-replaced = Has no effect while { $view } is on: it replaces the whole
+    view.
+ui-toolbar-overridden-no-surface = Has no effect in Wireframe Only shading, which draws no
+    surface.
+ui-toolbar-overridden-edges-drawn = Wireframe Only shading already draws every edge.
+# $view is the flat view on screen, such as "Buffers" or "Texel density".
+ui-toolbar-overridden-flat = Has no effect while { $view } is on: it shows its values as they
+    are, without lighting, tone mapping or ambient occlusion.
+ui-toolbar-overridden-unlit = Has no effect in Unlit shading, which uses no lighting.
+ui-toolbar-overridden-skybox = Hidden by the environment, which is drawn as the background.
+    Turn off Background in the Environment options to see it.
+ui-toolbar-overridden-ibl-off = Has no effect while IBL is off, which draws nothing from the
+    environment. Turn on IBL in the status bar to use it.

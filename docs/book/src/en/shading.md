@@ -25,8 +25,12 @@ of theirs:
 
 ## Active material
 
-A second choice decides what the surface *shows*. It works in every shading
-mode. See [Material Mode](panels/material-mode.md) for its options panel.
+A second choice decides what the surface *shows*. It works in Unlit and Shaded;
+Wireframe Only draws no surface, so the material buttons are greyed out there.
+See [Material Mode](panels/material-mode.md) for its options panel. In the Aud
+and Opt workspaces the [diagnostic views](aud/views.md) that follow these
+buttons are part of the same choice: picking a view turns the material off, and
+picking a material turns the view off.
 
 - **Source Material** - the materials that came with the file, plus any changes
   you made in the Inspector. Clicking the button again steps through Source,
@@ -65,3 +69,31 @@ that looks wrong: whether it is flipped, whether its green channel is the
 other way round, or whether the model is missing tangents. Colors are shown the
 way a picture would be; plain numbers are shown as-is, so a value of 0.5 comes
 out as mid-grey.
+
+## When one view overrides another
+
+Some views replace what others draw, so a button whose setting has no effect
+on what you are looking at is greyed out, and never shown lit. Its tooltip says
+what is overriding it. Clicking it does nothing until the override ends, but
+right-clicking still opens its options. The keyboard shortcuts for those
+settings also wait until then.
+
+- **Wireframe Only** draws no surface, so the material buttons, the density
+  views, Backface Rendering, IBL and Ambient Occlusion have nothing to act on.
+  Show Wireframe is greyed out too, because every edge is already drawn.
+- **Buffers**, **Skin Weights** and the two density views show their values
+  as they are. Lighting, tone mapping and ambient occlusion do not apply, so
+  Unlit and Shaded look the same, and IBL, Ambient Occlusion and the
+  Tonemapper are greyed out.
+- **Unlit** uses no lighting, so IBL and Ambient Occlusion are greyed out.
+- The **Overdraw** and **Quad overdraw** views replace the whole view with
+  their count, so everything else that draws into the view is greyed out:
+  the shading modes, the overlays, the grid, the skeleton, the background and
+  the rendering-quality buttons. Backface Rendering stays on, because the
+  count depends on it.
+- The environment is drawn behind the model only while IBL is on and
+  **Background** is ticked in the [Environment](panels/environment.md)
+  options. It then covers the viewport background, so the **Viewport
+  background** button is greyed out. With IBL off, the **Background** box is
+  greyed out instead. Because IBL decides this, Wireframe Only, Unlit and the
+  flat views do not grey out the IBL button while **Background** is ticked.

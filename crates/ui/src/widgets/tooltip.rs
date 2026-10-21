@@ -36,6 +36,9 @@ pub(crate) struct Tip {
     /// and no way to keep them consistent.
     notes: Vec<Key>,
     page: Option<Page>,
+    /// Why the control has no effect right now, when another view on screen
+    /// overrides it; the tooltip leads with it.
+    overridden: Option<String>,
 }
 
 impl Tip {
@@ -48,7 +51,21 @@ impl Tip {
             description: None,
             notes: Vec::new(),
             page: None,
+            overridden: None,
         }
+    }
+
+    /// Say why the control has no effect right now (`state::view_rules`), above
+    /// what it is for.
+    pub(crate) fn overridden(mut self, reason: Option<String>) -> Self {
+        self.overridden = reason;
+        self
+    }
+
+    /// Whether [`Self::overridden`] gave a reason: the control it describes has
+    /// no effect right now.
+    pub(crate) fn is_overridden(&self) -> bool {
+        self.overridden.is_some()
     }
 
     /// The paragraph under the title: what this control is for, in a sentence or
@@ -100,11 +117,18 @@ impl Tip {
         // we want: a description is a wrapped paragraph and already measures near
         // the maximum, and a rule stopping short of the text beside it would look
         // like a mistake rather than a choice.
-        let has_body = self.description.is_some() || !self.notes.is_empty() || self.page.is_some();
+        let has_body = self.description.is_some()
+            || !self.notes.is_empty()
+            || self.page.is_some()
+            || self.overridden.is_some();
         if has_body {
             ui.separator();
         }
 
+        if let Some(reason) = self.overridden {
+            ui.label(egui::RichText::new(reason).color(color::TIP_OVERRIDDEN));
+            ui.add_space(size::TOOLTIP_TITLE_GAP);
+        }
         if let Some(description) = self.description {
             ui.label(description);
         }

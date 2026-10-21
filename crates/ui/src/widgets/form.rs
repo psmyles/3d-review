@@ -219,9 +219,20 @@ pub(crate) fn labeled_color_button(
 
 /// A label + checkbox grid row. The checkbox carries no inline text — the label
 /// cell is its label.
+///
+/// A `label` marked [`Tip::overridden`] greys the checkbox out and shows it
+/// unticked, as an overridden toolbar tile is drawn unlit (`state::view_rules`):
+/// the setting is kept, but it has no effect until the override ends.
 pub(crate) fn labeled_checkbox(ui: &mut egui::Ui, label: Tip, value: &mut bool) {
+    let overridden = label.is_overridden();
     grid_label_tip(ui, label);
-    grid_control(ui, |ui| ui.checkbox(value, ""));
+    grid_control(ui, |ui| {
+        if overridden {
+            ui.add_enabled(false, egui::Checkbox::without_text(&mut false))
+        } else {
+            ui.checkbox(value, "")
+        }
+    });
     ui.end_row();
 }
 
@@ -235,9 +246,13 @@ pub(crate) fn labeled_combo(
     contents: impl FnOnce(&mut egui::Ui),
 ) {
     grid_label_tip(ui, label);
+    // Truncated rather than left to the grid's `Extend`: a long option name
+    // ("Rebuild original hierarchy") would otherwise widen the control column,
+    // and the Inspector or option window around it. The popup lists it whole.
     egui::ComboBox::from_id_salt(id_salt)
         .selected_text(selected_text)
         .width(ui.available_width())
+        .truncate()
         .height(size::LABELED_COMBO_POPUP_MAX_H)
         .show_ui(ui, contents);
     ui.end_row();

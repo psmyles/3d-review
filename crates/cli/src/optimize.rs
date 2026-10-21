@@ -18,7 +18,6 @@ use review_labels::opt::{
 };
 use review_localization::tr;
 use review_model::ENGINE_VERTEX_BYTES;
-use review_optimize::stack::limits::LOD_ERROR_MAX;
 use review_optimize::{
     LodLevel, LodParams, OpKind, OptProgress, OptStack, OptStage, ProcessInput, ProcessedResult,
     ReduceParams, export::planned_files, export_fbx, preset, process_with_progress,
@@ -147,8 +146,8 @@ fn build_stack(args: &OptimizeArgs) -> Result<OptStack, String> {
 }
 
 /// `--lods`: the stack's LOD chain becomes these levels. A level the preset
-/// already has keeps its error limit; a new one gets twice the one before it,
-/// which is what the Inspector's "add level" does.
+/// already has keeps its error limit; a new one gets the one before it, which
+/// is what the Inspector's "add level" does.
 fn set_lods(stack: &mut OptStack, ratios: &[f32]) {
     let chain = |existing: &[LodLevel]| {
         let mut levels: Vec<LodLevel> = Vec::with_capacity(ratios.len());
@@ -158,7 +157,7 @@ fn set_lods(stack: &mut OptStack, ratios: &[f32]) {
                     levels
                         .last()
                         .map_or(LodLevel::default().target_error, |previous| {
-                            (previous.target_error * 2.0).min(LOD_ERROR_MAX)
+                            previous.target_error
                         })
                 },
                 |level| level.target_error,
@@ -517,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn lods_alone_make_a_chain_with_doubling_error_limits() {
+    fn lods_alone_make_a_chain_with_one_error_limit() {
         let stack = build_stack(&args(Some(Lods::Ratios(vec![0.5, 0.25, 0.1, 0.05])), None))
             .expect("a stack");
         let params = stack.lod_params().expect("a LOD op");
@@ -526,10 +525,10 @@ mod tests {
             .iter()
             .map(|level| (level.target_ratio, level.target_error))
             .collect();
-        // The first three keep the defaults' limits; the fourth doubles the third.
+        // The first three keep the defaults' limits; the fourth takes the third's.
         assert_eq!(
             levels,
-            [(0.5, 0.01), (0.25, 0.02), (0.1, 0.05), (0.05, 0.1)]
+            [(0.5, 0.01), (0.25, 0.01), (0.1, 0.01), (0.05, 0.01)]
         );
         assert_eq!(level_count(&stack), 5);
     }

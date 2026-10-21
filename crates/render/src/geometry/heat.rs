@@ -3,8 +3,10 @@
 //! each face's ramp colour baked into its corners.
 //!
 //! Values are per *face*: import gives every face corner its own render vertex,
-//! so a polygon's corners carry exactly one colour. The figures come from
-//! `review_model::measure`, the same arithmetic the audit's findings quote.
+//! so a polygon's corners carry exactly one colour. An Opt level shares its
+//! vertices between faces, so there a vertex takes the mean of the faces around
+//! it. The figures come from `review_model::measure`, the same arithmetic the
+//! audit's findings quote.
 
 use review_model::ModelData;
 use review_model::measure::{SurfaceMeasure, node_bounds};
@@ -131,8 +133,13 @@ pub(crate) fn heat_vertices(
         return Vec::new();
     }
     let values = face_values(model, heat);
-    // Per corner, its face's value: every corner belongs to exactly one face.
-    let mut corner_value: Vec<Option<f32>> = vec![None; model.vertices.len()];
+    // Per corner, the mean of the measured faces that use it. Import gives every
+    // face corner its own render vertex, so there that is just its face's value; an
+    // Opt level is indexed, its vertices shared between faces, and the mean blends
+    // them across a vertex rather than letting whichever triangle came last colour
+    // it.
+    let mut corner_sum = vec![0.0_f32; model.vertices.len()];
+    let mut corner_faces = vec![0_u32; model.vertices.len()];
     let triangle_count = model.indices.len() / 3;
     let by_triangle = model.faces.is_empty() || model.triangles.to_face.len() != triangle_count;
     for triangle in 0..triangle_count {
@@ -141,18 +148,24 @@ pub(crate) fn heat_vertices(
         } else {
             model.triangles.to_face[triangle] as usize
         };
-        let value = values.get(face).copied().flatten();
+        let Some(value) = values.get(face).copied().flatten() else {
+            continue;
+        };
         for &corner in &model.indices[triangle * 3..triangle * 3 + 3] {
-            if let Some(slot) = corner_value.get_mut(corner as usize) {
-                *slot = value;
+            if let (Some(sum), Some(faces)) = (
+                corner_sum.get_mut(corner as usize),
+                corner_faces.get_mut(corner as usize),
+            ) {
+                *sum += value;
+                *faces += 1;
             }
         }
     }
     let mut vertices = Vec::with_capacity(model.vertices.len());
     for (index, vertex) in model.vertices.iter().enumerate() {
-        let (rgb, alpha) = match corner_value[index] {
-            Some(x) => (heat_ramp(stops, x), 1.0),
-            None => (stops[1], 0.0),
+        let (rgb, alpha) = match corner_faces[index] {
+            0 => (stops[1], 0.0),
+            faces => (heat_ramp(stops, corner_sum[index] / faces as f32), 1.0),
         };
         push_shaded_vertex(
             &mut vertices,
@@ -177,5 +190,51 @@ mod tests {
         assert_eq!(heat_ramp(stops, 1.0), [1.0, 0.0, 0.0]);
         assert_eq!(heat_ramp(stops, 7.0), [1.0, 0.0, 0.0], "clamped");
         assert_eq!(heat_ramp(stops, f32::NAN), [0.0, 1.0, 0.0]);
+    }
+
+    /// An indexed mesh (an Opt level) shares a vertex between faces, and that
+    /// vertex takes their mean rather than whichever face was walked last.
+    #[test]
+    fn a_shared_vertex_takes_the_mean_of_its_faces() {
+        use glam::{Vec2, Vec3};
+        use review_model::Vertex;
+
+        let vertex = |x: f32, y: f32, u: f32, v: f32| Vertex {
+            position: Vec3::new(x, y, 0.0),
+            uv: Vec2::new(u, v),
+            ..Default::default()
+        };
+        // Two triangles of equal world area over the shared edge 1-2; the second
+        // has three times the UV area, so it reads denser.
+        let model = ModelData {
+            vertices: vec![
+                vertex(0.0, 0.0, 0.0, 0.0),
+                vertex(1.0, 0.0, 1.0, 0.0),
+                vertex(0.0, 1.0, 0.0, 1.0),
+                vertex(1.0, 1.0, 2.0, 2.0),
+            ],
+            indices: vec![0, 1, 2, 1, 3, 2],
+            ..Default::default()
+        };
+        let heat = HeatMap::TexelDensity {
+            texture_size: 1024.0,
+            target: 1024.0,
+            tolerance: 2.0,
+        };
+        let stops = [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]];
+        let values = face_values(&model, heat);
+        let (first, second) = (values[0].expect("measured"), values[1].expect("measured"));
+        assert!(second > first, "the second face is the denser");
+
+        let vertices = heat_vertices(&model, &[], heat, stops);
+        let color = |index: usize| {
+            let [r, g, b, _] = vertices[index].vertex_color;
+            [r, g, b]
+        };
+        assert_eq!(color(0), heat_ramp(stops, first), "only the first face");
+        assert_eq!(color(3), heat_ramp(stops, second), "only the second face");
+        let mean = heat_ramp(stops, (first + second) * 0.5);
+        assert_eq!(color(1), mean, "on the shared edge");
+        assert_eq!(color(2), mean, "on the shared edge");
     }
 }

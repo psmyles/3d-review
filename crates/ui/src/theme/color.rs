@@ -81,6 +81,12 @@ pub const TEXT_VALUE: Color32 = Color32::from_gray(232);
 pub const TEXT_SEGMENT_IDLE: Color32 = Color32::from_rgb(198, 207, 218);
 /// Idle icon-tile tint.
 pub const ICON_IDLE: Color32 = Color32::from_gray(230);
+/// How opaque a tile is drawn while another view on screen overrides it
+/// (`state::view_rules`): dim enough to read as not in effect, legible enough to
+/// find its options.
+pub const OVERRIDDEN_TILE_OPACITY: f32 = 0.4;
+/// The line an overridden tile's tooltip leads with, saying what overrides it.
+pub const TIP_OVERRIDDEN: Color32 = Color32::from_rgb(242, 183, 64);
 /// Stats label column / muted row labels.
 pub const TEXT_MUTED: Color32 = Color32::from_gray(178);
 /// The Opt stats card's change column. Every figure it annotates is one where

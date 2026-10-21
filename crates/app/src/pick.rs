@@ -395,8 +395,11 @@ impl App {
         let hit = self.cast_hit(position);
         // In Aud, a click on a highlighted offender picks that finding rather
         // than the part under it: a tinted face under the ray, or else an edge
-        // or dot drawn near the pointer.
+        // or dot drawn near the pointer. Not while a material tile paints the
+        // model instead: the offenders are not drawn then, and a click should
+        // not land on something the user cannot see.
         if self.ui.mode == WorkspaceMode::Aud
+            && self.ui.aud.view.is_some()
             && let Some(focus) = hit
                 .and_then(|(_, triangle)| triangle)
                 .and_then(|triangle| self.audit_offender_at(triangle))

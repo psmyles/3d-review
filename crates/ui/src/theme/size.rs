@@ -115,9 +115,14 @@ pub const AUD_LEGEND_BAR_HEIGHT: f32 = 10.0;
 /// so 32 + 9 + 32 + 9 + 122 + 9 + 152 + 9 + 92 = 466, plus a little slack.
 pub const TOOLBAR_LEFT_WIDTH: f32 = 470.0;
 /// The left cluster in the Aud workspace: [`TOOLBAR_LEFT_WIDTH`] plus Aud's
-/// five-view group, which follows the geometry-debug group.
+/// five-view group, which follows the geometry-debug group. The widest the
+/// cluster gets, so the workspace segments are placed clear of it.
 pub const TOOLBAR_LEFT_AUD_WIDTH: f32 =
     TOOLBAR_LEFT_WIDTH + TOOLBAR_GROUP_SPACING + TOOLBAR_QUINT_ICON_GROUP_WIDTH;
+/// The left cluster in the Opt workspace: the same diagnostic views less Aud's
+/// Issues tile, so four.
+pub const TOOLBAR_LEFT_OPT_WIDTH: f32 =
+    TOOLBAR_LEFT_WIDTH + TOOLBAR_GROUP_SPACING + TOOLBAR_QUAD_ICON_GROUP_WIDTH;
 /// Four-icon shading group: wireframe-only, unlit, shaded, backface-rendering
 /// (4 padding + 4×28 icons + 3×2 gaps). Show Wireframe is a group of its own.
 pub const TOOLBAR_SHADING_GROUP_WIDTH: f32 = 122.0;

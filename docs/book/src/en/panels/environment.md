@@ -9,8 +9,10 @@ chooses that place and how it is used.
 **Environment** - one of six ready-made environments, each with a small preview
 picture in the dropdown.
 
-**Show skybox** - draw the environment behind the model, instead of the plain
-[background fill](background.md).
+**Background** - draw the environment behind the model, instead of the plain
+[background fill](background.md). This needs IBL on: with IBL off nothing comes
+from the environment, so it is not drawn behind the model either, and this box
+is greyed out.
 
 **Intensity** - how bright the light is.
 

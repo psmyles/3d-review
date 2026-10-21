@@ -3,8 +3,6 @@
 - generate UVs - xatlas?
 - generate colliders?
 - UV view during opt mode?
-- animation curves
-- onion skin mode for animation review
 - viewport presets
 - adjust LOD default error limit
 - show audit viewport controls in opt workspace as well

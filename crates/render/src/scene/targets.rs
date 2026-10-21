@@ -76,6 +76,12 @@ pub(super) struct TargetSet {
     /// about it.
     pub(super) ao: AoAccumState,
     pub(super) ao_plan: AoPlan,
+    /// The overdraw views' per-pixel count (`R16F`, single-sample), only while one
+    /// is on (invariant 3; [`Self::sync_overdraw_count`]). One per set rather than
+    /// one beside the count pipelines because the ramp that reads it is a deferred
+    /// swapchain job: the Opt split counts both meshes before either ramp runs, so
+    /// a shared count would show the second mesh's in both halves.
+    pub(super) overdraw_count: Option<ColorTarget>,
 }
 
 /// Levels in the GTAO depth prefilter chain, including the full-resolution level 0.
@@ -95,7 +101,19 @@ impl TargetSet {
             ao_denoise: occlusion_pair(width, height, c"gtao denoise")?,
             ao: AoAccumState::default(),
             ao_plan: AoPlan::default(),
+            overdraw_count: None,
         })
+    }
+
+    /// Build (or free) this set's overdraw count, at the set's own size.
+    pub(super) fn sync_overdraw_count(&mut self, on: bool) -> GpuResult<()> {
+        if !on {
+            self.overdraw_count = None;
+        } else if self.overdraw_count.is_none() {
+            let (width, height) = self.color.size();
+            self.overdraw_count = Some(overdraw_count(width, height)?);
+        }
+        Ok(())
     }
 
     /// Recreate the set when the render size or the MSAA level moved. Steady-state
@@ -121,6 +139,9 @@ impl TargetSet {
             // The history buffers the average lived in are gone, so the average is
             // too — whatever the key says.
             self.ao.reset();
+            if self.overdraw_count.is_some() {
+                self.overdraw_count = Some(overdraw_count(width, height)?);
+            }
         }
         Ok(())
     }
@@ -177,6 +198,11 @@ fn depth_mips(width: u32, height: u32) -> GpuResult<[ColorTarget; DEPTH_MIP_LEVE
         level(3, c"gtao depth mip 3")?,
         level(4, c"gtao depth mip 4")?,
     ])
+}
+
+/// The overdraw views' count target.
+fn overdraw_count(width: u32, height: u32) -> GpuResult<ColorTarget> {
+    ColorTarget::single_channel(width, height, Format::R16F, c"overdraw count")
 }
 
 /// A ping-pong pair of occlusion targets.
@@ -238,15 +264,20 @@ impl SceneGpu {
     }
 
     /// Build (or resize) the split's second target set, and hand back both. Called
-    /// only by the Opt split; every other path uses [`Self::targets`] alone.
+    /// only by the splits; every other path uses [`Self::targets`] alone. Runs after
+    /// the first half's `sync_frame`, so the overdraw view's state is this frame's.
     pub(super) fn sync_split_targets(&mut self, size: (u32, u32)) -> GpuResult<()> {
-        match self.split_targets.as_mut() {
-            Some(set) => set.sync(size, self.sample_count),
-            None => {
-                self.split_targets = Some(TargetSet::new(size.0, size.1, self.sample_count)?);
-                Ok(())
+        let overdraw = self.overdraw.is_some();
+        let set = match self.split_targets.as_mut() {
+            Some(set) => {
+                set.sync(size, self.sample_count)?;
+                set
             }
-        }
+            None => self
+                .split_targets
+                .insert(TargetSet::new(size.0, size.1, self.sample_count)?),
+        };
+        set.sync_overdraw_count(overdraw)
     }
 
     /// Drop the split's second set (invariant 3) — no split is on screen.

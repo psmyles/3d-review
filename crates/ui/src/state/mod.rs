@@ -11,7 +11,8 @@
 //! Its parts are grouped below, one module per concern: [`view`], [`panels`],
 //! [`texture_view`], [`animation`], [`outliner`], [`panels_open`] and [`caches`]
 //! — the same split `opt_state` already had — plus [`remembered`], which turns
-//! the option-window values into the text **Remember settings** saves.
+//! the option-window values into the text **Remember settings** saves, and
+//! [`view_rules`], which says which view settings the view on screen overrides.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -37,6 +38,7 @@ mod remembered;
 mod selection;
 mod texture_view;
 mod view;
+mod view_rules;
 
 pub use animation::*;
 pub use caches::*;
@@ -47,6 +49,7 @@ pub(crate) use selection::SelectionKind;
 pub use selection::{SelectMode, apply_pick};
 pub use texture_view::*;
 pub use view::*;
+pub use view_rules::{FlatView, Override, ViewControl};
 
 /// The inclusive ranges the panels' sliders enforce.
 ///

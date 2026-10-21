@@ -1,5 +1,5 @@
 //! The top toolbar: the application menu, the wireframe overlay, the shading-mode
-//! group, debug-view group, Aud's diagnostic views, the workspace segments, and the
+//! group, debug-view group, Aud's and Opt's diagnostic views, the workspace segments, and the
 //! gizmo/grid/projection group, with the side-panels toggle and then Help closing
 //! out the right-hand end. Emits panel-open intents by mutating [`UiState`] in
 //! place, and the menu's commands as a [`MenuIntent`].
@@ -17,13 +17,13 @@ use crate::docs::Page;
 use crate::keys;
 use crate::labels;
 use crate::state::{
-    MenuIntent, OptionPanel, TextureChannelView, UiOutput, UiState, ViewProjectionMode,
-    ViewportTool, WorkspaceMode,
+    MenuIntent, OptionPanel, TextureChannelView, UiOutput, UiState, ViewControl,
+    ViewProjectionMode, ViewportTool, WorkspaceMode,
 };
 use crate::theme::{color, size};
 use crate::widgets::{
     Tip, compact_combo, icon_toggle_button, icon_toggle_button_with_options, option_toggle,
-    segment_button, tip, toolbar_group_shell,
+    segment_button, tip, toolbar_group_shell, view_toggle,
 };
 
 /// Background frame shared by the toolbar (and matched by the status bar). Zero
@@ -41,10 +41,10 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
     let overlay_margin = size::OVERLAY_MARGIN;
     let group_spacing = size::TOOLBAR_GROUP_SPACING;
     let group_height = size::TOOLBAR_GROUP_HEIGHT;
-    let left_width = if state.mode == WorkspaceMode::Aud {
-        size::TOOLBAR_LEFT_AUD_WIDTH
-    } else {
-        size::TOOLBAR_LEFT_WIDTH
+    let left_width = match state.mode {
+        WorkspaceMode::Aud => size::TOOLBAR_LEFT_AUD_WIDTH,
+        WorkspaceMode::Opt => size::TOOLBAR_LEFT_OPT_WIDTH,
+        _ => size::TOOLBAR_LEFT_WIDTH,
     };
     let right_width = size::TOOLBAR_RIGHT_WIDTH;
     let shading_group_width = size::TOOLBAR_SHADING_GROUP_WIDTH;
@@ -100,8 +100,8 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
             // The menu anchors the left end of the bar in every workspace: its
             // commands are about the application, not the view. After it, the
             // shading / material / normal tool groups operate on the 3D scene, so
-            // they are shown only in the 3D workspace. Aud's views follow them: they
-            // too change how the model is drawn. UV mode swaps in the UV-shading
+            // they are shown only in the 3D workspace. Aud's and Opt's diagnostic
+            // views follow them: they too change how the model is drawn. UV mode swaps in the UV-shading
             // group + UV-set picker; Texture mode swaps in the channel group (its
             // image is picked in the Outliner's Textures tab).
             ui.scope_builder(
@@ -125,8 +125,15 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
                             };
                             draw_material_group(ui, state, material_width);
                             draw_geometry_debug_group(ui, state, triple_icon_group_width);
-                            if state.mode == WorkspaceMode::Aud {
-                                draw_aud_view_group(ui, state, quint_icon_group_width);
+                            // Opt's group is one tile narrower: it has no Issues.
+                            match state.mode {
+                                WorkspaceMode::Aud => {
+                                    draw_diagnostic_view_group(ui, state, quint_icon_group_width);
+                                }
+                                WorkspaceMode::Opt => {
+                                    draw_diagnostic_view_group(ui, state, quad_icon_group_width);
+                                }
+                                _ => {}
                             }
                         }
                         WorkspaceMode::Uv => {
@@ -391,6 +398,7 @@ fn help_menu(ui: &mut egui::Ui, state: &mut UiState, output: &mut UiOutput) {
 /// group, because it is not a shading mode — it draws over whichever one is
 /// selected, and sitting beside the radio made it read as a fourth choice.
 fn draw_wireframe_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
+    let overridden = state.override_reason(ViewControl::WireframeOverlay);
     toolbar_group_shell(ui, width, |ui| {
         option_toggle(
             ui,
@@ -402,68 +410,69 @@ fn draw_wireframe_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
                 .describe(keys::ui_toolbar::SHOW_WIREFRAME_DESCRIPTION)
                 .with_options()
                 .page(Page::Shading),
+            overridden,
         );
     });
 }
 
 /// Shading group: the mutually-exclusive shading modes (wireframe-only / unlit /
 /// shaded), then the independent "Backface Rendering" toggle, which can be on
-/// regardless of which shading mode is selected.
+/// regardless of which shading mode is selected. A flat view leaves Unlit and
+/// Shaded looking the same, and an overdraw view all three, so those grey out
+/// (`state::view_rules`).
 fn draw_shading_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
     toolbar_group_shell(ui, width, |ui| {
         // 1-3. Shading mode — radio selection; exactly one is active.
-        let wire_only = matches!(state.shading_mode, ShadingMode::Wireframe);
-        let unlit = matches!(state.shading_mode, ShadingMode::Unlit);
-        let shaded = matches!(state.shading_mode, ShadingMode::Shaded);
-
-        if icon_toggle_button(
-            ui,
-            &ICON_SHADING_WIRE_ONLY,
-            wire_only,
-            Tip::new(keys::ui_toolbar::WIREFRAME_ONLY)
-                .describe(keys::ui_toolbar::WIREFRAME_ONLY_DESCRIPTION)
-                .page(Page::Shading),
-        )
-        .clicked()
-        {
-            state.shading_mode = ShadingMode::Wireframe;
-        }
-        if icon_toggle_button(
-            ui,
-            &ICON_SHADING_UNLIT,
-            unlit,
-            Tip::new(keys::ui_toolbar::UNLIT)
-                .describe(keys::ui_toolbar::UNLIT_DESCRIPTION)
-                .page(Page::Shading),
-        )
-        .clicked()
-        {
-            state.shading_mode = ShadingMode::Unlit;
-        }
-        // Shaded mode is environment-lit PBR; its IBL on/off + environment
-        // options live on the dedicated IBL button in the status bar.
-        if icon_toggle_button(
-            ui,
-            &ICON_SHADING_SHADED,
-            shaded,
-            Tip::new(keys::ui_toolbar::SHADED)
-                .describe(keys::ui_toolbar::SHADED_DESCRIPTION)
-                .page(Page::Shading),
-        )
-        .clicked()
-        {
-            state.shading_mode = ShadingMode::Shaded;
+        for (mode, control, icon, title, description) in [
+            (
+                ShadingMode::Wireframe,
+                ViewControl::WireframeShading,
+                &ICON_SHADING_WIRE_ONLY,
+                keys::ui_toolbar::WIREFRAME_ONLY,
+                keys::ui_toolbar::WIREFRAME_ONLY_DESCRIPTION,
+            ),
+            (
+                ShadingMode::Unlit,
+                ViewControl::UnlitShading,
+                &ICON_SHADING_UNLIT,
+                keys::ui_toolbar::UNLIT,
+                keys::ui_toolbar::UNLIT_DESCRIPTION,
+            ),
+            // Shaded mode is environment-lit PBR; its IBL on/off + environment
+            // options live on the dedicated IBL button in the status bar.
+            (
+                ShadingMode::Shaded,
+                ViewControl::ShadedShading,
+                &ICON_SHADING_SHADED,
+                keys::ui_toolbar::SHADED,
+                keys::ui_toolbar::SHADED_DESCRIPTION,
+            ),
+        ] {
+            if view_toggle(
+                ui,
+                icon,
+                state.shading_mode == mode,
+                Tip::new(title).describe(description).page(Page::Shading),
+                false,
+                state.override_reason(control),
+            )
+            .clicked()
+            {
+                state.shading_mode = mode;
+            }
         }
 
         // 4. Backface Rendering — independent toggle; off (default) culls back
         // faces, on draws the mesh double-sided.
-        if icon_toggle_button(
+        if view_toggle(
             ui,
             &ICON_BACKFACE,
             state.debug.render_backfaces,
             Tip::new(keys::ui_toolbar::BACKFACE_RENDERING)
                 .describe(keys::ui_toolbar::BACKFACE_RENDERING_DESCRIPTION)
                 .page(Page::Shading),
+            false,
+            state.override_reason(ViewControl::Backfaces),
         )
         .clicked()
         {
@@ -524,14 +533,19 @@ fn draw_uv_shading_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
 /// show — source material, UV checker, vertex colors, a buffer-inspection view,
 /// or (for a skinned model only) the skin-weight heat map. The UV-checker,
 /// vertex-color and buffers buttons each retain their right-click options panel.
+///
+/// In Aud and Opt it is one choice with the diagnostic views that follow it:
+/// those paint the surface too, so only one of the two groups can be what is on
+/// screen. A tile is lit only while it is the one painting the model
+/// ([`UiState::shows_material`]), and picking it ends any diagnostic view.
 fn draw_material_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
+    // Wireframe Only draws no surface for any of them to paint.
+    let overridden = state.override_reason(ViewControl::SurfacePaint);
     toolbar_group_shell(ui, width, |ui| {
-        let source = state.debug.active_material == ActiveMaterial::Source;
-        let uv_active = state.debug.active_material == ActiveMaterial::UvChecker;
-        let vertex_colors_active = state.debug.active_material == ActiveMaterial::VertexColors;
-        let buffers_active = state.debug.active_material == ActiveMaterial::Buffers;
+        let source = state.shows_material(ActiveMaterial::Source);
+        let buffers_active = state.shows_material(ActiveMaterial::Buffers);
 
-        let source_material = icon_toggle_button_with_options(
+        let source_material = view_toggle(
             ui,
             &ICON_SHADING_TEXTURE,
             source,
@@ -540,6 +554,8 @@ fn draw_material_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
                 .cycles()
                 .with_options()
                 .page(Page::PanelsMaterialMode),
+            true,
+            overridden.clone(),
         );
         if source_material.clicked() {
             // First click activates the source-material shading; clicking again
@@ -547,46 +563,50 @@ fn draw_material_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
             if source {
                 state.debug.material_mode = state.debug.material_mode.next();
             } else {
-                state.debug.active_material = ActiveMaterial::Source;
+                pick_material(state, ActiveMaterial::Source);
             }
         }
         if source_material.secondary_clicked() {
             state.panels_open.toggle(OptionPanel::MaterialMode);
         }
 
-        let uv = icon_toggle_button_with_options(
+        let uv = view_toggle(
             ui,
             &ICON_UV,
-            uv_active,
+            state.shows_material(ActiveMaterial::UvChecker),
             Tip::new(keys::ui_toolbar::UV_CHECKER)
                 .describe(keys::ui_toolbar::UV_CHECKER_DESCRIPTION)
                 .with_options()
                 .page(Page::PanelsUvChecker),
+            true,
+            overridden.clone(),
         );
         if uv.clicked() {
-            state.debug.active_material = ActiveMaterial::UvChecker;
+            pick_material(state, ActiveMaterial::UvChecker);
         }
         if uv.secondary_clicked() {
             state.panels_open.toggle(OptionPanel::UvChecker);
         }
 
-        let vertex_colors = icon_toggle_button_with_options(
+        let vertex_colors = view_toggle(
             ui,
             &ICON_VERTEX_COLORS,
-            vertex_colors_active,
+            state.shows_material(ActiveMaterial::VertexColors),
             Tip::new(keys::ui_toolbar::VERTEX_COLORS)
                 .describe(keys::ui_toolbar::VERTEX_COLORS_DESCRIPTION)
                 .with_options()
                 .page(Page::PanelsVertexColors),
+            true,
+            overridden.clone(),
         );
         if vertex_colors.clicked() {
-            state.debug.active_material = ActiveMaterial::VertexColors;
+            pick_material(state, ActiveMaterial::VertexColors);
         }
         if vertex_colors.secondary_clicked() {
             state.panels_open.toggle(OptionPanel::VertexColors);
         }
 
-        let buffers = icon_toggle_button_with_options(
+        let buffers = view_toggle(
             ui,
             &ICON_BUFFERS,
             buffers_active,
@@ -595,6 +615,8 @@ fn draw_material_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
                 .cycles()
                 .with_options()
                 .page(Page::PanelsBuffers),
+            true,
+            overridden.clone(),
         );
         if buffers.clicked() {
             // First click activates the buffer-inspection view; clicking again
@@ -602,7 +624,7 @@ fn draw_material_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
             if buffers_active {
                 state.debug.buffer_view = state.debug.buffer_view.next();
             } else {
-                state.debug.active_material = ActiveMaterial::Buffers;
+                pick_material(state, ActiveMaterial::Buffers);
             }
         }
         if buffers.secondary_clicked() {
@@ -612,28 +634,41 @@ fn draw_material_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
         // Skin weights — offered only for a model that actually carries them, the
         // same rule as the skeleton toggle. No options panel: the ramp is fixed
         // and what it paints is chosen in the Outliner.
-        if state.has_skin {
-            let weights_active = state.debug.active_material == ActiveMaterial::SkinWeights;
-            if icon_toggle_button(
+        if state.has_skin
+            && view_toggle(
                 ui,
                 &ICON_SKIN_WEIGHTS,
-                weights_active,
+                state.shows_material(ActiveMaterial::SkinWeights),
                 Tip::new(keys::ui_toolbar::SKIN_WEIGHTS)
                     .describe(keys::ui_toolbar::SKIN_WEIGHTS_DESCRIPTION)
                     .page(Page::PanelsMaterialMode),
+                false,
+                overridden,
             )
             .clicked()
-            {
-                state.debug.active_material = ActiveMaterial::SkinWeights;
-            }
+        {
+            pick_material(state, ActiveMaterial::SkinWeights);
         }
     });
+}
+
+/// Make `material` the one painting the model, ending a diagnostic view where
+/// the two groups are one choice. Elsewhere the views' setting is left alone: it
+/// is Aud's and Opt's, and the 3D workspace does not show it.
+fn pick_material(state: &mut UiState, material: ActiveMaterial) {
+    state.debug.active_material = material;
+    if state.mode.shows_diagnostic_views() {
+        state.aud.view = None;
+    }
 }
 
 /// Geometry-debug group: the face- and vertex-normal line overlays and the UV-seam
 /// edges. Independent toggles — any combination can be active — and each retains its
 /// own options panel.
 fn draw_geometry_debug_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
+    let face_overridden = state.override_reason(ViewControl::FaceNormals);
+    let vertex_overridden = state.override_reason(ViewControl::VertexNormals);
+    let seams_overridden = state.override_reason(ViewControl::UvSeams);
     toolbar_group_shell(ui, width, |ui| {
         option_toggle(
             ui,
@@ -645,6 +680,7 @@ fn draw_geometry_debug_group(ui: &mut egui::Ui, state: &mut UiState, width: f32)
                 .describe(keys::ui_toolbar::FACE_NORMALS_DESCRIPTION)
                 .with_options()
                 .page(Page::PanelsFaceNormals),
+            face_overridden,
         );
         option_toggle(
             ui,
@@ -656,6 +692,7 @@ fn draw_geometry_debug_group(ui: &mut egui::Ui, state: &mut UiState, width: f32)
                 .describe(keys::ui_toolbar::VERTEX_NORMALS_DESCRIPTION)
                 .with_options()
                 .page(Page::PanelsVertexNormals),
+            vertex_overridden,
         );
         option_toggle(
             ui,
@@ -667,6 +704,7 @@ fn draw_geometry_debug_group(ui: &mut egui::Ui, state: &mut UiState, width: f32)
                 .describe(keys::ui_toolbar::UV_SEAMS_DESCRIPTION)
                 .with_options()
                 .page(Page::PanelsUvSeams),
+            seams_overridden,
         );
     });
 }
@@ -675,6 +713,8 @@ fn draw_geometry_debug_group(ui: &mut egui::Ui, state: &mut UiState, width: f32)
 /// the axis gizmo, and the floor grid. The bounding box and pivot draw in the 3D
 /// scene; the gizmo and grid are independent display toggles.
 fn draw_view_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
+    let box_overridden = state.override_reason(ViewControl::BoundingBox);
+    let skeleton_overridden = state.override_reason(ViewControl::Skeleton);
     toolbar_group_shell(ui, width, |ui| {
         option_toggle(
             ui,
@@ -686,6 +726,7 @@ fn draw_view_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
                 .describe(keys::ui_toolbar::BOUNDING_BOX_DESCRIPTION)
                 .with_options()
                 .page(Page::PanelsBoundingBox),
+            box_overridden,
         );
 
         // Skeleton overlay — hidden entirely for a model with no bones, rather
@@ -701,18 +742,21 @@ fn draw_view_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
                     .describe(keys::ui_toolbar::SKELETON_DESCRIPTION)
                     .with_options()
                     .page(Page::PanelsSkeleton),
+                skeleton_overridden,
             );
         }
 
         // Pivot marker — a plain on/off toggle (no options), sitting between the
         // bounding box and the axis gizmo.
-        icon_toggle_button(
+        view_toggle(
             ui,
             &ICON_PIVOT,
             state.debug.show_pivot,
             Tip::new(keys::ui_toolbar::PIVOT)
                 .describe(keys::ui_toolbar::PIVOT_DESCRIPTION)
                 .page(Page::Overlays),
+            false,
+            state.override_reason(ViewControl::Pivot),
         )
         .clicked()
         .then(|| state.debug.show_pivot = !state.debug.show_pivot);
@@ -728,13 +772,15 @@ fn draw_view_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
         .clicked()
         .then(|| state.show_axis_gizmo = !state.show_axis_gizmo);
 
-        icon_toggle_button(
+        view_toggle(
             ui,
             &ICON_GRID,
             state.show_grid,
             Tip::new(keys::ui_toolbar::GRID)
                 .describe(keys::ui_toolbar::GRID_DESCRIPTION)
                 .page(Page::Viewport),
+            false,
+            state.override_reason(ViewControl::Grid),
         )
         .clicked()
         .then(|| state.show_grid = !state.show_grid);
@@ -787,12 +833,26 @@ fn draw_tool_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
     });
 }
 
-/// The Aud workspace's diagnostic views: the focused finding's offenders over
-/// neutral clay, and the two density heat maps. Picking a finding switches to
-/// the view that shows it best; these switch by hand. The heat maps' settings
-/// are the matching checks' own, in the profile.
-fn draw_aud_view_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
+/// The diagnostic views: the two density heat maps and the two overdraw counts,
+/// plus — in Aud — the focused finding's offenders over neutral clay. Picking a
+/// finding switches to the view that shows it best; these switch by hand. The
+/// views' settings are the matching checks' own, in the profile.
+///
+/// Opt shows the same views, on both meshes it compares, so a LOD's density and
+/// overdraw read against the source's. It has no findings to show, so there the
+/// Issues tile is left out. One setting serves both workspaces, as every other
+/// viewport control on this bar does.
+///
+/// The group is one choice with the material group before it: both paint the
+/// surface, so a view lights here only while it is what is on screen
+/// ([`UiState::shown_diagnostic`]), and a material tile is how a view is left.
+fn draw_diagnostic_view_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
     use review_audit::DiagnosticView;
+    let opt = state.mode == WorkspaceMode::Opt;
+    // A density map paints the surface, which Wireframe Only does not draw; the
+    // overdraw views replace the whole view, and Issues still draws its edges
+    // and dots, so those stay live.
+    let surface_overridden = state.override_reason(ViewControl::SurfacePaint);
     toolbar_group_shell(ui, width, |ui| {
         for (view, icon) in [
             (DiagnosticView::Issues, &crate::assets::ICON_AUD_ISSUES),
@@ -810,24 +870,35 @@ fn draw_aud_view_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
                 &crate::assets::ICON_AUD_QUAD_OVERDRAW,
             ),
         ] {
+            if opt && view == DiagnosticView::Issues {
+                continue;
+            }
             let (title, description) = crate::audit_labels::view(view);
             // The overdraw views need a blendable half-float target; disabled,
             // with the reason, on an adapter without one (invariant 4).
             let supported = state.aud.view_supported(view, &state.capabilities);
-            let response = ui
+            let overridden = matches!(
+                view,
+                DiagnosticView::TexelDensity | DiagnosticView::TriangleDensity
+            )
+            .then(|| surface_overridden.clone())
+            .flatten();
+            let tile = ui
                 .add_enabled_ui(supported, |ui| {
-                    icon_toggle_button(
+                    view_toggle(
                         ui,
                         icon,
-                        state.aud.view == view,
+                        state.shown_diagnostic() == Some(view),
                         Tip::new(title).describe(description).page(Page::AudViews),
+                        false,
+                        overridden,
                     )
                 })
                 .inner;
             if !supported {
-                tip_disabled(response, title, keys::ui_audit::VIEW_UNSUPPORTED);
-            } else if response.clicked() {
-                state.aud.view = view;
+                tip_disabled(tile.response, title, keys::ui_audit::VIEW_UNSUPPORTED);
+            } else if tile.clicked() {
+                state.aud.view = Some(view);
             }
         }
     });

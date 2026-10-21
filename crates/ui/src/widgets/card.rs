@@ -44,7 +44,8 @@ pub(crate) enum StatsCardSide {
 /// that edge (the width of the side panel docked there), so a card never lands
 /// on top of a panel. `edge_inset` is the chrome band the card sits beside: the
 /// status bar's height for the bottom corners, the toolbar's for
-/// [`StatsCardSide::TopCenter`].
+/// [`StatsCardSide::TopCenter`] (or the bottom of a card above, to stack under
+/// it). Returns the card's screen rect.
 pub(crate) fn stats_overlay_card_at(
     ctx: &egui::Context,
     id: &str,
@@ -53,7 +54,7 @@ pub(crate) fn stats_overlay_card_at(
     edge_inset: f32,
     width: f32,
     add_contents: impl FnOnce(&mut egui::Ui),
-) {
+) -> egui::Rect {
     let margin = size::STATS_OVERLAY_MARGIN;
     let bottom = -(edge_inset + margin);
     let (align, offset) = match side {
@@ -86,5 +87,7 @@ pub(crate) fn stats_overlay_card_at(
                     ui.set_width(width);
                     add_contents(ui);
                 });
-        });
+        })
+        .response
+        .rect
 }
