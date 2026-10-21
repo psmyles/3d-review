@@ -165,7 +165,12 @@ pub(crate) fn build_deform(
     let world = node.transform * geometry_to_node;
     let to_local = world.inverse();
     let linear = Mat3::from_mat4(world);
-    let determinant = linear.determinant().abs();
+    // Import took normal deltas through `|det L|^(1/3) L^-T` — the normal
+    // matrix with the node's scale divided out (`review_import_normal_delta_
+    // matrix`) — so undoing it is that matrix's inverse, `L^T / |det L|^(1/3)`.
+    let delta_scale = linear.determinant().abs().cbrt();
+    let undo_normal_delta = (delta_scale.is_finite() && delta_scale > 0.0)
+        .then(|| linear.transpose() * delta_scale.recip());
 
     // ---- Skins
     if let Some(skin) = &level.skin {
@@ -309,13 +314,11 @@ pub(crate) fn build_deform(
             for index in range {
                 let entry = by_shape.entry(morph.shape[index]).or_default();
                 let position = to_local.transform_vector3(morph.position[index]);
-                // The import rotated normal deltas by the cofactor matrix
-                // (|det|·L⁻ᵀ); undoing it is Lᵀ / |det|, and the result stays
-                // unnormalized as the file authored it.
-                let normal = if determinant > 1e-12 {
-                    linear.transpose() * morph.normal[index] / determinant
-                } else {
-                    morph.normal[index]
+                // The result stays unnormalized, as the file authored it: a
+                // delta's length is the shape's own.
+                let normal = match undo_normal_delta {
+                    Some(matrix) => matrix * morph.normal[index],
+                    None => morph.normal[index],
                 };
                 entry.0.push(local as i32);
                 entry.1.extend_from_slice(&[

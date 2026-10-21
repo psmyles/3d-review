@@ -20,8 +20,9 @@ pub(crate) struct ScopedStats {
     /// triangles. `None` when nothing is selected, so the column reads as empty
     /// rather than as a measured zero.
     pub(crate) selected: Option<ScopeStats>,
-    /// The meshes the Outliner has left visible. Equal to `all` while nothing is
-    /// hidden, which is the honest answer rather than a reason to blank it.
+    /// The meshes the Outliner has left visible. While nothing is hidden that is
+    /// every node, so it sums the whole mesh — the honest answer rather than a
+    /// reason to blank it.
     pub(crate) visible: ScopeStats,
 }
 
@@ -63,9 +64,16 @@ pub struct BoundsCaches {
     /// The sorted bone set [`BoundsCaches::bone_influence`] was measured for; a
     /// mismatch with the live selection invalidates it.
     pub(crate) bone_influence_key: Vec<u32>,
+    /// How many triangles each node carries itself (its own mesh, not its
+    /// subtree), indexed by node, for the Inspector's Triangles row. Counted for
+    /// every node in one O(triangles) pass the first time any node is inspected,
+    /// never per repaint; empty until then. See [`UiState::node_triangle_count`].
+    pub(crate) node_triangles: Vec<usize>,
     /// The model's per-(node, material) measured table — the input every column
-    /// of the stats overlay sums. Building it is an O(corners) hash walk, so it
-    /// happens once, the first frame the overlay asks for it.
+    /// of the stats overlay sums. Building it is an O(corners) hash walk, so
+    /// nothing on the main thread does: `app` measures it on the import worker
+    /// once the model is on screen and hands it over through
+    /// [`UiState::set_mesh_group_stats`]. `None` until it lands.
     pub(crate) mesh_groups: Option<Vec<MeshGroupStats>>,
     /// The stats card's three scoped columns, and the (selection, hidden set)
     /// they were summed for. `None` means "not measured yet" — which
@@ -116,7 +124,7 @@ impl BoundsCaches {
 pub struct Capabilities {
     /// MSAA levels the active adapter actually supports, set by `app` from the
     /// device's `supported_msaa_counts()`, which the backend leaf answers.
-    /// The Anti Aliasing menu disables any level not in this list (invariant 4).
+    /// The Anti Aliasing menu leaves out any level not in this list (invariant 4).
     /// Empty until the adapter is known (the panel then falls back to offering only
     /// the current level).
     pub msaa_levels: Vec<MsaaSamples>,
@@ -146,5 +154,58 @@ impl Default for Capabilities {
             gtao: true,
             overdraw: true,
         }
+    }
+}
+
+impl Capabilities {
+    /// The MSAA level to use when `wanted` is asked for: `wanted` itself when the
+    /// adapter can render it, else the highest level it can below it, else its
+    /// lowest. Until the adapter is known (an empty list) every level is taken at
+    /// its word, since there is nothing yet to check it against.
+    ///
+    /// The same step-down `app` applies to a remembered level saved on another
+    /// GPU, so a level from the settings file and one from a reset land alike.
+    pub fn nearest_msaa(&self, wanted: MsaaSamples) -> MsaaSamples {
+        let levels = &self.msaa_levels;
+        if levels.is_empty() || levels.contains(&wanted) {
+            return wanted;
+        }
+        levels
+            .iter()
+            .copied()
+            .filter(|level| level.sample_count() <= wanted.sample_count())
+            .max_by_key(|level| level.sample_count())
+            .or_else(|| {
+                levels
+                    .iter()
+                    .copied()
+                    .min_by_key(|level| level.sample_count())
+            })
+            .unwrap_or(wanted)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_levels(levels: &[MsaaSamples]) -> Capabilities {
+        Capabilities {
+            msaa_levels: levels.to_vec(),
+            ..Capabilities::default()
+        }
+    }
+
+    #[test]
+    fn a_supported_level_is_kept_and_an_unsupported_one_steps_down() {
+        use MsaaSamples::{Off, X2, X4, X8, X16};
+        let adapter = with_levels(&[Off, X4, X8]);
+        assert_eq!(adapter.nearest_msaa(X4), X4);
+        assert_eq!(adapter.nearest_msaa(X16), X8, "the highest level below");
+        assert_eq!(adapter.nearest_msaa(X2), Off);
+        // Nothing at or below it: the lowest level the adapter has.
+        assert_eq!(with_levels(&[X4, X8]).nearest_msaa(X2), X4);
+        // Not known yet: nothing to check against.
+        assert_eq!(with_levels(&[]).nearest_msaa(X16), X16);
     }
 }

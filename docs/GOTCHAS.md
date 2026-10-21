@@ -17,6 +17,8 @@ under.
 - [Remesh](#remesh)
 - [The Aud workspace](#the-aud-workspace)
 - [The chrome](#the-chrome)
+- [Loading, undo and the Opt run](#loading-undo-and-the-opt-run)
+- [Tools and builds](#tools-and-builds)
 - [Baked assets](#baked-assets)
 
 ---
@@ -38,6 +40,15 @@ FBX by **reading it back** through the vendored ufbx reader — the writer's own
 return value only proves it did not error. Each test skips itself when its fixture
 or a vendored tree is absent. `tests/remesh.rs` and `tests/remesh_fidelity.rs`
 are the Remesh pair — see [Remesh](#remesh) for why validity alone is not enough.
+
+**A fixture that leaves the repo takes its tests' meaning with it.** The
+proprietary models went in a9c6db3, and every suite that loaded them skipped
+quietly — two of the audit's determinism tests ran on nothing at all. Each suite
+keeps an `every_fixture_the_suite_loads_exists` list, which
+`REVIEW_REQUIRE_FIXTURES=1` turns into a failure. When a fixture goes, re-point
+its tests at one that still exercises the same property; a test no remaining
+fixture can exercise (a skinned character, today) stays, `#[ignore]`d with the
+reason, rather than passing by skipping.
 
 **Render checks can be scripted, headlessly.** `review-snapshot` (see
 [ARCHITECTURE](ARCHITECTURE.md#snapshot--review-snapshot)) draws through the
@@ -65,6 +76,16 @@ bake, `recompute_bounds` — therefore sees the bind pose. `model.bounds` is mea
 through `review_model::anim` at import, and the Opt workspace (which shows the bind
 pose on purpose) passes no pose.
 
+Every *box* is measured in the pose on screen, never from the buffer: for a model
+that deforms, `ModelData::visible_bounds` (Visible Only) goes through
+`anim::visible_rest_bounds` and `selection_bounds` (Only Selection, and `F` on a
+selection) through `anim::triangle_rest_bounds`. Reading a skinned model's buffer
+made the box jump to the bind pose the moment a mesh was hidden or selected. A
+selected clip's *envelope* under Visible Only with something hidden is
+`anim::visible_clip_bounds_over`, which costs what `clip_bounds` costs and belongs
+on a worker; nothing measures it yet, so that one box shows the visible meshes at
+rest.
+
 ### Every mesh-derived overlay must copy its source corner's `deform` lane
 
 The wireframe, normal lines, heat map and selection highlight deform only because
@@ -91,6 +112,16 @@ it already had — the parse itself is 1.6 s. Note that `needs_deform()` is true
 Keep the two halves in step: `corner_moves` mirrors `deform_corner`'s three
 sources, and a new deform source added to one must be added to the other, or its
 vertices will be measured at rest and the clip's envelope will come out too small.
+
+A skin row whose weights are all zero is not skinned: `deform_corner` has nothing
+to normalise by and rides the corner on its node, so `corner_moves` asks whether
+the row's summed weight is positive, not whether it has influences — and so does
+the GPU lane builder (`geometry::deform`), or the shader would hold that corner at
+its bind position. And a corner map that is *present* is not one that *covers*:
+`AnimContext` builds its one-corner-per-logical-vertex table only when
+`corner_to_logical.len() == vertices.len()`, because an Opt level with a clip but
+no skin or morph carries no map yet keeps its logical count, and a table of nothing
+but `u32::MAX` measured no mesh at all — the level lost its box.
 
 ### A golden-ratio palette keyed on the node table gives a chain one colour
 
@@ -239,6 +270,21 @@ chain — so it is a third thing to keep in step. The occlusion is horizon-based
 ambient by it — an *additive correction* over location 0, so MSAA stays correct
 and direct and emissive light are never darkened.
 
+The G-buffer pass draws the surface the scene pass drew: the same culling
+(`gtao_gbuffer_pipeline` culls back faces, `gtao_gbuffer_double_sided` follows
+Backface Rendering) and `fs_main`'s alpha clip (`@block material_alpha`,
+`surface_cut_out`), one draw per material range. The 2×+ line pass's depth prepass
+runs through the same program with colour writes off. Change the cut-out in one
+place and all three follow; draw one of them without it and an alpha-cut leaf
+occludes as a solid quad, ringing every leaf with a dark halo. `fs_gtao` takes its
+centre depth from `depth_mip0` (`R32F`) like every tap, not from the G-buffer's
+half-float `w`, which is coarse enough to move a horizon test (see below).
+
+sokol checks bindings against the shader's *declared* slots: leaving a declared
+slot empty fails validation, a bound slot the shader does not declare is ignored,
+and applying a uniform block it does not declare fails. That is why the clip
+passes can bind the whole material set where the program reads only its opacity.
+
 ### A GTAO depth chain cannot live in one image's mips
 
 sokol refuses to bind an image as a texture in the same pass that attaches it
@@ -304,6 +350,17 @@ The hidden-mesh set reaches the key as `ModelSlot::visibility_generation` — a
 counter bumped when the visibility list is rebuilt — because the key is compared
 every frame and must not walk a `Vec`.
 
+**A view that runs no AO must say so.** Every render entry point
+(`SceneGpu::render`, `render_opt`, `render_uv`, `render_aud_split`,
+`Renderer::render_texture`) first idles both target sets' averages
+(`SceneGpu::idle_ao_history`); only `sync_ao_history` re-activates a set, and only
+on a frame that runs GTAO into it. Without that the UV and Tex viewports, which
+never advance the average, left `is_ao_converging` answering for the 3D view they
+replaced, and the viewer redrew at the refresh rate until the user went back. A
+resized `TargetSet` is recreated whole, accumulator included, and the overdraw
+views are outside `gtao_active`: they skip the passes, and counting their frames
+as samples "converged" the average on frames that wrote nothing.
+
 Tone mapping and sRGB encoding happen once in `post`, not in the scene shader.
 
 ### fxc notes
@@ -326,7 +383,9 @@ length or colour drifts. Add new debug views by following that pattern, and give
 every one a free arm on *each* path that leaves its view — including a switch to
 another workspace, which runs a different `render_*` entry point that never
 calls the view's `sync_*` at all. `SceneGpu::release_opt_views` and
-`release_uv_views` are those arms for the Opt-only and UV-only resources.
+`release_uv_views` are those arms for the Opt-only and UV-only resources. The Aud
+split draws through the second target set itself, so it calls only the
+mesh-derived half, `release_opt_derived`.
 
 A `sync_*` must compare against the **borrowed** frame inputs and only `to_vec()`
 its bake key on the rebuild path, so a steady-state frame allocates nothing.
@@ -370,11 +429,33 @@ The fit is per projection. Orthographic sees every corner at its size at the
 pivot, and perspective binds on the near ones, so a perspective fit seen
 orthographically overflowed by up to a third. Holding both at once costs
 perspective up to a quarter of its fill, so each is fit for itself, and a
-projection toggle may want a second `F`. Orthographic's view size is tied to the
-distance, so it also holds the distance where no orbit can swing the model
-through the near plane. That clearance is measured round the *pivot*, which the
-centring pan has moved (`orthographic_clearance`, pinned by
-`an_orthographic_framing_survives_an_orbit`).
+projection toggle may want a second `F`.
+
+Orthographic's view size is tied to the distance, so a zoom walks the orbit eye
+towards the pivot and, on anything deeper than the view is tall, into the model —
+it used to cut a facade open when the user zoomed in on a window. The orthographic
+picture does not depend on where its eye sits along the axis, so it is drawn from
+its own eye (`OrbitCamera::eye_for`), backed off until the framed content's sphere
+(`scene_center`, `scene_radius` widened to the grid) starts past the near plane,
+with the far plane stretched to its back (`near_far_for`): no zoom, pan, orbit or
+flight clips it (`an_orthographic_view_never_clips_the_model`). **Anything that
+works in orthographic view space** — the scene uniforms' eye and view matrix, the
+pick span, the dimension labels' occlusion ray — **must use `eye_for` /
+`view_matrix_for` / `near_far_for`**, not `eye_position` / `view_matrix` /
+`near_far`, which are the orbit eye's and perspective's. Framing still holds the
+distance where no orbit can swing the model through the orbit eye's near plane,
+because a projection toggle keeps the distance and hands that eye to perspective;
+that clearance is measured round the *pivot*, which the centring pan has moved
+(`orthographic_clearance`, pinned by `an_orthographic_framing_survives_an_orbit`).
+
+### A texture past the device's 2D limit is uploaded from its first mip that fits
+
+The decoders accept 30000 px, but D3D11 and Metal stop at 16384. A refused
+upload used to fail every frame's material sync — the 3D view stopped drawing —
+and rebuild the whole CPU mip chain on each redraw. `Texture::rgba8_mipped_or_white`
+drops the levels above `max_image_size_2d` and makes the first that fits the
+base, and a refused upload still caches its fallback against the decoded image
+so it is not retried every frame.
 
 ---
 
@@ -388,9 +469,11 @@ scratch buffer across meshes with a `view` was an access violation.
 
 ### FBX declares its unit rather than fixing one
 
-Conventionally centimeters, while import normalizes every file to meters — so the
-writer sets `UnitScaleFactor = 100`. Without it the geometry reads back exactly
-100× too small, which no error reports.
+Import normalizes every file to meters, so the writer declares the **source
+file's own** unit (`UnitScale`: 1 for a centimeter file, 2.54 for inches, 100 for
+meters) and expresses the coordinates in it. Declare one without scaling the
+coordinates, or the reverse, and the geometry reads back off by their ratio,
+which no error reports.
 
 The matching coordinate scale is applied **once, at the top of the hierarchy**:
 `place_node` builds the chain against a root frame of `1/per_meter` instead of
@@ -435,7 +518,9 @@ silently re-skins vertices to a neighbour's bones.
 its corners; an operation that keeps triangles whole (filter, prune, the
 cache/overdraw reorders) reconciles it by canonical triangle content, dropping
 faces that lost a triangle; a simplify clears it, and the export writes that
-level as triangles with a note naming the operation. The processed `ModelData`
+level as triangles — with a note naming the operation only when the source part
+actually had quads or n-gons, since most game assets are triangles already and
+lose nothing. The processed `ModelData`
 still carries no `faces` / `to_face` — the renderer assumes the corner-split
 layout — so the polygons live in `ProcessedLod::carry`, which only the exporter
 reads. `face_group` there is the group *id* (`face_groups[i].id`), not ufbx's
@@ -451,11 +536,37 @@ bounds round trip — the skinned pose is what breaks — so
 `skin_survives_with_its_authored_cluster_matrices` compares the reimported
 matrices numerically.
 
-### Blend-shape normal deltas go out unnormalized
+### Blend-shape normal deltas ride the scale-normalized normal matrix, and go out unnormalized
 
-ufbx pre-rotates the offsets it hands import (`matrix_for_normals`); the export
-inverts that through the node's cofactor matrix and must not normalize the
-result — a delta is a difference of normals, and its length is the shape's.
+The base normal is renormalized after its transform and the delta is then added
+to it, so a delta must ride `L⁻ᵀ` divided by the base normal's scale. The bridge
+uses `|det L|^(1/3) L⁻ᵀ` (`review_import_normal_delta_matrix`), exact for a
+uniform scale. `ufbx_matrix_for_normals` alone is `|det L| L⁻ᵀ`, which scales a
+delta by `s²`: since import parks a centimeter file's 0.01 in the node
+transforms, every blend shape of a Maya-default rig moved its vertices but never
+changed its shading. The export inverts it with `Lᵀ / |det L|^(1/3)` and must not
+normalize the result — a delta is a difference of normals, and its length is the
+shape's.
+
+### Tangents ride the positions' map, and a mirroring node flips their handedness
+
+A tangent lies in the surface, so it transforms like a position difference —
+through `L`, not the normal matrix, which turns it off the UV direction under a
+non-uniform scale and does not round-trip. Handedness lives between spaces too:
+under a node whose `det` is negative, `w` flips between world and node space, so
+import gives a tangent layer without binormals `w = sign(det)` and the export
+writes `w × sign(det)`.
+
+### A captured material is written with exactly its authored properties
+
+`rvo_export_material::authored` says the material came from the capture, and then
+the bridge writes the properties it declared and nothing else — never the
+viewer's own figures, which Rust zeroes for a captured material. Falling back to
+them wrote a material with no explicit properties as black with a
+`ShininessExponent` of 0 (fully rough), and on a custom shading model, whose
+template has no `DiffuseColor`, failed the whole export. A single-level export
+(one file per LOD) likewise puts its level on the source node itself, under its
+own name; level copies exist only in a chain.
 
 ### Every property is written before any curve binds to it, and a curve node gets only the curves the source had
 
@@ -527,6 +638,19 @@ and skip the triangle as a unit. `export` additionally consults the same check
 from its per-face material loop, since skipping in one loop and not the other
 mis-assigns every subsequent material.
 
+### One bad key, shape or binding must not cost the artist the model
+
+The bridge copies animation keys, blend-shape values, bind matrices and stack
+ranges as the file has them, and `validate_deform` — the funnel's last guard —
+rejects any non-finite value or reversed range. Left at that, one NaN key failed
+the whole load. `import::repair` runs just before the guard and drops only the bad
+piece (a key, a channel, a shape's offsets, a cluster) or plays an unusable clip
+range over its keys, renumbering nothing, and says what it did:
+`PendingExtras::warnings`, which the viewer shows as one card per file and the
+CLI as warnings. An optional capture layer that cannot be read (a second colour
+set, a vertex crease) is skipped the same way rather than dropping the whole
+capture, and each embedded image is stored once however many textures share it.
+
 ---
 
 ## The Opt workspace
@@ -546,11 +670,22 @@ exactly. It is deliberately **not** a stack operation; skipping it is never usef
 The `Weld` operation is for the *lossy* merges (dropping normals or UVs from the
 comparison, or a tolerance).
 
+"Every attribute" means every one a vertex carries (`ops::index_losslessly`):
+every UV and colour set, the crease, the deform row, and an *authored* tangent
+including `w`, which is what keeps a mirror seam apart — merged, one side exports
+the other's basis. A tangent the import synthesized is compared by the sign of `w`
+alone: it is built on the corner-split buffer, so its direction is faceted per
+polygon, and comparing that indexes nothing (30,018 of 30,018 kept on
+`SM_column04`). The sign is not faceted — it flips only across a mirror seam — and
+an engine splits there either way. Excluded objects are indexed too; left
+corner-split they were counted per face corner and exported as polygon soup.
+
 **The run's baseline (`ProcessedResult::source` / `source_metrics`) is measured
 after that pass.** Quoting changes against the corner-split buffer credited the
 user's operations with an "-82%" any engine cooker gets for free, and made the
 baseline ACMR a meaningless 3.0. The indexed baseline also equals the stats panel's
-`GPU Verts`, and a `real_models` test pins the two figures equal.
+`GPU Verts`, and a `real_models` test pins the two figures equal — which is why
+`ModelData::mesh_group_stats` keys on the same tangent sign the pass does.
 
 ### A simplify that barely removes anything is usually attribute seams, not a bug
 
@@ -617,6 +752,16 @@ wherever the error is lowest across the object. The ratio is still per *object*
 — a scene's objects do not trade triangles with each other, so none vanishes to
 pay for another. The sloppy simplifier stays per piece, since it clusters
 vertices without regard to which piece they came from.
+
+**Simplifying across seams moves corners between materials.** Under the
+permissive flag a material junction is a complex vertex, and meshoptimizer
+remaps its wedges onto another piece's. `ops::deal_triangles` gives each output
+triangle to the piece most of its corners belong to, matches a stray corner to
+that piece's own vertex by its position *before* the simplify (an unreferenced
+twin keeps its old position), and borrows a copy where the piece has no vertex
+there at all. Dealing by first corner dropped 47 of 384 triangles on a
+three-material patchwork. Without "Collapse across seams" meshoptimizer locks
+every vertex where materials meet, so this never arises.
 
 ### The error limit bounds the shape; attribute error must not spend it
 
@@ -719,7 +864,7 @@ render corners are the same point. An imported mesh answers from
 `corner_to_logical` — free, and the only workable answer, since import
 corner-splits every face corner and comparing vertex indices would find no shared
 edges at all. An Opt-processed level carries no such map, so
-`geometry::uv_seams::welded_logical_ids` welds by **(owning node, exact position
+`review_model::topology::welded_logical_ids` welds by **(owning node, exact position
 bits)** instead. Exact is correct, not a shortcut: outside Remesh and Shrinkwrap,
 which rebuild whole objects, the only operation that synthesizes a position is
 the attribute-aware simplify, and it moves a vertex together with every vertex
@@ -746,7 +891,10 @@ collapses each to one vertex (see [ARCHITECTURE.md](ARCHITECTURE.md#settled-deci
 for why it replaced the vendored engines). Most of what follows was found by
 measuring, and the numbers are what the change measured at the time it was made.
 `tests/remesh_fidelity.rs` re-measures them; run it with `--ignored --nocapture`
-in release before and after any change to a stage.
+in release before and after any change to a stage. Its `how_each_setting_holds_up`
+prints area, folds, self-crossing, spread, budget and crease length per setting
+over the fixtures, which is the table to compare. (Its crease length sums over a
+`HashMap`, so the last digit wobbles between runs.)
 
 ### A rebuild can be valid and the wrong shape, and validity is all most tests check
 
@@ -877,6 +1025,54 @@ move far". A fold is a disagreement between two faces sharing an edge, and
 `cleanup::fold_count` is the one-ring reading of that; a move is taken when it
 does not *increase* it, which permits the recovery and makes the pass unable to
 make the mesh worse.
+
+It also has to be read from the mesh *as already moved*, over every edge the move
+can tilt. `fold_count` used to count only the edges at the vertex, against its
+neighbours' start-of-pass positions, while every accepted move was applied at
+once — so two neighbours that each passed alone could fold the face between them,
+and an edge opposite the vertex could fold with no count noticing. It now counts
+every edge of every face around the vertex and judges each move against the
+moves already made. On the palm at 0.25: folded edges 12.24% untidied, 11.84%
+after two rounds (was 12.89%) and 11.78% after four (was 13.16%); area kept 95.6%
+to 95.9%.
+
+### A junction lies on every chain that ends at it
+
+`Features::polyline_of` stores one chain per vertex — the lowest-numbered one —
+so a vertex beside a corner where three creases meet could merge into it only on
+that one chain, leaving a stubborn vertex beside every multi-crease corner.
+`Features::lies_on` answers for every chain through a junction, and `survivor_of`
+asks it. The flip pass, likewise, never flips an edge between two held vertices,
+or it rotates a 30-90 degree crease into a zig-zag. Together: the creased column
+at 0.5 came in 70% over budget and is now 48% over; its crease length went from
+115% of the source's to 101%. The remaining overrun is stubborn regions, not this.
+
+### With Align to boundaries off, the pinch guard reads the survivor's own border
+
+A border vertex can collapse into an interior survivor when borders are not
+aligned, and the survivor is then on the border although the input's flag says
+not — so the figure-of-eight guard, reading the input, let a later collapse pinch
+the loop. `Collapsed::border` travels with the survivor instead.
+
+### A rebuilt face is projected however far it is from the source
+
+The projection that reads attributes back from the source used to stop at a
+quarter of the object's radius, and a Shrinkwrap offset (±0.5 m whatever the
+object's size) put a small prop's whole shell past it: every face came back with
+nothing to read, and the object was replaced by an empty piece without a word.
+`ProjectionSource` now searches unbounded, and a face that still cannot be placed
+leaves the object as it was, with a warning.
+
+### A distance-field wrap closes an opening because every block has a value
+
+Blocks used to be allocated only near triangles, so the winding-number surface
+spanning a wide opening — mid-air, by definition — fell in cells with
+unallocated corners, which the extraction skips: an open bin came back with a
+ragged ring instead of a cap. The sampler now reads the inside test at block
+corners, allocates every block whose corners disagree, and stores every other
+block as one value (the band, signed by that test). Every cell then has eight
+values and the shell is closed by construction; a closed object allocates
+exactly what it did before.
 
 ### Tangential relaxation is only as good as the vertex normal
 
@@ -1034,6 +1230,85 @@ would have trapped the user there). `flat_display` and `UiState::flat_view` are
 twins: both are false in Wireframe Only, where there is no surface to show
 flat, and the renderer used to pass a wireframe's lines through untone-mapped
 whenever Buffers or Skin Weights happened to be the active material.
+
+### An `Arc::as_ptr` kept as a number is not an identity
+
+Once the `Arc` is dropped the next allocation can land at the same address and
+read as the same object, so a cache keyed on it serves a stale result. Hold a
+`Weak` instead and compare `Weak::as_ptr` against `Arc::as_ptr`: a live `Weak`
+keeps the allocation itself alive (though not the data), so nothing else can
+arrive at that address while it is held, and `strong_count() == 0` says when the
+entry can go. `widgets/thumbnail.rs`, the Tex fit and the renderer's material
+texture cache are the examples. Also: egui temp data is never collected, so
+anything cached there per key lives until exit — bound it.
+
+### `ScrollArea::show_rows` takes its row pitch from the `Ui` it is called on
+
+It places rows at `row_height + item_spacing.y` read from the *outer* ui, so a
+list that zeroes `item_spacing.y` only inside the closure is placed on a pitch 3pt
+taller than it is drawn on: rows jump as it scrolls and the list runs past its
+end. Zero the spacing on a scope around the `ScrollArea` (the Outliner's Scene and
+Issues tabs do). And because a virtualized row may not be laid out, scroll to it
+with `ui.scroll_to_rect` at its computed position (`top + i * row_height`) rather
+than `Response::scroll_to_me`.
+
+---
+
+## Loading, undo and the Opt run
+
+### The undo baseline is taken last
+
+Any reset that bumps a revision the undo snapshot compares — clearing the Opt
+overrides on a load, restoring the saved audit profile at launch — must run
+before `reset_undo_history`. Otherwise the next frame records the bump as an
+edit, and Ctrl+Z restores the previous model's per-object overrides onto whatever
+nodes sit at those indices now, or the default audit profile, which the
+settled-profile save then writes over the user's on disk. Both load paths go
+through `App::replace_scene_model`, which ends with the rebaseline.
+
+### Two load generations, not one
+
+`model_load_generation` cancels parses and is bumped the moment a request is
+made. `measure_generation` cancels the on-screen model's measuring and is bumped
+only when a model actually replaces it. One counter for both left a model
+unmeasured for the rest of the session — no pick BVH, no capture, no audit, no
+clip envelopes — whenever an open failed.
+
+### An Opt preview has its own revision
+
+The renderer keys mesh buffers on the revision alone, so a preview reusing its
+finished level's number stayed on screen after a cancel or an error while
+everything else described the level. A preview carries its own revision and the
+level keeps its own, so dropping a preview is a re-upload. A preview has no BVH,
+so picks in that half fall back to the source and its labels draw unoccluded.
+
+### An Opt run started before the capture lands is run again when it lands
+
+A load publishes the mesh before the source-property capture is marshaled, and
+the Opt workspace starts its run at once, without the capture — so nothing the
+export carries from it (polygons, extra skin layers) rides that run.
+`OptSubsystem` notes the run was owed the capture (`capture_owed`) and reruns
+when it settles; until then an export of that chain says the properties had not
+loaded rather than blaming the stack for the triangles.
+
+---
+
+## Tools and builds
+
+### review-cli compares files by identity, not by spelling
+
+`inputs::identity` makes a path absolute, canonicalizes the longest part that
+exists and appends the rest, and folds case on Windows and macOS. Comparing
+`PathBuf`s let `Rock.FBX` be overwritten by its own `Rock.fbx` output, and let
+an `--out` folder created mid-run give two models' outputs different keys, so
+the second silently replaced the first.
+
+### A build script's `#[cfg(target_os)]` is the host's
+
+Read `CARGO_CFG_TARGET_OS`, and keep the build dependency unconditional: Cargo
+matches a *build* dependency's platform against the host too, so
+`shell-macos/build.rs` neither ran nor had its dependency when cross-checked
+from Windows.
 
 ---
 

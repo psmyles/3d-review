@@ -35,6 +35,7 @@
 use crate::cancel::{CancelToken, cancelled};
 
 use super::features::Features;
+use super::nodes::ThreadBudget;
 use super::partition::{self, Partition};
 use super::seeds::Seeds;
 use super::surface::Surface;
@@ -62,13 +63,15 @@ pub(crate) struct Step {
 ///
 /// `after` is where a caller publishes an intermediate mesh; returning `false`
 /// from it stops the relaxation, which is how a cancelled run gets out between
-/// iterations rather than at the end.
+/// iterations rather than at the end. The thread share is asked for again at
+/// every iteration, since each one is a whole repartition and the relaxation as
+/// a whole is the longest stage of a rebuild.
 pub(crate) fn relax(
     surface: Surface<'_>,
     features: &Features,
     seeds: &mut Seeds,
     partition: &mut Partition,
-    threads: usize,
+    threads: &ThreadBudget,
     cancel: Option<&CancelToken>,
     mut after: impl FnMut(&Seeds, &Partition, Step) -> bool,
 ) {
@@ -86,7 +89,7 @@ pub(crate) fn relax(
         if !step(surface, features, seeds, partition) {
             return;
         }
-        *partition = partition::build(surface, features, seeds, threads, cancel);
+        *partition = partition::build(surface, features, seeds, threads.now(), cancel);
         // A cancelled build stops part way, and a partition that stopped part
         // way is not worth reporting a pass over.
         if cancelled(cancel) {
@@ -301,7 +304,7 @@ mod tests {
             &setup.features,
             &mut seeds,
             &mut partition,
-            1,
+            &ThreadBudget::fixed(1),
             None,
             |_, _, _| true,
         );
@@ -358,7 +361,7 @@ mod tests {
             &setup.features,
             &mut seeds,
             &mut partition,
-            1,
+            &ThreadBudget::fixed(1),
             None,
             |_, _, _| true,
         );
@@ -389,7 +392,7 @@ mod tests {
             &setup.features,
             &mut seeds,
             &mut partition,
-            1,
+            &ThreadBudget::fixed(1),
             None,
             |_, _, _| true,
         );
@@ -414,7 +417,7 @@ mod tests {
             &setup.features,
             &mut seeds,
             &mut partition,
-            1,
+            &ThreadBudget::fixed(1),
             None,
             |_, _, step| {
                 assert_eq!(step.iteration, 0);
@@ -440,7 +443,7 @@ mod tests {
             &setup.features,
             &mut seeds,
             &mut partition,
-            1,
+            &ThreadBudget::fixed(1),
             None,
             |_, _, step| {
                 seen.push(step.iteration);
@@ -473,7 +476,7 @@ mod tests {
                 &setup.features,
                 &mut seeds,
                 &mut partition,
-                threads,
+                &ThreadBudget::fixed(threads),
                 None,
                 |_, _, _| true,
             );
@@ -496,7 +499,7 @@ mod tests {
             &setup.features,
             &mut seeds,
             &mut partition,
-            1,
+            &ThreadBudget::fixed(1),
             None,
             |_, _, _| {
                 iterations += 1;

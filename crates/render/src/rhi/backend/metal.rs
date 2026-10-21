@@ -100,8 +100,15 @@ impl Device {
             })
     }
 
-    /// Point `env` at this device, so `sg_setup` runs on it. sokol_gfx retains what it
-    /// keeps, so the pointer is not retained by us beyond the device's own lifetime.
+    /// Point `env` at this device, so `sg_setup` runs on it.
+    ///
+    /// sokol stores the pointer as given (`_sg_mtl_setup_backend`). That store is a
+    /// strong reference only when sokol_gfx.h is compiled under ARC, and the vendored
+    /// sokol-rust build passes no `-fobjc-arc`, so nothing here relies on it: as on
+    /// D3D11, `rhi`'s `SokolDevice` shuts sokol down in its own `Drop`, before this
+    /// value is dropped. Worth checking on a Mac: without ARC, `_sg_mtl_discard_backend`
+    /// still *releases* the device (`_SG_OBJC_RELEASE`), a reference this hand-over
+    /// never gave it.
     pub(crate) fn fill_environment(&self, env: &mut sg::Environment) {
         env.metal = sg::MetalEnvironment {
             device: Retained::as_ptr(&self.device).cast(),
@@ -320,7 +327,7 @@ impl Swapchain {
 /// identical on both. What differs is how much of it can be filled: see [`GpuTimer`].
 pub(crate) struct FrameTimings {
     /// Bit per timestamp slot that the frame actually recorded.
-    pub(crate) written: u16,
+    pub(crate) written: u32,
     /// Ticks per second.
     pub(crate) frequency: u64,
     /// The raw begin/end tick pairs, in [`crate::rhi::gpu_profiler::Zone`] order.

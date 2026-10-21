@@ -276,7 +276,8 @@ setting: ask for more faces.
 Objects are rebuilt **on every core at once** - one object per core, claimed as
 each core comes free, so the long ones are not stuck behind each other. Inside
 one object the work is spread across cores too, so a single large model is not
-left on one.
+left on one - and an object still being rebuilt when the others have finished
+takes over the cores they leave.
 
 The rebuild is **the same every time**, at any core count, on any machine. That
 is a property of how it is built rather than a setting you can lose: every stage

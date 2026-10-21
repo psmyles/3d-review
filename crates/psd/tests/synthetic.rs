@@ -118,6 +118,29 @@ fn grayscale_with_alpha_and_a_display_info_resource_decodes() {
 }
 
 #[test]
+fn an_extra_channel_past_the_transparency_is_not_counted_as_colour() {
+    // Grey, alpha, then a saved selection: the composite is grey + alpha, and the
+    // selection is never read. Counting planes called this RGB and lost its alpha.
+    let psd = Psd::raw(3, 2, 1, 8, GRAYSCALE, vec![7, 9, 200, 100, 1, 2]);
+    let image = decode_psd(&psd.bytes()).expect("decodes");
+    assert_eq!(image.rgba8, vec![7, 7, 7, 200, 9, 9, 9, 100]);
+    assert_eq!(image.drawn_channels(), 2);
+
+    // RGBA plus a spot channel: four drawn, not five.
+    let psd = Psd::raw(5, 1, 1, 8, RGB, vec![10, 20, 30, 40, 50]);
+    let image = decode_psd(&psd.bytes()).expect("decodes");
+    assert_eq!(image.rgba8, vec![10, 20, 30, 40]);
+    assert_eq!(image.drawn_channels(), 4);
+
+    // And no transparency plane is opaque colour.
+    let psd = Psd::raw(3, 1, 1, 8, RGB, vec![10, 20, 30]);
+    assert_eq!(
+        decode_psd(&psd.bytes()).expect("decodes").drawn_channels(),
+        3
+    );
+}
+
+#[test]
 fn a_one_bit_bitmap_document_is_refused() {
     // psd_sdk sizes planes as `bits / 8` bytes a sample: zero for a 1-bit document.
     let psd = Psd::raw(1, 8, 1, 1, 0, vec![0xFF]);
@@ -215,6 +238,21 @@ fn rle_row_counts_larger_than_the_file_are_refused() {
 fn a_truncated_raw_document_is_refused() {
     let psd = Psd::raw(3, 4, 4, 8, RGB, vec![0; 10]);
     assert!(matches!(decode_psd(&psd.bytes()), Err(PsdError::Truncated)));
+}
+
+#[test]
+fn a_raw_document_is_measured_against_the_file_before_its_planes_are_allocated() {
+    // A 56-byte file whose header claims four 8192x8192 planes: inside every size
+    // cap, so only the file's own length says it is a lie. It is refused before a
+    // quarter of a gigabyte is allocated and zeroed, not after.
+    let psd = Psd::raw(4, 8192, 8192, 8, RGB, vec![0; 16]);
+    assert!(matches!(decode_psd(&psd.bytes()), Err(PsdError::Truncated)));
+    // One byte short of the planes is as truncated as most of them missing.
+    let psd = Psd::raw(3, 2, 2, 8, RGB, vec![0; 11]);
+    assert!(matches!(decode_psd(&psd.bytes()), Err(PsdError::Truncated)));
+    // And exactly enough is a document.
+    let psd = Psd::raw(3, 2, 2, 8, RGB, vec![0; 12]);
+    assert!(decode_psd(&psd.bytes()).is_ok());
 }
 
 #[test]

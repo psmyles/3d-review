@@ -102,8 +102,10 @@ pub(crate) fn measured_stats(
         uv_set_count: source.stats.uv_set_count,
         material_count: model.materials.len(),
         draw_count: model.material_draw_count(),
-        // The node graph is carried through unchanged, so its bone count still
-        // describes this model — even though the skin binding itself is dropped.
+        // The node graph is carried through unchanged — the skin too, rebuilt
+        // over this level's own vertices — so the source's bone count still
+        // describes this model. (A level whose deform tables fail to validate
+        // loses its skin, but not its bones: they are nodes, and still here.)
         bone_count: source.stats.bone_count,
         clip_count: model.animations.len(),
         source_unit_meters: source.stats.source_unit_meters,

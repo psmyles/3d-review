@@ -45,9 +45,25 @@ pub(crate) fn build_mesh(
     } = local_frame(hierarchy, source_node, group, extras);
 
     let channel_count = model.uv_channels.len();
-    let has_uv = channel_count > 0 || !model.vertices.is_empty();
+    let uv_plan = uv_plan(part, source, channel_count);
     let write_tangents = part.is_some_and(|part| part.tangents_authored);
-    let color_set_count = carry.color_channels.len();
+    // Import works in the baked world space and the file in the node's: a
+    // mirroring node turns a basis's handedness over between the two, so the
+    // world-space sign the viewer holds goes out flipped there.
+    let handedness_to_local =
+        direction_to_local.map_or(1.0, |matrix| matrix.determinant().signum());
+    // The further colour sets this part really had: the level carries the
+    // widest part's count for every vertex, and a part with fewer sets would
+    // otherwise gain phantom white ones.
+    let color_set_count = match part {
+        Some(part) => carry.color_channels.len().min(
+            part.color_sets
+                .iter()
+                .filter(|set| !set.values.is_empty())
+                .count(),
+        ),
+        None => carry.color_channels.len(),
+    };
     let has_crease = !carry.vertex_crease.is_empty();
 
     // Keyed by *control point*, not by level vertex. Outside the corner-run
@@ -72,7 +88,7 @@ pub(crate) fn build_mesh(
     let mut normals: Vec<f64> = Vec::new();
     let mut colors: Vec<f64> = Vec::new();
     let mut tangents: Vec<f64> = Vec::new();
-    let mut uv_sets: Vec<Vec<f64>> = vec![Vec::new(); channel_count.max(usize::from(has_uv))];
+    let mut uv_sets: Vec<Vec<f64>> = vec![Vec::new(); uv_plan.len()];
     let mut color_values: Vec<Vec<f64>> = vec![Vec::new(); color_set_count];
     let mut vertex_crease: Vec<f64> = Vec::new();
 
@@ -159,24 +175,24 @@ pub(crate) fn build_mesh(
                 f64::from(tangent.x),
                 f64::from(tangent.y),
                 f64::from(tangent.z),
-                f64::from(vertex.tangent.w),
+                f64::from(vertex.tangent.w * handedness_to_local),
             ]);
         }
 
-        if channel_count == 0 {
-            if let Some(set) = uv_sets.first_mut() {
-                set.extend_from_slice(&[f64::from(vertex.uv.x), f64::from(vertex.uv.y)]);
-            }
-        } else {
-            for (channel, set) in uv_sets.iter_mut().enumerate() {
-                let uv = model
+        for (set, &(channel, _)) in uv_sets.iter_mut().zip(&uv_plan) {
+            // A single-set model keeps its one set on the vertex; a multi-set
+            // one in `uv_channels`, matched by position as import laid it out.
+            let uv = if channel_count == 0 {
+                vertex.uv
+            } else {
+                model
                     .uv_channels
                     .get(channel)
                     .and_then(|uvs| uvs.get(global))
                     .copied()
-                    .unwrap_or_default();
-                set.extend_from_slice(&[f64::from(uv.x), f64::from(uv.y)]);
-            }
+                    .unwrap_or_default()
+            };
+            set.extend_from_slice(&[f64::from(uv.x), f64::from(uv.y)]);
         }
         slot
     };
@@ -351,37 +367,60 @@ pub(crate) fn build_mesh(
         None => name,
     };
 
-    let uv_set_names: Vec<CString> = (0..uv_sets.len())
-        .map(|channel| {
-            let label = source
-                .uv_set_names
-                .get(channel)
-                .filter(|name| !name.is_empty())
-                .cloned()
-                .unwrap_or_else(|| format!("UVMap{channel}"));
-            c_string(&label, "UVMap")
-        })
+    let uv_set_names: Vec<CString> = uv_plan
+        .iter()
+        .map(|(_, name)| c_string(name, "UVMap"))
         .collect();
+    // Colour set 0 is the vertex colours themselves. It goes out when the part
+    // had a colour set, or when the level's colours are anything but the white
+    // import fills a mesh without one with — a baked AO, say. Otherwise a mesh
+    // with no colours would come back with an all-white layer it never had.
+    let colors_carried = part.is_some_and(|part| !part.color_sets.is_empty())
+        || colors.iter().any(|&component| component != 1.0);
+    if !colors_carried {
+        colors.clear();
+    }
     let color_set_name = part
         .and_then(|part| part.color_sets.first())
-        .filter(|set| !set.name.is_empty())
+        .filter(|set| colors_carried && !set.name.is_empty())
         .map(|set| c_string(&set.name, "Col"));
+    let mut extra_set_names = part
+        .map(|part| {
+            part.color_sets
+                .iter()
+                .filter(|set| !set.values.is_empty())
+                .map(|set| set.name.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+        .into_iter();
     let color_sets: Vec<(CString, Vec<f64>)> = color_values
         .into_iter()
         .enumerate()
         .map(|(channel, values)| {
-            let label = part
-                .and_then(|part| part.color_sets.get(channel + 1))
-                .map(|set| set.name.clone())
+            // Channel `c` of the carry is the `c`-th set of the part that has
+            // values of its own, which is the order `submesh` laid them out in.
+            let label = extra_set_names
+                .next()
                 .filter(|name| !name.is_empty())
                 .unwrap_or_else(|| format!("Col{}", channel + 1));
             (c_string(&label, "Col"), values)
         })
         .collect();
 
+    // "Written as triangles" is a loss only when there were polygons to lose:
+    // most game assets are triangles already, and saying so of them is a note
+    // about nothing.
+    let source_had_polygons = part.is_some_and(|part| {
+        let first = part.face_first as usize;
+        source
+            .faces
+            .get(first..first.saturating_add(part.face_count as usize))
+            .is_some_and(|faces| faces.iter().any(|face| face.index_count > 3))
+    });
     let notes = MeshNotes {
         triangles_rebuilt: triangles_as_triangles,
-        polygons_lost: pieces.is_empty() && part.is_some() && extras.is_some(),
+        polygons_lost: pieces.is_empty() && extras.is_some() && source_had_polygons,
     };
     let vertex_count = positions.len() / 3;
     let level_vertices = level_of_local;
@@ -426,12 +465,64 @@ pub(crate) fn build_mesh(
         face_sources,
         edge_sources,
         channel_sources: Vec::new(),
-        source_node: group.source_node,
-        level: suffix_level.unwrap_or(0),
         skins: Vec::new(),
         blend_channels: Vec::new(),
     };
     (mesh, notes)
+}
+
+/// The UV sets one mesh writes: `(model channel, name)` for each, in order.
+///
+/// With the capture these are the sets *this part* carried — `MeshExtras::
+/// uv_sets` is the only record of that, since the geometry lays every part's
+/// sets out by position in one model-wide table as wide as the widest part.
+/// Writing that table for every mesh gave a part with one set the widest part's
+/// names (its `UVChannel_1` written as `map1`) plus a phantom set of zeros for
+/// each set it never had. A set the file declared but left empty is not written.
+///
+/// Without the capture the model-wide table is all there is: every channel, as
+/// the source's names have them — or none at all for a source with no UVs,
+/// rather than a set of zeros.
+fn uv_plan(
+    part: Option<&review_model::extras::MeshExtras>,
+    source: &ModelData,
+    channel_count: usize,
+) -> Vec<(usize, String)> {
+    let fallback = |channel: usize| format!("UVMap{channel}");
+    match part {
+        Some(part) => part
+            .uv_sets
+            .iter()
+            .enumerate()
+            .filter(|(_, set)| set.has_values)
+            .map(|(channel, set)| {
+                let name = if set.name.is_empty() {
+                    fallback(channel)
+                } else {
+                    set.name.clone()
+                };
+                (channel, name)
+            })
+            .collect(),
+        None => {
+            let count = if source.stats.uv_set_count == 0 {
+                0
+            } else {
+                channel_count.max(1)
+            };
+            (0..count)
+                .map(|channel| {
+                    let name = source
+                        .uv_set_names
+                        .get(channel)
+                        .filter(|name| !name.is_empty())
+                        .cloned()
+                        .unwrap_or_else(|| fallback(channel));
+                    (channel, name)
+                })
+                .collect()
+        }
+    }
 }
 
 /// What a mesh had to give up, for the report.

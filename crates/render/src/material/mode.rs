@@ -71,8 +71,10 @@ fn unique_material(index: usize) -> MaterialState {
 /// [`build_part_key`] (0 when the model carries none).
 ///
 /// The replacement table always has at least one entry, so a model with no
-/// materials still draws as the standard material rather than the renderer's
-/// neutral fallback.
+/// per-triangle material info — drawn as one range on material 0 — still draws as
+/// the standard material rather than the renderer's neutral fallback. Triangles
+/// import tagged as having no material (`u32::MAX`) index past the end of any
+/// table; they draw with [`unmaterialed_material`].
 pub(crate) fn effective_materials(
     mode: MaterialMode,
     source: &[MaterialState],
@@ -90,6 +92,25 @@ pub(crate) fn effective_materials(
                 (0..part_count).map(unique_material).collect()
             }
         }
+    }
+}
+
+/// What a triangle with no material of its own (import tags it `u32::MAX`, which
+/// no table reaches) draws with in `mode`, or `None` for the renderer's neutral
+/// fallback.
+///
+/// Source mode shows what the file says, and a triangle the file gave no material
+/// has none, so it keeps the neutral fallback. Standard and Unique replace every
+/// material with the standard grey, and a triangle without one is no exception:
+/// it used to fall through to the fallback (a lighter, glossier grey), so the one
+/// mode meant to make every surface read the same drew those a different shade.
+/// In Unique mode every triangle has a part, so the only ones that miss the table
+/// are those of a model with no per-part info, which degrades to the standard
+/// table anyway.
+pub(super) fn unmaterialed_material(mode: MaterialMode) -> Option<MaterialState> {
+    match mode {
+        MaterialMode::Source => None,
+        MaterialMode::Standard | MaterialMode::Unique => Some(standard_grey()),
     }
 }
 
@@ -182,6 +203,23 @@ mod tests {
         );
         // Always at least one entry, even with no source materials.
         assert_eq!(effective_materials(MaterialMode::Standard, &[], 0).len(), 1);
+    }
+
+    /// A triangle with no material draws as every other triangle does in the
+    /// modes that replace materials, and as the file left it in Source mode.
+    #[test]
+    fn an_unmaterialed_triangle_gets_the_standard_grey() {
+        let standard = effective_materials(MaterialMode::Standard, &[], 0)[0].clone();
+        for mode in [MaterialMode::Standard, MaterialMode::Unique] {
+            assert_eq!(
+                unmaterialed_material(mode),
+                Some(standard.clone()),
+                "{mode:?}"
+            );
+        }
+        assert_eq!(standard.base_color, Vec3::splat(STANDARD_VALUE));
+        assert_eq!(standard.roughness, 1.0);
+        assert_eq!(unmaterialed_material(MaterialMode::Source), None);
     }
 
     #[test]

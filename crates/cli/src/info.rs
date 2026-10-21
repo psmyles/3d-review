@@ -5,6 +5,7 @@
 //! the viewer's corner-split buffer. A single model's figures are also the
 //! report's top-level totals, so a tool reads `triangles` straight off it.
 
+use review_audit::Axis;
 use review_labels::units::{match_known_unit, meters_value};
 use review_localization::tr;
 use serde_json::json;
@@ -97,13 +98,15 @@ fn work(common: &Common, bar: &Bar, report: &mut Report) {
             }),
         );
         entry.set("unit_meters", figure(meters));
+        // Spelled as the audit report and its profiles spell an axis
+        // (`positive_y`); `null` when the file names none.
         entry.set(
             "up_axis",
             json!(
                 loaded
                     .extras
                     .as_ref()
-                    .map(|extras| format!("{:?}", extras.scene.axes[1]))
+                    .and_then(|extras| Axis::from_coordinate(extras.scene.axes[1]))
             ),
         );
         report.add(Status::Done, entry, None);

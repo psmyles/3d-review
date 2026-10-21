@@ -189,7 +189,24 @@ impl OptUiState {
     pub fn edit_stack_with<T>(&mut self, edit: impl FnOnce(&mut OptStack) -> T) -> T {
         let value = edit(Arc::make_mut(&mut self.stack));
         self.stack_revision = self.stack_revision.saturating_add(1);
+        self.drop_stale_selection();
         value
+    }
+
+    /// Let go of a selected row the stack pane no longer draws, so the Inspector
+    /// is not left describing it: an operation that has been removed, or the
+    /// Export settings row, which is shown only while the stack has an operation
+    /// to export. Run after every edit, since any edit can be the one that
+    /// removes a row.
+    fn drop_stale_selection(&mut self) {
+        let stale = match self.selected {
+            Some(StackItem::Op(id)) => self.stack.op(id).is_none(),
+            Some(StackItem::ExportSettings) => self.stack.ops.is_empty(),
+            None => false,
+        };
+        if stale {
+            self.selected = None;
+        }
     }
 
     /// Replace the stack wholesale (a loaded preset, or an undo/redo restore).
@@ -232,4 +249,58 @@ pub enum OptIntent {
     SavePreset,
     /// Load a stack from a JSON preset, replacing the current one.
     LoadPreset,
+}
+
+#[cfg(test)]
+mod tests {
+    use review_optimize::OpKind;
+
+    use super::*;
+
+    fn push(opt: &mut OptUiState) -> u64 {
+        opt.edit_stack_with(|stack| stack.push_op(OpKind::VertexCache))
+    }
+
+    /// The Export settings row is hidden once the stack is empty, and the
+    /// Inspector must not go on showing a row that is not there.
+    #[test]
+    fn removing_the_last_operation_lets_go_of_the_export_row() {
+        let mut opt = OptUiState::default();
+        let first = push(&mut opt);
+        let second = push(&mut opt);
+        opt.selected = Some(StackItem::ExportSettings);
+
+        opt.edit_stack(|stack| stack.remove_op(first));
+        assert_eq!(
+            opt.selected,
+            Some(StackItem::ExportSettings),
+            "one operation left, so the row is still drawn"
+        );
+        opt.edit_stack(|stack| stack.remove_op(second));
+        assert_eq!(opt.selected, None);
+    }
+
+    #[test]
+    fn removing_the_selected_operation_lets_go_of_it() {
+        let mut opt = OptUiState::default();
+        let first = push(&mut opt);
+        let second = push(&mut opt);
+        opt.selected = Some(StackItem::Op(second));
+
+        opt.edit_stack(|stack| stack.remove_op(first));
+        assert_eq!(opt.selected, Some(StackItem::Op(second)));
+        opt.edit_stack(|stack| stack.remove_op(second));
+        assert_eq!(opt.selected, None);
+    }
+
+    /// The stale-selection check rides the edit; it must not change what an
+    /// edit does to the revision, which `app` reprocesses and undoes by.
+    #[test]
+    fn every_edit_still_bumps_the_revision() {
+        let mut opt = OptUiState::default();
+        let id = push(&mut opt);
+        let before = opt.stack_revision;
+        opt.edit_stack(|stack| stack.remove_op(id));
+        assert_eq!(opt.stack_revision, before + 1);
+    }
 }

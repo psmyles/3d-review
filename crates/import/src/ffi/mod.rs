@@ -8,7 +8,9 @@
 //!
 //! * [`raw_scene`] / [`raw_extras`] — the `#[repr(C)]` mirrors. Data only.
 //! * [`bridge`] — the one call into C, and the free protocol around it.
-//! * [`raw`] — pointer to slice, pointer to string. The last of the `unsafe`.
+//! * [`raw`] — pointer to slice, pointer to string, and the `Bridged` wrapper
+//!   whose `unsafe` constructor is the one place a scene's pointers are vouched
+//!   for (every accessor lives on it). The last of the `unsafe`.
 //! * [`marshal_model`] / [`marshal_extras`] — safe code over checked slices.
 //!
 //! The two marshalling modules are the majority of this crate by line count and

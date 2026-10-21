@@ -101,24 +101,12 @@ pub(crate) fn selected_triangle_mask(
             if model.triangles.node.len() != triangle_count {
                 return None;
             }
-            // One pass per selected node, OR-ed together: a multi-selection is
-            // the union of the subtrees, so a parent and one of its children
-            // selected together cover exactly what the parent alone would.
-            let mut subtree = vec![false; model.nodes.len()];
-            let mut any = false;
-            for &selected in selected_nodes {
-                for (slot, covered) in model
-                    .node_subtree_mask(selected as usize)
-                    .iter()
-                    .enumerate()
-                {
-                    if *covered && let Some(entry) = subtree.get_mut(slot) {
-                        *entry = true;
-                        any = true;
-                    }
-                }
-            }
-            if !any {
+            // A multi-selection is the union of the subtrees, so a parent and one
+            // of its children selected together cover exactly what the parent
+            // alone would — in one walk of the hierarchy however many are
+            // selected, rather than one walk (and one mask) per selected node.
+            let mut subtree = model.node_subtree_union(selected_nodes);
+            if !subtree.contains(&true) {
                 subtree = model.node_subtree_mask(node);
             }
             Some(
@@ -252,6 +240,50 @@ mod tests {
         let (root_visible, _) =
             selection_geometry(&model, Selection::Node(0), &[], &[1], None).unwrap();
         assert_eq!(root_visible.len(), 6);
+    }
+
+    /// A multi-selection covers the union of its nodes' subtrees, and a set that
+    /// covers nothing falls back to the primary node.
+    #[test]
+    fn a_node_set_covers_the_union_of_its_subtrees() {
+        use review_model::SceneNode;
+        let node = |name: &str, parent| SceneNode {
+            name: name.into(),
+            parent,
+            mesh_part: None,
+            source_vertex_count: 0,
+            transform: glam::Mat4::IDENTITY,
+            rest_local: Default::default(),
+            kind: review_model::NodeKind::Mesh,
+            bone: None,
+        };
+        // Root 0 with child 1 and grandchild 3; node 2 a second root.
+        let nodes = vec![
+            node("root", None),
+            node("child", Some(0)),
+            node("other", None),
+            node("grandchild", Some(1)),
+        ];
+        let tri_node = vec![0u32, 1, 2, 3];
+        let model = ModelData {
+            vertices: (0..tri_node.len() * 3).map(corner).collect(),
+            indices: (0..(tri_node.len() * 3) as u32).collect(),
+            triangles: TriangleData {
+                node: tri_node,
+                ..Default::default()
+            },
+            nodes,
+            ..Default::default()
+        };
+
+        let mask = selected_triangle_mask(&model, Selection::Node(1), &[1, 2]).unwrap();
+        assert_eq!(mask, [false, true, true, true]);
+        // A parent and its own child together are the parent alone.
+        let mask = selected_triangle_mask(&model, Selection::Node(0), &[0, 1]).unwrap();
+        assert_eq!(mask, [true, true, false, true]);
+        // A set naming no node in range: the primary node's subtree.
+        let mask = selected_triangle_mask(&model, Selection::Node(2), &[9]).unwrap();
+        assert_eq!(mask, [false, false, true, false]);
     }
 
     /// Per-mesh visibility drops the hidden node's triangles and keeps the rest;

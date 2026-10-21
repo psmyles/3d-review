@@ -17,7 +17,10 @@ use super::*;
 /// Videos go out as they are. Textures are reordered so that every layer of a
 /// layered texture precedes it — the bridge assembles a layered texture from
 /// textures that already exist — which means a plain file texture always comes
-/// first and a layered one after its members.
+/// first and a layered one after its members, a layered texture nested in
+/// another included, in whatever order the capture lists them. Only a layered
+/// texture that can never be placed (one whose layers reach back to itself) is
+/// left out, and the report says so.
 pub(crate) fn build_textures(
     scene: &mut SceneData,
     extras: &SourceExtras,
@@ -35,29 +38,40 @@ pub(crate) fn build_textures(
     }
 
     let mut map = vec![-1i32; extras.textures.len()];
-    // Two passes: file textures, then layered ones whose layers are all placed.
+    // File textures first, then layered ones as their layers become placed —
+    // repeated until a pass places nothing, so a layered texture nested in
+    // another is placed whether the capture lists it before or after its
+    // parent. Each pass places at least one texture or ends the loop, so it
+    // runs at most once per layered texture.
     for (index, texture) in extras.textures.iter().enumerate() {
         if texture.kind != TextureKind::Layered {
             map[index] = push_texture(scene, texture, &map, false);
         }
     }
-    let mut dropped = 0usize;
-    for (index, texture) in extras.textures.iter().enumerate() {
-        if texture.kind == TextureKind::Layered {
-            if texture
+    let mut pending: Vec<usize> = (0..extras.textures.len())
+        .filter(|&index| extras.textures[index].kind == TextureKind::Layered)
+        .collect();
+    loop {
+        let before = pending.len();
+        pending.retain(|&index| {
+            let texture = &extras.textures[index];
+            let ready = texture
                 .layers
                 .iter()
-                .any(|layer| map.get(layer.texture as usize).copied().unwrap_or(-1) < 0)
-            {
-                // A layered texture nested inside another: not something the
-                // exporter reassembles, and a texture no material can reach is
-                // not worth a partial copy.
-                dropped += 1;
-                continue;
+                .all(|layer| map.get(layer.texture as usize).copied().unwrap_or(-1) >= 0);
+            if ready {
+                map[index] = push_texture(scene, texture, &map, true);
             }
-            map[index] = push_texture(scene, texture, &map, true);
+            !ready
+        });
+        if pending.is_empty() || pending.len() == before {
+            break;
         }
     }
+    // What is left reaches a texture that is never placed — a cycle, or a
+    // layer the capture could not resolve — and a texture no material can
+    // reach whole is not worth a partial copy.
+    let dropped = pending.len();
     if dropped > 0 {
         report
             .notes
@@ -77,8 +91,9 @@ pub(crate) fn push_texture(
         .video
         .filter(|&video| (video as usize) < scene.videos.len())
         .map_or(-1, |video| video as i32);
-    // Embedded bytes ride the video when there is one (a texture's content is
-    // its video's), else the texture itself.
+    // Embedded bytes ride the video when there is one — import stores them
+    // there once and leaves the texture's own copy empty — else the texture
+    // itself.
     let content = if video >= 0 {
         Vec::new()
     } else {
@@ -145,6 +160,7 @@ pub(crate) fn build_materials_from_extras(
             shader,
             shading_model: c_string_or_empty(&authored.shading_model),
             props,
+            authored: true,
             base_color: [0.0; 3],
             emissive: [0.0; 3],
             shininess_exponent: 0.0,
@@ -181,6 +197,7 @@ pub(crate) fn viewer_material(
         shader: SHADER_PHONG,
         shading_model: CString::default(),
         props: PropRange::default(),
+        authored: false,
         base_color: [
             f64::from(material.base_color.x),
             f64::from(material.base_color.y),

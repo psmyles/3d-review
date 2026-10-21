@@ -4,6 +4,16 @@ struct ShadingResult
     float3 ambient;
 };
 
+cbuffer material : register(b2)
+{
+    float4 _165_mat_base_color : packoffset(c0);
+    float4 _165_mat_emissive : packoffset(c1);
+    float4 _165_mat_params : packoffset(c2);
+    float4 _165_mat_channels0 : packoffset(c3);
+    float4 _165_mat_channels1 : packoffset(c4);
+    float4 _165_mat_flags : packoffset(c5);
+};
+
 cbuffer scene_fs : register(b1)
 {
     row_major float4x4 sc_view_projection : packoffset(c0);
@@ -14,16 +24,6 @@ cbuffer scene_fs : register(b1)
     float4 sc_projection_params : packoffset(c11);
     row_major float4x4 sc_view : packoffset(c12);
     float4 sc_selection_color : packoffset(c16);
-};
-
-cbuffer material : register(b2)
-{
-    float4 _473_mat_base_color : packoffset(c0);
-    float4 _473_mat_emissive : packoffset(c1);
-    float4 _473_mat_params : packoffset(c2);
-    float4 _473_mat_channels0 : packoffset(c3);
-    float4 _473_mat_channels1 : packoffset(c4);
-    float4 _473_mat_flags : packoffset(c5);
 };
 
 TextureCube<float4> irradiance_cube : register(t1);
@@ -41,11 +41,11 @@ Texture2D<float4> ao_tex : register(t8);
 Texture2D<float4> emissive_tex : register(t9);
 Texture2D<float4> opacity_tex : register(t10);
 
+static float4 v_color;
 static float4 frag_ambient;
 static float2 v_uv;
 static float3 v_normal;
 static float4 frag_color;
-static float4 v_color;
 static float3 v_world_position;
 static float4 v_tangent;
 
@@ -63,6 +63,11 @@ struct SPIRV_Cross_Output
     float4 frag_color : SV_Target0;
     float4 frag_ambient : SV_Target1;
 };
+
+float2 material_uv(float2 uv)
+{
+    return float2(uv.x, 1.0f - uv.y);
+}
 
 float3 srgb_to_linear(float3 c)
 {
@@ -91,24 +96,83 @@ float select_channel(float4 texel, float index)
     return texel.w;
 }
 
+float material_alpha(float4 tex_opacity)
+{
+    float alpha = _165_mat_base_color.w;
+    if ((uint(_165_mat_params.z) & 64u) != 0u)
+    {
+        float4 param = tex_opacity;
+        float param_1 = _165_mat_channels1.z;
+        alpha *= select_channel(param, param_1);
+    }
+    return alpha;
+}
+
 float3 apply_normal_map(float3 n, float4 tangent, float3 sample_rgb)
 {
-    float3 _137 = normalize(n);
-    float3 _148 = normalize(tangent.xyz - (_137 * dot(_137, tangent.xyz)));
-    if (dot(_148, _148) < 9.9999999392252902907785028219223e-09f)
+    float3 _234 = normalize(n);
+    float3 _244 = tangent.xyz - (_234 * dot(_234, tangent.xyz));
+    float _248 = dot(_244, _244);
+    if (_248 < 9.9999999392252902907785028219223e-09f)
     {
-        return _137;
+        return _234;
     }
-    float3 _171 = (sample_rgb * 2.0f) - 1.0f.xxx;
-    return normalize(((_148 * _171.x) + ((cross(_137, _148) * tangent.w) * _171.y)) + (_137 * _171.z));
+    float3 _260 = _244 * rsqrt(_248);
+    float3 _273 = (sample_rgb * 2.0f) - 1.0f.xxx;
+    float3 _288 = ((_260 * _273.x) + ((cross(_234, _260) * tangent.w) * _273.y)) + (_234 * _273.z);
+    float _292 = dot(_288, _288);
+    float3 _296;
+    if (_292 > 9.9999999600419720025001879548654e-13f)
+    {
+        _296 = _288 * rsqrt(_292);
+    }
+    else
+    {
+        _296 = _234;
+    }
+    return _296;
+}
+
+float vertex_color_alpha(float alpha)
+{
+    float result = alpha;
+    if (sc_render_options.w >= 0.0f)
+    {
+        float _207;
+        if (sc_render_options.w < 1.5f)
+        {
+            _207 = 1.0f;
+        }
+        else
+        {
+            _207 = v_color.w;
+        }
+        result = _207;
+    }
+    return result;
+}
+
+bool alpha_clipped(float alpha)
+{
+    bool _222 = _165_mat_params.w > 1.5f;
+    bool _229;
+    if (_222)
+    {
+        _229 = alpha < _165_mat_channels1.w;
+    }
+    else
+    {
+        _229 = _222;
+    }
+    return _229;
 }
 
 float3 env_sample_dir(float3 dir)
 {
-    float _199 = -sc_projection_params.y;
-    float _202 = sin(_199);
-    float _205 = cos(_199);
-    return float3((_205 * dir.x) + (_202 * dir.z), dir.y, ((-_202) * dir.x) + (_205 * dir.z));
+    float _312 = -sc_projection_params.y;
+    float _315 = sin(_312);
+    float _318 = cos(_312);
+    return float3((_318 * dir.x) + (_315 * dir.z), dir.y, ((-_315) * dir.x) + (_318 * dir.z));
 }
 
 float3 fresnel_schlick_roughness(float cos_theta, float3 f0, float roughness)
@@ -118,75 +182,71 @@ float3 fresnel_schlick_roughness(float cos_theta, float3 f0, float roughness)
 
 ShadingResult shade_ibl(float3 albedo, float3 world_normal, float3 world_pos, float roughness, float metallic)
 {
-    float3 _251 = normalize(world_normal);
-    float3 _260 = normalize(sc_camera_position.xyz - world_pos);
-    float _271 = max(dot(_251, _260), 9.9999997473787516355514526367188e-05f);
-    float3 param = _251;
-    float3 param_1 = reflect(-_260, _251);
-    float4 _329 = brdf_lut.SampleLevel(ibl_sampler, float2(_271, roughness), 0.0f);
-    float param_2 = _271;
+    float3 _364 = normalize(world_normal);
+    float3 _373 = normalize(sc_camera_position.xyz - world_pos);
+    float _384 = max(dot(_364, _373), 9.9999997473787516355514526367188e-05f);
+    float3 param = _364;
+    float3 param_1 = reflect(-_373, _364);
+    float4 _439 = brdf_lut.SampleLevel(ibl_sampler, float2(_384, roughness), 0.0f);
+    float param_2 = _384;
     float3 param_3 = lerp(0.039999999105930328369140625f.xxx, albedo, metallic.xxx);
     float param_4 = roughness;
-    float3 _338 = fresnel_schlick_roughness(param_2, param_3, param_4);
-    float3 _363 = (((1.0f.xxx - _338) * (1.0f - metallic)) * (irradiance_cube.SampleLevel(ibl_sampler, env_sample_dir(param), 0.0f).xyz * albedo)) * sc_env_params.y;
-    ShadingResult _1169 = { _363 + ((prefilter_cube.SampleLevel(ibl_sampler, env_sample_dir(param_1), roughness * sc_env_params.w).xyz * ((_338 * _329.x) + _329.y.xxx)) * sc_env_params.y), _363 };
-    return _1169;
+    float3 _448 = fresnel_schlick_roughness(param_2, param_3, param_4);
+    float3 _473 = (((1.0f.xxx - _448) * (1.0f - metallic)) * (irradiance_cube.SampleLevel(ibl_sampler, env_sample_dir(param), 0.0f).xyz * albedo)) * sc_env_params.y;
+    ShadingResult _1239 = { _473 + ((prefilter_cube.SampleLevel(ibl_sampler, env_sample_dir(param_1), roughness * sc_env_params.w).xyz * ((_448 * _439.x) + _439.y.xxx)) * sc_env_params.y), _473 };
+    return _1239;
 }
 
 void frag_main()
 {
     frag_ambient = 0.0f.xxxx;
-    float2 _408 = float2(v_uv.x, 1.0f - v_uv.y);
-    float4 _418 = checker_texture.Sample(checker_sampler, _408 * max(sc_render_options.z, 1.0f));
-    float4 _426 = base_color_tex.Sample(material_sampler, _408);
-    float4 _433 = normal_tex.Sample(material_sampler, _408);
-    float4 _440 = roughness_tex.Sample(material_sampler, _408);
-    float4 _447 = metallic_tex.Sample(material_sampler, _408);
-    float4 _454 = ao_tex.Sample(material_sampler, _408);
-    float4 _461 = emissive_tex.Sample(material_sampler, _408);
-    float4 _468 = opacity_tex.Sample(material_sampler, _408);
-    uint _476 = uint(_473_mat_params.z);
+    float2 param = v_uv;
+    float2 _512 = material_uv(param);
+    float4 _522 = checker_texture.Sample(checker_sampler, _512 * max(sc_render_options.z, 1.0f));
+    float4 _530 = base_color_tex.Sample(material_sampler, _512);
+    float4 _537 = normal_tex.Sample(material_sampler, _512);
+    float4 _544 = roughness_tex.Sample(material_sampler, _512);
+    float4 _551 = metallic_tex.Sample(material_sampler, _512);
+    float4 _558 = ao_tex.Sample(material_sampler, _512);
+    float4 _565 = emissive_tex.Sample(material_sampler, _512);
+    float4 _572 = opacity_tex.Sample(material_sampler, _512);
+    uint _577 = uint(_165_mat_params.z);
     if (dot(v_normal, v_normal) < 9.9999999747524270787835121154785e-07f)
     {
-        float3 param = v_color.xyz;
-        frag_color = float4(srgb_to_linear(param), v_color.w);
+        float3 param_1 = v_color.xyz;
+        frag_color = float4(srgb_to_linear(param_1), v_color.w);
         frag_ambient = float4(0.0f, 0.0f, 0.0f, v_color.w);
         return;
     }
     if (sc_projection_params.w > 0.5f)
     {
-        float3 param_1 = v_color.xyz;
-        float3 param_2 = lerp(float3(0.046999998390674591064453125f, 0.046999998390674591064453125f, 0.05200000107288360595703125f), srgb_to_linear(param_1), clamp(v_color.w, 0.0f, 1.0f).xxx) * (0.2800000011920928955078125f + (0.7200000286102294921875f * clamp(dot(normalize(v_normal), normalize(sc_camera_position.xyz - v_world_position)), 0.0f, 1.0f)));
-        frag_color = float4(linear_to_srgb(param_2), 1.0f);
+        float3 param_2 = v_color.xyz;
+        float3 param_3 = lerp(float3(0.046999998390674591064453125f, 0.046999998390674591064453125f, 0.05200000107288360595703125f), srgb_to_linear(param_2), clamp(v_color.w, 0.0f, 1.0f).xxx) * (0.2800000011920928955078125f + (0.7200000286102294921875f * clamp(dot(normalize(v_normal), normalize(sc_camera_position.xyz - v_world_position)), 0.0f, 1.0f)));
+        frag_color = float4(linear_to_srgb(param_3), 1.0f);
         frag_ambient = float4(0.0f, 0.0f, 0.0f, 1.0f);
         return;
     }
-    bool _565 = (_476 & 2u) != 0u;
-    bool _570 = (_476 & 4u) != 0u;
-    bool _575 = (_476 & 8u) != 0u;
-    bool _580 = (_476 & 16u) != 0u;
-    bool _585 = (_476 & 32u) != 0u;
-    float3 base_color = _473_mat_base_color.xyz;
-    if ((_476 & 1u) != 0u)
+    bool _664 = (_577 & 2u) != 0u;
+    bool _669 = (_577 & 4u) != 0u;
+    bool _674 = (_577 & 8u) != 0u;
+    bool _679 = (_577 & 16u) != 0u;
+    bool _684 = (_577 & 32u) != 0u;
+    float3 base_color = _165_mat_base_color.xyz;
+    if ((_577 & 1u) != 0u)
     {
-        if (_473_mat_channels0.x > 3.5f)
+        if (_165_mat_channels0.x > 3.5f)
         {
-            base_color *= _426.xyz;
+            base_color *= _530.xyz;
         }
         else
         {
-            float4 param_3 = _426;
-            float param_4 = _473_mat_channels0.x;
-            base_color *= select_channel(param_3, param_4);
+            float4 param_4 = _530;
+            float param_5 = _165_mat_channels0.x;
+            base_color *= select_channel(param_4, param_5);
         }
     }
-    float out_alpha = _473_mat_base_color.w;
-    if ((_476 & 64u) != 0u)
-    {
-        float4 param_5 = _468;
-        float param_6 = _473_mat_channels1.z;
-        out_alpha *= select_channel(param_5, param_6);
-    }
+    float4 param_6 = _572;
+    float out_alpha = material_alpha(param_6);
     if (sc_projection_params.z >= 0.0f)
     {
         frag_ambient = float4(0.0f, 0.0f, 0.0f, 1.0f);
@@ -201,11 +261,11 @@ void frag_main()
             if (sc_projection_params.z < 1.5f)
             {
                 float3 wn = normalize(v_normal);
-                if (_565)
+                if (_664)
                 {
                     float3 param_8 = v_normal;
                     float4 param_9 = v_tangent;
-                    float3 param_10 = _433.xyz;
+                    float3 param_10 = _537.xyz;
                     wn = apply_normal_map(param_8, param_9, param_10);
                 }
                 result = (wn * 0.5f) + 0.5f.xxx;
@@ -214,7 +274,7 @@ void frag_main()
             {
                 if (sc_projection_params.z < 2.5f)
                 {
-                    result = _433.xyz;
+                    result = _537.xyz;
                 }
                 else
                 {
@@ -232,22 +292,22 @@ void frag_main()
                         {
                             if (sc_projection_params.z < 5.5f)
                             {
-                                float r = _473_mat_params.y;
-                                if (_570)
+                                float r = _165_mat_params.y;
+                                if (_669)
                                 {
-                                    float4 param_11 = _440;
-                                    float param_12 = _473_mat_channels0.z;
-                                    float _724 = select_channel(param_11, param_12);
-                                    if (_473_mat_flags.x > 0.5f)
+                                    float4 param_11 = _544;
+                                    float param_12 = _165_mat_channels0.z;
+                                    float _808 = select_channel(param_11, param_12);
+                                    if (_165_mat_flags.x > 0.5f)
                                     {
-                                        r = 1.0f - ((1.0f - r) * _724);
+                                        r = 1.0f - ((1.0f - r) * _808);
                                     }
                                     else
                                     {
-                                        r *= _724;
+                                        r *= _808;
                                     }
                                 }
-                                if (_473_mat_flags.x > 0.5f)
+                                if (_165_mat_flags.x > 0.5f)
                                 {
                                     r = 1.0f - r;
                                 }
@@ -257,11 +317,11 @@ void frag_main()
                             {
                                 if (sc_projection_params.z < 6.5f)
                                 {
-                                    float m = _473_mat_params.x;
-                                    if (_575)
+                                    float m = _165_mat_params.x;
+                                    if (_674)
                                     {
-                                        float4 param_13 = _447;
-                                        float param_14 = _473_mat_channels0.w;
+                                        float4 param_13 = _551;
+                                        float param_14 = _165_mat_channels0.w;
                                         m *= select_channel(param_13, param_14);
                                     }
                                     result = clamp(m, 0.0f, 1.0f).xxx;
@@ -271,10 +331,10 @@ void frag_main()
                                     if (sc_projection_params.z < 7.5f)
                                     {
                                         float ao = 1.0f;
-                                        if (_580)
+                                        if (_679)
                                         {
-                                            float4 param_15 = _454;
-                                            float param_16 = _473_mat_channels1.x;
+                                            float4 param_15 = _558;
+                                            float param_16 = _165_mat_channels1.x;
                                             ao = select_channel(param_15, param_16);
                                         }
                                         result = clamp(ao, 0.0f, 1.0f).xxx;
@@ -283,22 +343,22 @@ void frag_main()
                                     {
                                         if (sc_projection_params.z < 8.5f)
                                         {
-                                            float3 em = _473_mat_emissive.xyz;
-                                            if (_585)
+                                            float3 em = _165_mat_emissive.xyz;
+                                            if (_684)
                                             {
-                                                float3 factor = _473_mat_emissive.xyz;
-                                                if (all(bool3(_473_mat_emissive.xyz.x <= 0.0f.xxx.x, _473_mat_emissive.xyz.y <= 0.0f.xxx.y, _473_mat_emissive.xyz.z <= 0.0f.xxx.z)))
+                                                float3 factor = _165_mat_emissive.xyz;
+                                                if (all(bool3(_165_mat_emissive.xyz.x <= 0.0f.xxx.x, _165_mat_emissive.xyz.y <= 0.0f.xxx.y, _165_mat_emissive.xyz.z <= 0.0f.xxx.z)))
                                                 {
                                                     factor = 1.0f.xxx;
                                                 }
-                                                if (_473_mat_channels1.y > 3.5f)
+                                                if (_165_mat_channels1.y > 3.5f)
                                                 {
-                                                    em = _461.xyz * factor;
+                                                    em = _565.xyz * factor;
                                                 }
                                                 else
                                                 {
-                                                    float4 param_17 = _461;
-                                                    float param_18 = _473_mat_channels1.y;
+                                                    float4 param_17 = _565;
+                                                    float param_18 = _165_mat_channels1.y;
                                                     em = select_channel(param_17, param_18).xxx * factor;
                                                 }
                                             }
@@ -329,42 +389,25 @@ void frag_main()
     }
     if (sc_render_options.y > 0.5f)
     {
-        base_color = _418.xyz;
+        base_color = _522.xyz;
     }
     if (sc_render_options.w >= 0.0f)
     {
-        if (sc_render_options.w < 0.5f)
+        if ((sc_render_options.w > 0.5f) && (sc_render_options.w < 1.5f))
         {
-            float3 param_20 = v_color.xyz;
-            base_color = srgb_to_linear(param_20);
-            out_alpha = 1.0f;
+            base_color = v_color.w.xxx;
         }
         else
         {
-            if (sc_render_options.w < 1.5f)
-            {
-                base_color = v_color.w.xxx;
-                out_alpha = 1.0f;
-            }
-            else
-            {
-                float3 param_21 = v_color.xyz;
-                base_color = srgb_to_linear(param_21);
-                out_alpha = v_color.w;
-            }
+            float3 param_20 = v_color.xyz;
+            base_color = srgb_to_linear(param_20);
         }
     }
-    bool _893 = _473_mat_params.w > 1.5f;
-    bool _900;
-    if (_893)
-    {
-        _900 = out_alpha < _473_mat_channels1.w;
-    }
-    else
-    {
-        _900 = _893;
-    }
-    if (_900)
+    float param_21 = out_alpha;
+    float _967 = vertex_color_alpha(param_21);
+    out_alpha = _967;
+    float param_22 = _967;
+    if (alpha_clipped(param_22))
     {
         discard;
     }
@@ -374,97 +417,97 @@ void frag_main()
         return;
     }
     float3 world_normal = normalize(v_normal);
-    if (_565)
+    if (_664)
     {
-        float3 param_22 = v_normal;
-        float4 param_23 = v_tangent;
-        float3 param_24 = _433.xyz;
-        world_normal = apply_normal_map(param_22, param_23, param_24);
+        float3 param_23 = v_normal;
+        float4 param_24 = v_tangent;
+        float3 param_25 = _537.xyz;
+        world_normal = apply_normal_map(param_23, param_24, param_25);
     }
-    float metallic = _473_mat_params.x;
-    if (_575)
+    float metallic = _165_mat_params.x;
+    if (_674)
     {
-        float4 param_25 = _447;
-        float param_26 = _473_mat_channels0.w;
-        metallic *= select_channel(param_25, param_26);
+        float4 param_26 = _551;
+        float param_27 = _165_mat_channels0.w;
+        metallic *= select_channel(param_26, param_27);
     }
     metallic = clamp(metallic, 0.0f, 1.0f);
-    float roughness_value = _473_mat_params.y;
-    if (_570)
+    float roughness_value = _165_mat_params.y;
+    if (_669)
     {
-        float4 param_27 = _440;
-        float param_28 = _473_mat_channels0.z;
-        float _959 = select_channel(param_27, param_28);
-        if (_473_mat_flags.x > 0.5f)
+        float4 param_28 = _544;
+        float param_29 = _165_mat_channels0.z;
+        float _1029 = select_channel(param_28, param_29);
+        if (_165_mat_flags.x > 0.5f)
         {
-            roughness_value = 1.0f - ((1.0f - roughness_value) * _959);
+            roughness_value = 1.0f - ((1.0f - roughness_value) * _1029);
         }
         else
         {
-            roughness_value *= _959;
+            roughness_value *= _1029;
         }
     }
     float ao_1 = 1.0f;
-    if (_580)
+    if (_679)
     {
-        float4 param_29 = _454;
-        float param_30 = _473_mat_channels1.x;
-        ao_1 = select_channel(param_29, param_30);
+        float4 param_30 = _558;
+        float param_31 = _165_mat_channels1.x;
+        ao_1 = select_channel(param_30, param_31);
     }
     float3 color_linear;
     float3 ambient_linear;
     if (sc_env_params.x > 0.5f)
     {
-        float3 param_31 = base_color;
-        float3 param_32 = world_normal;
-        float3 param_33 = v_world_position;
-        float param_34 = clamp(roughness_value, 0.039999999105930328369140625f, 1.0f);
-        float param_35 = metallic;
-        ShadingResult _1005 = shade_ibl(param_31, param_32, param_33, param_34, param_35);
-        color_linear = _1005.color;
-        ambient_linear = _1005.ambient;
+        float3 param_32 = base_color;
+        float3 param_33 = world_normal;
+        float3 param_34 = v_world_position;
+        float param_35 = clamp(roughness_value, 0.039999999105930328369140625f, 1.0f);
+        float param_36 = metallic;
+        ShadingResult _1075 = shade_ibl(param_32, param_33, param_34, param_35, param_36);
+        color_linear = _1075.color;
+        ambient_linear = _1075.ambient;
     }
     else
     {
-        float _1016 = clamp(1.0f - roughness_value, 0.0f, 1.0f);
-        float _1026 = max(dot(world_normal, float3(0.3520300388336181640625f, 0.824756085872650146484375f, 0.442552030086517333984375f)), 0.0f);
-        float3 _1051 = (lerp(0.10999999940395355224609375f.xxx, 0.62999999523162841796875f.xxx, clamp((world_normal.y * 0.5f) + 0.5f, 0.0f, 1.0f).xxx) * 0.550000011920928955078125f) + 0.20000000298023223876953125f.xxx;
-        color_linear = (base_color * (_1051 + (1.0f.xxx * (_1026 * 0.75f)))) + ((pow(max(dot(world_normal, normalize(float3(0.3520300388336181640625f, 0.824756085872650146484375f, 0.442552030086517333984375f) + normalize(sc_camera_position.xyz - v_world_position))), 0.0f), exp2(1.0f + (_1016 * 10.0f))) * _1016) * step(0.0f, _1026)).xxx;
-        ambient_linear = base_color * _1051;
+        float _1086 = clamp(1.0f - roughness_value, 0.0f, 1.0f);
+        float _1096 = max(dot(world_normal, float3(0.3520300388336181640625f, 0.824756085872650146484375f, 0.442552030086517333984375f)), 0.0f);
+        float3 _1121 = (lerp(0.10999999940395355224609375f.xxx, 0.62999999523162841796875f.xxx, clamp((world_normal.y * 0.5f) + 0.5f, 0.0f, 1.0f).xxx) * 0.550000011920928955078125f) + 0.20000000298023223876953125f.xxx;
+        color_linear = (base_color * (_1121 + (1.0f.xxx * (_1096 * 0.75f)))) + ((pow(max(dot(world_normal, normalize(float3(0.3520300388336181640625f, 0.824756085872650146484375f, 0.442552030086517333984375f) + normalize(sc_camera_position.xyz - v_world_position))), 0.0f), exp2(1.0f + (_1086 * 10.0f))) * _1086) * step(0.0f, _1096)).xxx;
+        ambient_linear = base_color * _1121;
     }
     color_linear += (ambient_linear * (ao_1 - 1.0f));
     ambient_linear *= ao_1;
-    float3 emissive = _473_mat_emissive.xyz;
-    if (_585)
+    float3 emissive = _165_mat_emissive.xyz;
+    if (_684)
     {
-        float3 factor_1 = _473_mat_emissive.xyz;
-        if (all(bool3(_473_mat_emissive.xyz.x <= 0.0f.xxx.x, _473_mat_emissive.xyz.y <= 0.0f.xxx.y, _473_mat_emissive.xyz.z <= 0.0f.xxx.z)))
+        float3 factor_1 = _165_mat_emissive.xyz;
+        if (all(bool3(_165_mat_emissive.xyz.x <= 0.0f.xxx.x, _165_mat_emissive.xyz.y <= 0.0f.xxx.y, _165_mat_emissive.xyz.z <= 0.0f.xxx.z)))
         {
             factor_1 = 1.0f.xxx;
         }
-        if (_473_mat_channels1.y > 3.5f)
+        if (_165_mat_channels1.y > 3.5f)
         {
-            emissive = _461.xyz * factor_1;
+            emissive = _565.xyz * factor_1;
         }
         else
         {
-            float4 param_36 = _461;
-            float param_37 = _473_mat_channels1.y;
-            emissive = select_channel(param_36, param_37).xxx * factor_1;
+            float4 param_37 = _565;
+            float param_38 = _165_mat_channels1.y;
+            emissive = select_channel(param_37, param_38).xxx * factor_1;
         }
     }
-    float3 _1146 = color_linear;
-    float3 _1148 = _1146 + emissive;
-    color_linear = _1148;
-    frag_color = float4(_1148, out_alpha);
+    float3 _1216 = color_linear;
+    float3 _1218 = _1216 + emissive;
+    color_linear = _1218;
+    frag_color = float4(_1218, out_alpha);
     frag_ambient = float4(ambient_linear, out_alpha);
 }
 
 SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)
 {
+    v_color = stage_input.v_color;
     v_uv = stage_input.v_uv;
     v_normal = stage_input.v_normal;
-    v_color = stage_input.v_color;
     v_world_position = stage_input.v_world_position;
     v_tangent = stage_input.v_tangent;
     frag_main();

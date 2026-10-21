@@ -177,6 +177,10 @@ typedef struct review_import_texture_extras {
     /* x, y, z, w */
     double uv_rotation[4];
     double uv_scale[3];
+    /* Embedded content, stored once per distinct blob: ufbx hands a texture
+       its video's content by pointer, so a texture with a video names the very
+       same range of `bytes` the video does (and so does every other texture
+       sharing that video). */
     review_import_bytes content;
     /* Indexes `videos`, or -1. */
     int32_t video;
@@ -559,6 +563,11 @@ typedef struct review_import_extras {
     size_t uv_set_count;
     review_import_unused_vertex *unused_vertices;
     size_t unused_vertex_count;
+
+    /* Optional per-mesh layers (a color set beyond the first, a vertex crease
+       layer) left out because the file's values could not be read. One such
+       layer costs that layer, not the capture; the Rust side reports the count. */
+    size_t skipped_layer_count;
 } review_import_extras;
 
 void review_import_free_extras(review_import_extras *extras);

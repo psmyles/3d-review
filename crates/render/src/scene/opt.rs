@@ -43,6 +43,8 @@ impl SceneGpu {
         material_states: &[MaterialState],
         material_revision: u64,
     ) -> GpuResult<()> {
+        // Nothing is converging until this frame says so (`idle_ao_history`).
+        self.idle_ao_history();
         // A 3D comparison: the UV viewport's buffers are off (invariant 3).
         self.release_uv_views();
         match opt.view {
@@ -240,14 +242,21 @@ impl SceneGpu {
         )
     }
 
-    /// Sync the active slot as the overlay's ghost: its mesh buffers, which are all
-    /// [`SceneGpu::draw_ghost`] reads, and nothing else.
+    /// Sync the active slot as the overlay's ghost: its mesh buffers and its
+    /// visibility list, which are all the x-ray ghost reads
+    /// ([`SceneGpu::draw_xray_ghost`]), and nothing else.
     ///
     /// A full [`SceneGpu::sync_frame`] here built every derived view the user had
     /// switched on - normals, skeleton, the selection and hover lists - over the
     /// ghost too, and none of it was ever drawn; the source's selection was even
     /// resolved against the processed mesh. Anything such a frame left behind, or
     /// that this slot built while it was the solid one, is dropped.
+    ///
+    /// The visibility list is the exception that is kept and synced: the Outliner's
+    /// hidden set hides a part in every workspace, and the solid mesh and the
+    /// wireframe ghost already honoured it while the x-ray drew the whole ghost.
+    /// Carried across the release like the ghost wireframe, so a steady frame
+    /// rebuilds neither.
     fn sync_ghost(&mut self, scene: &SceneFrame<'_>) -> GpuResult<()> {
         self.sync_unique_parts(scene.model, scene.model_revision, scene.debug.material_mode);
         // The ghost is drawn in its bind pose: no pose is ever handed over for it.
@@ -258,16 +267,31 @@ impl SceneGpu {
             scene.debug.material_mode,
             false,
         )?;
+        let slot = &mut self.active;
         let ghost_wireframe = (
-            self.active.ghost_wireframe_edges.take(),
-            self.active.ghost_wireframe_baked.take(),
+            slot.ghost_wireframe_edges.take(),
+            slot.ghost_wireframe_baked.take(),
         );
-        self.active.release_derived();
+        let visibility = (
+            slot.visible_index.take(),
+            std::mem::take(&mut slot.visible_ranges),
+            slot.visible_active,
+            slot.visibility_baked.take(),
+        );
+        slot.release_derived();
+        (slot.ghost_wireframe_edges, slot.ghost_wireframe_baked) = ghost_wireframe;
         (
-            self.active.ghost_wireframe_edges,
-            self.active.ghost_wireframe_baked,
-        ) = ghost_wireframe;
-        Ok(())
+            slot.visible_index,
+            slot.visible_ranges,
+            slot.visible_active,
+            slot.visibility_baked,
+        ) = visibility;
+        self.sync_visibility(
+            scene.model,
+            scene.model_revision,
+            scene.hidden_meshes,
+            scene.debug.material_mode,
+        )
     }
 
     /// Build the active slot's ghost wireframe, which exists regardless of the user's

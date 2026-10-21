@@ -20,7 +20,7 @@
 //!   ancestor's) carries the conventional `_LOD<n>` suffix bakes only against
 //!   its own LOD's geometry plus every suffix-less node — a suffix-less mesh
 //!   has no LOD variants, so it exists at every level. Suffix-less nodes
-//!   themselves bake against the lowest LOD present (the ground-truth
+//!   themselves bake against the lowest LOD still visible (the ground-truth
 //!   geometry). A scene with no suffixes anywhere is one group, i.e. the
 //!   plain whole-scene bake. This is what lets an artist keep the whole chain
 //!   visible and bake every LOD in one run.
@@ -214,7 +214,17 @@ pub(crate) fn bake_submeshes(
         .iter()
         .map(|piece| node_lod(model, piece.node))
         .collect();
-    let lowest_lod = piece_lods.iter().flatten().copied().min();
+    // "Present" means visible. A hidden piece is out of every occluder scene,
+    // so picking the lowest LOD among the hidden ones too sent the suffix-less
+    // pieces to a group with no LOD geometry left in it: hide LOD0 and the
+    // floor under a LOD1 canopy baked as open sky. Excluded pieces count —
+    // they still occlude.
+    let lowest_lod = piece_lods
+        .iter()
+        .zip(submeshes.iter())
+        .filter(|(_, piece)| !hidden_nodes.contains(&piece.node))
+        .filter_map(|(lod, _)| *lod)
+        .min();
 
     // One occluder scene per bake group actually written. `BTreeMap` for
     // deterministic build order.
@@ -290,8 +300,8 @@ pub(crate) fn bake_submeshes(
 /// model (vertices + rebased indices only; bake-scoped scratch, see the module
 /// docs). The hidden set is the handful of Outliner-hidden meshes, so the
 /// linear membership test is cheaper than building a set (mirroring
-/// `SceneBvh`). A `None` group only ever exists when no piece carries a
-/// suffix, so it is simply the whole visible scene.
+/// `SceneBvh`). A `None` group only ever exists when no *visible* piece
+/// carries a suffix, so it is simply the whole visible scene.
 fn occluder_scene(
     submeshes: &[Submesh],
     piece_lods: &[Option<u32>],
@@ -307,8 +317,8 @@ fn occluder_scene(
                     && match (**lod, group) {
                         (None, _) => true,
                         (Some(lod), Some(group)) => lod == group,
-                        // Unreachable: a `None` group means no piece anywhere
-                        // carries a suffix.
+                        // Only a hidden piece can reach this: a `None` group
+                        // means no visible piece carries a suffix.
                         (Some(_), None) => false,
                     }
             })
@@ -997,6 +1007,31 @@ mod tests {
                 assert!(
                     vertex.vertex_color.w < 0.5,
                     "the LOD0 canopy darkens the suffix-less floor, got {}",
+                    vertex.vertex_color.w
+                );
+            }
+        }
+    }
+
+    /// The lowest LOD is the lowest one still *visible*. Hiding LOD0 leaves
+    /// LOD1 as the ground truth, so the floor beneath bakes against it rather
+    /// than against a LOD0 group the hiding emptied of everything but itself.
+    #[test]
+    fn hiding_the_lowest_lod_hands_its_role_to_the_next() {
+        let model = named_quads_model(&[
+            ("Floor", 0.5, 0.0),
+            ("Canopy_LOD0", 1.0, 0.5),
+            ("Canopy_LOD1", 1.5, 0.6),
+        ]);
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::BakeAo(BakeAoParams::default()));
+
+        let baked = run_model_hiding(&model, &stack, &[1]);
+        for vertex in &baked.lods[0].model.vertices {
+            if vertex.position.y < 0.2 {
+                assert!(
+                    vertex.vertex_color.w < 0.5,
+                    "the visible LOD1 canopy darkens the floor, got {}",
                     vertex.vertex_color.w
                 );
             }

@@ -12,7 +12,7 @@
 
 use glam::{Mat4, Vec3};
 use review_model::{Bounds, ModelData, SceneBvh};
-use review_render::OrbitCamera;
+use review_render::{CameraProjection, OrbitCamera};
 
 use crate::state::{UiState, ViewProjectionMode};
 use crate::theme::{color, font, size};
@@ -22,7 +22,8 @@ use crate::units::match_known_unit;
 /// place its labels.
 ///
 /// There is normally one of these — the whole viewport — but the Opt workspace's
-/// split is two, each with its own mesh, camera and half of the screen. Bundling
+/// split is two, each with its own mesh, camera and half of the screen, and the
+/// Aud split is one over the left half its model is drawn in. Bundling
 /// them is what keeps the projection honest there: a label's position depends on
 /// *which* rect the camera's image covers and on that rect's aspect, and both
 /// differ per half.
@@ -70,8 +71,8 @@ pub(crate) fn draw_dimension_labels(
     // its processed levels, so one list serves every view.
     let hidden: Vec<u32> = state.hidden_meshes.iter().map(|&i| i as u32).collect();
 
-    // Painted on the background order, after the viewport scene callback (added
-    // earlier in the frame) but beneath the egui chrome areas, so the labels sit
+    // Painted on the background order, over the scene the renderer has already
+    // drawn into the frame but beneath the egui chrome areas, so the labels sit
     // over the model and the box but under the toolbar / panels / gizmo.
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Background,
@@ -110,21 +111,10 @@ fn draw_view_labels(
         color::DIMENSION_LABEL_Z,
     ];
 
-    // The occlusion ray is cast from the camera toward each midpoint. Under
-    // orthographic projection every view ray is parallel to the camera forward,
-    // so the ray starts a fixed distance *behind* the midpoint along that
-    // direction (far enough to clear the whole model); under perspective it
-    // starts at the eye.
     let orthographic = matches!(state.projection_mode, ViewProjectionMode::Orthographic);
-    let ortho_back = camera.forward_dir() * bounds.size().length().max(1.0) * 2.0;
-    let eye = camera.eye_position();
 
     for (midpoint, axis) in edge_midpoints(bounds.min, bounds.max) {
-        let ray_origin = if orthographic {
-            midpoint - ortho_back
-        } else {
-            eye
-        };
+        let ray_origin = occlusion_ray_origin(camera, orthographic, midpoint);
         if view
             .bvh
             .is_some_and(|bvh| bvh.segment_occluded(model, ray_origin, midpoint, hidden))
@@ -135,6 +125,29 @@ fn draw_view_labels(
             draw_label(painter, pos, &labels[axis], axis_colors[axis], view.clamp);
         }
     }
+}
+
+/// Where the occlusion ray toward `midpoint` starts: the camera's view of it.
+///
+/// Under perspective that is the eye. Under orthographic projection every view
+/// ray is parallel to the camera forward, so it is the point on the camera's near
+/// plane straight back from the midpoint: everything the camera draws in front of
+/// the midpoint lies between the two. It used to be a fixed distance back sized
+/// from the measured box, which fell short whenever the box was smaller than the
+/// scene — under "Only selection", a small part behind a large mesh read as
+/// visible through it.
+fn occlusion_ray_origin(camera: OrbitCamera, orthographic: bool, midpoint: Vec3) -> Vec3 {
+    if !orthographic {
+        return camera.eye_position();
+    }
+    // The orthographic picture is drawn from its own eye, backed off behind the
+    // orbit eye until the scene clears its near plane (`OrbitCamera::eye_for`).
+    let projection = CameraProjection::Orthographic;
+    let eye = camera.eye_for(projection);
+    let forward = camera.forward_dir();
+    let (z_near, _) = camera.near_far_for(projection);
+    let in_front_of_near = ((midpoint - eye).dot(forward) - z_near).max(0.0);
+    midpoint - forward * in_front_of_near
 }
 
 /// World-space midpoint of each of the box's 12 edges, paired with the axis it
@@ -300,6 +313,39 @@ mod tests {
             0.0, 0.0, 0.0, -1.0,
         ]);
         assert_eq!(project(behind, Vec3::ZERO, half), None, "w <= 0 is behind");
+    }
+
+    /// A small selected part far behind a large mesh: the orthographic ray has to
+    /// start in front of the mesh, wherever the box it labels is, or the mesh is
+    /// never tested.
+    #[test]
+    fn an_orthographic_occlusion_ray_starts_where_the_picture_does() {
+        let camera = OrbitCamera {
+            target: Vec3::ZERO,
+            distance: 100.0,
+            ..OrbitCamera::default()
+        };
+        let forward = camera.forward_dir();
+        let eye = camera.eye_for(CameraProjection::Orthographic);
+        let (z_near, _) = camera.near_far_for(CameraProjection::Orthographic);
+        let midpoint = Vec3::splat(0.01);
+
+        let origin = occlusion_ray_origin(camera, true, midpoint);
+        // Straight down the view direction...
+        let along = (midpoint - origin).normalize();
+        assert!(along.dot(forward) > 0.999, "the ray is not a view ray");
+        // ...from the near plane, so anything drawn in front of the midpoint lies
+        // on it — not two box-lengths back, which a 2 cm part left 4 cm.
+        let start_depth = (origin - eye).dot(forward);
+        assert!(
+            (start_depth - z_near).abs() < 1e-3,
+            "the ray starts {start_depth} in front of the eye, not at the near plane ({z_near})"
+        );
+
+        assert_eq!(
+            occlusion_ray_origin(camera, false, midpoint),
+            camera.eye_position()
+        );
     }
 
     #[test]

@@ -266,20 +266,31 @@ fn scene_tab(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) {
     // Guides describe a hierarchy; the flat and search presentations have none.
     let guides = !searching && state.outliner.view == OutlinerViewMode::SceneTree;
 
-    let output = egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            if rows.is_empty() {
-                ui.weak(if searching {
-                    keys::ui_outliner::NO_MATCHES
-                } else {
-                    keys::ui_outliner::ALL_FILTERED
-                });
-                return RowsOutput::default();
-            }
-            draw_rows(ui, state, model, &rows, guides)
+    let output = if rows.is_empty() {
+        ui.weak(if searching {
+            keys::ui_outliner::NO_MATCHES
+        } else {
+            keys::ui_outliner::ALL_FILTERED
+        });
+        RowsOutput::default()
+    } else {
+        ui.scope(|ui| {
+            // Every row is one height and the rows abut, so the list lays out
+            // only the rows in view rather than every node of the scene, every
+            // frame. `show_rows` takes the row pitch from the spacing of the `Ui`
+            // it is called on, so that spacing has to be zero here: zeroed only
+            // inside the rows, it would place them on a pitch taller than the one
+            // they are drawn on.
+            ui.spacing_mut().item_spacing.y = 0.0;
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show_rows(ui, size::OUTLINER_ROW_HEIGHT, rows.len(), |ui, range| {
+                    draw_rows(ui, state, model, &rows, range, guides)
+                })
+                .inner
         })
-        .inner;
+        .inner
+    };
 
     apply_rows_output(state, model, &rows, output);
     handle_nav(ui, state, model, &rows);

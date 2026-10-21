@@ -33,6 +33,9 @@ pub struct AnimContext {
     /// carries no per-triangle node info, or the corner is unreferenced).
     corner_node: Vec<u32>,
     /// Per logical vertex, one corner expanded from it (`u32::MAX` when none).
+    /// **Empty** unless the corner map covers the render mesh and every entry of
+    /// it fits the logical count — the one condition under which walking these
+    /// corners visits every position the mesh has. See [`bounds_corners`].
     logical_corner: Vec<u32>,
 }
 
@@ -87,12 +90,25 @@ impl AnimContext {
             }
         }
 
-        let mut logical_corner = vec![u32::MAX; model.stats.vertex_count];
-        for (corner, &logical) in model.corner_to_logical.iter().enumerate() {
-            if let Some(slot) = logical_corner.get_mut(logical as usize)
-                && *slot == u32::MAX
-            {
-                *slot = corner as u32;
+        // Built only when the corner map covers the render mesh, not merely sized
+        // from the logical count: an optimizer-rebuilt level with no skin or
+        // morph carries no map but still reports its vertex count and clones the
+        // source's clips, and a table of nothing but `u32::MAX` had every bounds
+        // walk measure no mesh at all. A map entry the table cannot hold drops
+        // the table too, since the corners behind it would go unmeasured.
+        let mut logical_corner = Vec::new();
+        if model.corner_to_logical.len() == model.vertices.len() {
+            logical_corner = vec![u32::MAX; model.stats.vertex_count];
+            let mut complete = true;
+            for (corner, &logical) in model.corner_to_logical.iter().enumerate() {
+                match logical_corner.get_mut(logical as usize) {
+                    Some(slot) if *slot == u32::MAX => *slot = corner as u32,
+                    Some(_) => {}
+                    None => complete = false,
+                }
+            }
+            if !complete {
+                logical_corner = Vec::new();
             }
         }
 
@@ -413,7 +429,8 @@ const WEIGHT_SUM_EPSILON: f32 = 1.0e-6;
 /// The CPU reference for what the vertex shader does to render vertex `corner`
 /// under `deform`: blend-shape offsets first, then the weighted palette blend
 /// (normalised by the summed weight as ufbx does), falling back to the node's
-/// rigid entry for a corner with no skin influences. Returns the deformed
+/// rigid entry for a corner with no skin influences — or only zero-weighted
+/// ones, since there is then nothing to normalise by. Returns the deformed
 /// position and (unnormalised-input, normalised-output) normal.
 pub fn deform_corner(
     model: &ModelData,
@@ -466,7 +483,8 @@ pub fn deform_corner(
         return (blended_position, blended_normal.normalize_or_zero());
     }
 
-    // Unskinned (or a skinned vertex with no influences): ride the node rigidly.
+    // Unskinned (or a skinned vertex with no weighted influences): ride the node
+    // rigidly. `corner_moves` makes the same call on the same sum.
     let node = ctx.corner_node.get(corner).copied().unwrap_or(u32::MAX);
     match deform.palette.get(node as usize) {
         Some(matrix) if (node as usize) < node_count => (
@@ -493,25 +511,42 @@ pub fn deform_logical_position(
 }
 
 /// Bounds of the mesh under `deform`. Walks the logical vertices (one corner
-/// each) when the corner map is present — positions are shared across a logical
-/// vertex's corners, so that is the whole set — else every corner.
+/// each) when the corner map covers the mesh — positions are shared across a
+/// logical vertex's corners, so that is the whole set — else every corner.
 ///
 /// A model with no mesh — an animation file opened on its own — is measured on
 /// its joints instead, since its skeleton is then all there is to see.
 pub fn posed_bounds(model: &ModelData, ctx: &AnimContext, deform: &DeformPose) -> Option<Bounds> {
-    let mut bounds = Bounds::EMPTY;
     if model.has_geometry() {
-        for corner in bounds_corners(model, ctx) {
-            bounds.include_point(deform_corner(model, ctx, deform, corner as usize).0);
-        }
+        posed_corner_bounds(model, ctx, deform, bounds_corners(model, ctx))
     } else {
-        // A node's palette entry is its delta from rest, so it carries the rest
-        // joint to the posed one.
-        for joint in joints(model) {
-            if let Some(delta) = deform.palette.get(joint) {
-                let rest = model.nodes[joint].transform.w_axis.truncate();
-                bounds.include_point(delta.transform_point3(rest));
-            }
+        posed_joint_bounds(model, deform)
+    }
+}
+
+/// [`posed_bounds`]'s mesh walk, over the corners `corners` yields.
+fn posed_corner_bounds(
+    model: &ModelData,
+    ctx: &AnimContext,
+    deform: &DeformPose,
+    corners: impl Iterator<Item = u32>,
+) -> Option<Bounds> {
+    let mut bounds = Bounds::EMPTY;
+    for corner in corners {
+        bounds.include_point(deform_corner(model, ctx, deform, corner as usize).0);
+    }
+    (!bounds.is_empty()).then_some(bounds)
+}
+
+/// [`posed_bounds`] for a model with no mesh: its joints under `deform`.
+fn posed_joint_bounds(model: &ModelData, deform: &DeformPose) -> Option<Bounds> {
+    let mut bounds = Bounds::EMPTY;
+    // A node's palette entry is its delta from rest, so it carries the rest
+    // joint to the posed one.
+    for joint in joints(model) {
+        if let Some(delta) = deform.palette.get(joint) {
+            let rest = model.nodes[joint].transform.w_axis.truncate();
+            bounds.include_point(delta.transform_point3(rest));
         }
     }
     (!bounds.is_empty()).then_some(bounds)
@@ -529,9 +564,14 @@ fn joints(model: &ModelData) -> impl Iterator<Item = usize> {
 }
 
 /// The corners a bounds measurement walks: one per logical vertex when the corner
-/// map is present — positions are shared across a logical vertex's corners, so
-/// that is the whole set — else every corner. Shared by [`posed_bounds`] and
+/// map covers the mesh — positions are shared across a logical vertex's corners,
+/// so that is the whole set — else every corner. Shared by [`posed_bounds`] and
 /// [`clip_bounds`] so the two can never disagree on what "the mesh" is.
+///
+/// "Covers" is decided once, by [`AnimContext::new`], which leaves its table
+/// empty for a mesh with no map. Testing whether a map is *present* is not the
+/// same question: an Opt level with neither skin nor morph has none, yet still
+/// carries its logical vertex count and the source's clips.
 fn bounds_corners<'a>(model: &'a ModelData, ctx: &'a AnimContext) -> impl Iterator<Item = u32> {
     match (!ctx.logical_corner.is_empty()).then_some(ctx.logical_corner.as_slice()) {
         Some(corners) => Either::Left(corners.iter().copied().filter(|&c| c != u32::MAX)),
@@ -569,6 +609,100 @@ pub fn rest_bounds(model: &ModelData, ctx: &AnimContext) -> Option<Bounds> {
     rest_pose(model, ctx, &mut pose);
     build_palette(model, ctx, &pose, &mut deform);
     posed_bounds(model, ctx, &deform)
+}
+
+/// [`rest_bounds`] over only the geometry of the nodes *not* in `hidden_nodes` —
+/// what [`ModelData::visible_bounds`] answers for a model that deforms, measured
+/// in the same pose its [`ModelData::bounds`] is. The whole [`rest_bounds`] when
+/// nothing is hidden, the model has no mesh, or it carries no per-triangle node
+/// info to resolve visibility with; `None` when no visible geometry remains.
+pub fn visible_rest_bounds(
+    model: &ModelData,
+    ctx: &AnimContext,
+    hidden_nodes: &[u32],
+) -> Option<Bounds> {
+    let Some(corners) = visible_corners(model, ctx, hidden_nodes) else {
+        return rest_bounds(model, ctx);
+    };
+    let mut pose = Pose::new(model);
+    let mut deform = DeformPose::default();
+    rest_pose(model, ctx, &mut pose);
+    build_palette(model, ctx, &pose, &mut deform);
+    posed_corner_bounds(model, ctx, &deform, corners.into_iter())
+}
+
+/// The corners a bounds measurement walks once `hidden_nodes` are hidden: every
+/// corner a triangle of a visible node uses, one per logical vertex where
+/// [`bounds_corners`] would walk one per logical vertex too. `None` when nothing
+/// is filtered out — nothing hidden, no mesh, or no per-triangle node info — so
+/// the caller measures the whole model the way it always has.
+fn visible_corners(model: &ModelData, ctx: &AnimContext, hidden_nodes: &[u32]) -> Option<Vec<u32>> {
+    let triangle_count = model.indices.len() / 3;
+    if hidden_nodes.is_empty()
+        || !model.has_geometry()
+        || model.triangles.node.len() != triangle_count
+    {
+        return None;
+    }
+    let hidden: std::collections::HashSet<u32> = hidden_nodes.iter().copied().collect();
+    Some(triangle_corners(model, ctx, |triangle| {
+        !hidden.contains(&model.triangles.node[triangle])
+    }))
+}
+
+/// [`rest_bounds`] over only the triangles `mask` includes - what the Only
+/// Selection box measures for a model that deforms, in the same pose its
+/// [`ModelData::bounds`] is (reading the bind-pose buffer instead put a skinned
+/// selection's box somewhere the selection is not drawn). `None` when the mask
+/// covers no geometry.
+pub fn triangle_rest_bounds(model: &ModelData, ctx: &AnimContext, mask: &[bool]) -> Option<Bounds> {
+    let corners = triangle_corners(model, ctx, |triangle| {
+        mask.get(triangle).copied().unwrap_or(false)
+    });
+    let mut pose = Pose::new(model);
+    let mut deform = DeformPose::default();
+    rest_pose(model, ctx, &mut pose);
+    build_palette(model, ctx, &pose, &mut deform);
+    posed_corner_bounds(model, ctx, &deform, corners.into_iter())
+}
+
+/// Every corner a triangle `include` accepts uses, one per logical vertex where
+/// [`bounds_corners`] would walk one per logical vertex too.
+fn triangle_corners(
+    model: &ModelData,
+    ctx: &AnimContext,
+    include: impl Fn(usize) -> bool,
+) -> Vec<u32> {
+    let mut used = vec![false; model.vertices.len()];
+    for (triangle, corners) in model.indices.as_chunks::<3>().0.iter().enumerate() {
+        if !include(triangle) {
+            continue;
+        }
+        for &corner in corners {
+            if let Some(slot) = used.get_mut(corner as usize) {
+                *slot = true;
+            }
+        }
+    }
+    // Deduplicated by logical vertex exactly where `bounds_corners` is: when
+    // `AnimContext::new` found the map covering the mesh. Any used corner stands
+    // for its logical vertex, not only the first one, which may belong to no
+    // triangle at all.
+    let map = (!ctx.logical_corner.is_empty()).then_some(model.corner_to_logical.as_slice());
+    let mut taken = vec![false; ctx.logical_corner.len()];
+    used.iter()
+        .enumerate()
+        .filter(|&(_, &used)| used)
+        .filter(|&(corner, _)| {
+            let Some(&logical) = map.and_then(|map| map.get(corner)) else {
+                return true;
+            };
+            taken
+                .get_mut(logical as usize)
+                .is_none_or(|seen| !std::mem::replace(seen, true))
+        })
+        .map(|(corner, _)| corner as u32)
+        .collect()
 }
 
 /// Which nodes `clip` can pose away from their rest world transform: every node
@@ -623,17 +757,23 @@ fn corner_moves(
         return true;
     }
 
-    // Skinned corners ride their clusters' bones, not their own node.
+    // Skinned corners ride their clusters' bones, not their own node — but only
+    // when the row carries weight. `deform_corner` blends only while the summed
+    // weight is positive and otherwise takes the rigid fallback below, so a row
+    // of zeros (legal: `SkinData::validate` asks only for non-negative weights)
+    // is the node's to move, not its bones'.
     if let (Some(skin), Some(logical)) = (&model.skin, logical) {
         let range = skin.influence_range(logical);
-        if !range.is_empty() {
+        let total: f32 = skin.weights[range.clone()].iter().sum();
+        if total > 0.0 {
             return skin.bones[range]
                 .iter()
                 .any(|&bone| moved_nodes.get(bone as usize).copied().unwrap_or(false));
         }
     }
 
-    // Unskinned (or a skinned corner with no influences): rigid on its own node.
+    // Unskinned (or a skinned corner with no weighted influences): rigid on its
+    // own node.
     let node = ctx.corner_node.get(corner).copied().unwrap_or(u32::MAX);
     moved_nodes.get(node as usize).copied().unwrap_or(false)
 }
@@ -672,7 +812,46 @@ pub fn clip_bounds_over(
     if !model.has_geometry() {
         return clip_joint_bounds(model, ctx, clip, &moved_nodes, frames);
     }
+    clip_corner_bounds(
+        model,
+        ctx,
+        clip,
+        &moved_nodes,
+        frames,
+        bounds_corners(model, ctx),
+    )
+}
 
+/// [`clip_bounds_over`] over only the geometry of the nodes *not* in
+/// `hidden_nodes` — the selected clip's envelope as a Visible Only bounding box
+/// has to describe it, beside [`visible_rest_bounds`] for the rest pose. Costs
+/// what [`clip_bounds_over`] costs, so it belongs on a worker, not the redraw
+/// path. The whole envelope when nothing is filtered out, as
+/// [`visible_rest_bounds`] falls back.
+pub fn visible_clip_bounds_over(
+    model: &ModelData,
+    ctx: &AnimContext,
+    clip: &AnimationClip,
+    frames: std::ops::Range<usize>,
+    hidden_nodes: &[u32],
+) -> Option<Bounds> {
+    let Some(corners) = visible_corners(model, ctx, hidden_nodes) else {
+        return clip_bounds_over(model, ctx, clip, frames);
+    };
+    let frames = frames.start..frames.end.min(clip.frame_count());
+    let moved_nodes = clip_moved_nodes(model, ctx, clip);
+    clip_corner_bounds(model, ctx, clip, &moved_nodes, frames, corners.into_iter())
+}
+
+/// [`clip_bounds_over`]'s mesh walk, over the corners `corners` yields.
+fn clip_corner_bounds(
+    model: &ModelData,
+    ctx: &AnimContext,
+    clip: &AnimationClip,
+    moved_nodes: &[bool],
+    frames: std::ops::Range<usize>,
+    corners: impl Iterator<Item = u32>,
+) -> Option<Bounds> {
     // Split the corners `posed_bounds` would walk into the ones this clip can
     // move and the ones it cannot, measuring the latter as we go — in the rest
     // pose, which is the pose they hold in every frame of the clip.
@@ -682,8 +861,8 @@ pub fn clip_bounds_over(
     build_palette(model, ctx, &pose, &mut deform);
     let mut bounds = Bounds::EMPTY;
     let mut moving: Vec<u32> = Vec::new();
-    for corner in bounds_corners(model, ctx) {
-        if corner_moves(model, ctx, clip, &moved_nodes, corner as usize) {
+    for corner in corners {
+        if corner_moves(model, ctx, clip, moved_nodes, corner as usize) {
             moving.push(corner);
         } else {
             bounds.include_point(deform_corner(model, ctx, &deform, corner as usize).0);
@@ -1291,7 +1470,8 @@ mod tests {
 
     /// The definition `clip_bounds` is an optimization of: the union of the whole
     /// mesh's bounds over every frame, measured with no knowledge of which nodes
-    /// the clip touches.
+    /// the clip touches — nor of which corners a bounds walk visits, so it holds
+    /// with or without a corner map.
     fn brute_force_clip_bounds(
         model: &ModelData,
         ctx: &AnimContext,
@@ -1303,9 +1483,8 @@ mod tests {
         for frame in 0..clip.frame_count() {
             evaluate_pose(model, ctx, Some(clip), clip.frame_time(frame), &mut pose);
             build_palette(model, ctx, &pose, &mut deform);
-            if let Some(frame_bounds) = posed_bounds(model, ctx, &deform) {
-                bounds.include_point(frame_bounds.min);
-                bounds.include_point(frame_bounds.max);
+            for corner in 0..model.vertices.len() {
+                bounds.include_point(deform_corner(model, ctx, &deform, corner).0);
             }
         }
         bounds
@@ -1367,5 +1546,223 @@ mod tests {
             }
             assert_eq!(united, whole, "pieces of {size} frames");
         }
+    }
+
+    /// What `optimize` assembles for a level of a source with a clip but neither
+    /// skin nor morph: no corner map, yet the logical vertex count and the clips
+    /// are carried. `needs_deform` is true for any clip, so its bounds come from
+    /// here — and the walk used to size its corner table from the count alone,
+    /// find nothing in it, and measure no mesh at all.
+    #[test]
+    fn a_mesh_with_a_clip_but_no_corner_map_is_still_measured() {
+        let mut model = partly_animated_model(Vec3::new(10.0, 0.0, 0.0));
+        model.corner_to_logical.clear();
+        assert!(model.needs_deform() && model.stats.vertex_count > 0);
+        assert_eq!(model.validate_deform(), Ok(()));
+        let ctx = AnimContext::new(&model);
+
+        // Every node rests where its world matrix says, so the default pose is
+        // the buffer as it stands.
+        let mut flat = model.clone();
+        flat.recompute_bounds();
+        assert_eq!(rest_bounds(&model, &ctx), flat.bounds);
+
+        let clip = &model.animations[0];
+        let envelope = clip_bounds(&model, &ctx, clip).expect("the clip moves a mesh");
+        assert_eq!(envelope, brute_force_clip_bounds(&model, &ctx, clip));
+        assert_eq!(envelope.max.x, 19.0, "node 1 and its child travel 10 m");
+    }
+
+    /// A skin row of zeros is legal and has nothing to blend, so `deform_corner`
+    /// rides that corner on its own node. The envelope's static/moving split must
+    /// make the same call, or a clip moving the mesh node — and not the bones —
+    /// would leave that corner measured once, at rest.
+    #[test]
+    fn a_zero_weight_skin_row_rides_its_node_in_the_envelope_too() {
+        let mut model = skinned_triangle();
+        // The triangle hangs off a mesh node of its own, outside the skeleton.
+        model
+            .nodes
+            .push(node_with_local("mesh", None, LocalTransform::IDENTITY));
+        model.triangles.node = vec![3];
+        if let Some(skin) = model.skin.as_mut() {
+            for cluster in &mut skin.clusters {
+                cluster.mesh_node = 3;
+            }
+            // Logical vertex 2's two influences, both zero.
+            skin.weights[3] = 0.0;
+            skin.weights[4] = 0.0;
+        }
+        model.animations = vec![AnimationClip {
+            time_end: 1.0,
+            frame_rate: 10.0,
+            tracks: vec![NodeTrack {
+                node: 3,
+                translation: vec![key(0.0, Vec3::ZERO), key(1.0, Vec3::Z * 7.0)],
+                ..NodeTrack::default()
+            }],
+            ..AnimationClip::default()
+        }];
+        assert_eq!(model.validate_deform(), Ok(()));
+        let ctx = AnimContext::new(&model);
+        let clip = &model.animations[0];
+
+        let envelope = clip_bounds(&model, &ctx, clip).expect("bounds");
+        assert_eq!(envelope, brute_force_clip_bounds(&model, &ctx, clip));
+        assert!((envelope.max.z - 8.0).abs() < 1e-5, "{envelope:?}");
+    }
+
+    /// Two mesh nodes beside a bone that rests 10 m along +X from where it was
+    /// bound: node 0's triangle is skinned wholly to the bone, so the file's
+    /// default pose draws it 10 m from its bind-pose buffer, while node 1's
+    /// triangle is static.
+    fn rest_away_from_bind() -> ModelData {
+        let corner = |x: f32, y: f32| Vertex {
+            position: Vec3::new(x, y, 0.0),
+            ..Vertex::default()
+        };
+        let mut model = ModelData {
+            vertices: vec![
+                corner(0.0, 0.0),
+                corner(1.0, 0.0),
+                corner(0.0, 1.0),
+                corner(3.0, 0.0),
+                corner(4.0, 0.0),
+                corner(3.0, 1.0),
+            ],
+            indices: (0..6).collect(),
+            triangles: TriangleData {
+                to_face: Vec::new(),
+                material: Vec::new(),
+                node: vec![0, 1],
+            },
+            nodes: vec![
+                node_with_local("a", None, LocalTransform::IDENTITY),
+                node_with_local("b", None, LocalTransform::IDENTITY),
+                node_with_local("bone", None, local(Vec3::X * 10.0)),
+            ],
+            corner_to_logical: (0..6).collect(),
+            stats: ModelStats {
+                vertex_count: 6,
+                ..ModelStats::default()
+            },
+            ..ModelData::default()
+        };
+        model.nodes[2].kind = NodeKind::Bone;
+        model.nodes[2].transform = Mat4::from_translation(Vec3::X * 10.0);
+        model.skin = Some(SkinData {
+            offsets: vec![0, 1, 2, 3, 3, 3, 3],
+            bones: vec![2, 2, 2],
+            weights: vec![1.0, 1.0, 1.0],
+            influence_cluster: vec![0, 0, 0],
+            // Bound with the bone at the origin.
+            clusters: vec![SkinCluster {
+                bone: 2,
+                mesh_node: 0,
+                world_to_bone_bind: Mat4::IDENTITY,
+                mesh_node_to_bone: Mat4::IDENTITY,
+                bind_to_world: Mat4::IDENTITY,
+                name: String::new(),
+            }],
+            deformers: Vec::new(),
+        });
+        assert_eq!(model.validate_deform(), Ok(()));
+        // What import measures for a model that deforms.
+        model.bounds = rest_bounds(&model, &AnimContext::new(&model));
+        model
+    }
+
+    fn x_span(bounds: Option<Bounds>) -> Option<(f32, f32)> {
+        bounds.map(|bounds| (bounds.min.x, bounds.max.x))
+    }
+
+    /// `bounds` of a model that deforms is its default pose; hiding a mesh used
+    /// to measure what was left from the bind-pose buffer instead, so the box
+    /// jumped 10 m the moment anything was hidden.
+    #[test]
+    fn hiding_a_mesh_keeps_the_box_in_the_pose_on_screen() {
+        let model = rest_away_from_bind();
+        assert_eq!(x_span(model.bounds), Some((3.0, 11.0)));
+        assert_eq!(model.visible_bounds(&[]), model.bounds);
+
+        // The skinned triangle where the rest pose draws it, not at x 0..1.
+        assert_eq!(x_span(model.visible_bounds(&[1])), Some((10.0, 11.0)));
+        assert_eq!(x_span(model.visible_bounds(&[0])), Some((3.0, 4.0)));
+        assert_eq!(model.visible_bounds(&[0, 1]), None);
+    }
+
+    /// The Only Selection box of a model that deforms is in the pose on screen
+    /// too: one selected triangle measures where Visible Only would put it with
+    /// every other node hidden, all of them measure `bounds`, none measure nothing.
+    #[test]
+    fn a_selected_triangle_is_measured_in_the_pose_on_screen() {
+        let model = rest_away_from_bind();
+        let ctx = AnimContext::new(&model);
+        let count = model.triangles.node.len();
+        for (triangle, &node) in model.triangles.node.iter().enumerate() {
+            let mut mask = vec![false; count];
+            mask[triangle] = true;
+            let others: Vec<u32> = model
+                .triangles
+                .node
+                .iter()
+                .copied()
+                .filter(|&other| other != node)
+                .collect();
+            assert_eq!(
+                triangle_rest_bounds(&model, &ctx, &mask),
+                model.visible_bounds(&others)
+            );
+        }
+        assert_eq!(
+            triangle_rest_bounds(&model, &ctx, &vec![true; count]),
+            model.bounds
+        );
+        assert_eq!(
+            triangle_rest_bounds(&model, &ctx, &vec![false; count]),
+            None
+        );
+    }
+
+    /// The Visible Only box of a selected clip: its envelope over only the meshes
+    /// left visible, which is what a caller measuring it off the redraw path asks
+    /// for.
+    #[test]
+    fn a_visible_only_envelope_follows_only_the_visible_meshes() {
+        let mut model = rest_away_from_bind();
+        // The bone slides on another 5 m along +X.
+        model.animations = vec![AnimationClip {
+            time_end: 1.0,
+            frame_rate: 10.0,
+            tracks: vec![NodeTrack {
+                node: 2,
+                translation: vec![key(0.0, Vec3::X * 10.0), key(1.0, Vec3::X * 15.0)],
+                ..NodeTrack::default()
+            }],
+            ..AnimationClip::default()
+        }];
+        let ctx = AnimContext::new(&model);
+        let clip = &model.animations[0];
+        let frames = 0..clip.frame_count();
+        let visible = |hidden: &[u32]| {
+            x_span(visible_clip_bounds_over(
+                &model,
+                &ctx,
+                clip,
+                frames.clone(),
+                hidden,
+            ))
+        };
+
+        assert_eq!(visible(&[]), x_span(clip_bounds(&model, &ctx, clip)));
+        assert_eq!(visible(&[]), Some((3.0, 16.0)));
+        assert_eq!(visible(&[1]), Some((10.0, 16.0)));
+        assert_eq!(visible(&[0]), Some((3.0, 4.0)));
+        assert_eq!(visible(&[0, 1]), None);
+        // The rest-pose twin agrees on what is visible.
+        assert_eq!(
+            x_span(visible_rest_bounds(&model, &ctx, &[1])),
+            Some((10.0, 11.0))
+        );
     }
 }

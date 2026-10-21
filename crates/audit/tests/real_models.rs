@@ -16,10 +16,15 @@ const FIXTURES: &[&str] = &[
     "meter_cube.fbx",
     "monkey.fbx",
     "SM_column04.fbx",
-    "SM_Ammo_Crate_01a.fbx",
-    "SK_Player_01.fbx",
+    "stylized_palm_plant_04.fbx",
+    "crystal_cluster_02.fbx",
     "xyzrgb_dragon.fbx",
 ];
+
+/// Fixtures with several objects and materials, for the properties that only
+/// show on more than one: the per-object checks split across threads, and
+/// results kept per rule.
+const MULTI_OBJECT: &[&str] = &["stylized_palm_plant_04.fbx", "crystal_cluster_02.fbx"];
 
 fn skipping(reason: impl std::fmt::Display) {
     assert!(
@@ -106,7 +111,7 @@ fn every_rule_runs_on_every_fixture() {
 
 #[test]
 fn the_report_does_not_depend_on_the_thread_count() {
-    for name in ["SK_Player_01.fbx", "SM_Ammo_Crate_01a.fbx"] {
+    for name in MULTI_OBJECT {
         let Some((model, extras)) = fixture(name) else {
             continue;
         };
@@ -121,7 +126,7 @@ fn the_report_does_not_depend_on_the_thread_count() {
 
 #[test]
 fn reusing_the_previous_report_equals_a_cold_run() {
-    let Some((model, extras)) = fixture("SK_Player_01.fbx") else {
+    let Some((model, extras)) = fixture(MULTI_OBJECT[0]) else {
         return;
     };
     let input = AuditInput {
@@ -131,21 +136,35 @@ fn reusing_the_previous_report_equals_a_cold_run() {
     let first = AuditProfile::builtin(Engine::Unity);
     let previous = run(input, &first, None, RunOptions::default()).unwrap();
     let mut edited = first.clone();
+    // A threshold edit, which re-measures its rule...
     let config = edited
         .rules
-        .get_mut(&review_audit::RuleId::Influences)
+        .get_mut(&review_audit::RuleId::HardEdges)
         .unwrap();
     config
         .params
-        .insert("max".into(), review_audit::ParamValue::Number(2.0));
+        .insert("max_ratio".into(), review_audit::ParamValue::Number(0.05));
     config.severity = review_audit::Severity::Error;
+    // ...one on a rule this model cannot run (it has no skin)...
     edited
         .rules
-        .get_mut(&review_audit::RuleId::Ngons)
+        .get_mut(&review_audit::RuleId::Influences)
         .unwrap()
-        .severity = review_audit::Severity::Info;
+        .params
+        .insert("max".into(), review_audit::ParamValue::Number(2.0));
+    // ...and a severity edit, which only relabels the kept result.
+    edited
+        .rules
+        .get_mut(&review_audit::RuleId::UvOverlap)
+        .unwrap()
+        .severity = review_audit::Severity::Warning;
     let reused = run(input, &edited, Some(&previous), RunOptions::default()).unwrap();
     let cold = run(input, &edited, None, RunOptions::default()).unwrap();
+    assert_ne!(
+        content(previous),
+        content(cold.clone()),
+        "the edits change the report, so equality below means something"
+    );
     assert_eq!(content(reused), content(cold));
 }
 
@@ -169,19 +188,13 @@ fn the_findings_on_the_fixtures_are_pinned() {
              density.triangle_lod(1)",
         ),
         (
-            "SM_Ammo_Crate_01a.fbx",
-            "geometry.duplicate_vertices(6542) geometry.inverted_normals(2) \
-             uv.out_of_range(10) uv.overlap(7660) uv.flipped(19) uv.lightmap_overlap(25) \
-             density.texel(4) density.triangle_lod(3) hierarchy.empty_nodes(1)",
+            "stylized_palm_plant_04.fbx",
+            "density.texel(12) density.triangle_lod(12)",
         ),
         (
-            "SK_Player_01.fbx",
-            "geometry.non_manifold_edges(4) geometry.duplicate_vertices(237) geometry.ngons(3) \
-             geometry.inverted_normals(11) transform.unfrozen(1) transform.pivot_offset(1) \
-             uv.missing(2) uv.out_of_range(2737) uv.overlap(121075) uv.flipped(18437) \
-             uv.lightmap_overlap(10799) skin.influences(2) skin.unused_bones(2) \
-             density.texel(2) density.triangle_lod(2) density.triangle_reduce(1) \
-             hierarchy.multiple_roots(2) hierarchy.materials_per_mesh(2)",
+            "crystal_cluster_02.fbx",
+            "geometry.degenerate_triangles(1) uv.flipped(4) density.texel(2) \
+             density.triangle_lod(2)",
         ),
         (
             "xyzrgb_dragon.fbx",

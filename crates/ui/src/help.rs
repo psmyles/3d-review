@@ -384,9 +384,8 @@ fn ensure_resolved(state: &mut HelpState) {
         .as_ref()
         .is_none_or(|(page, _)| *page != state.page)
     {
-        let locale = doc_locale();
-        let text = state.page.text(&locale);
-        let markdown = resolved_markdown(text, &locale, state.docs_dir.as_deref());
+        let text = state.page.text(&doc_locale());
+        let markdown = resolved_markdown(text, state.docs_dir.as_deref());
         state.resolved = Some((state.page, markdown));
     }
 }
@@ -401,21 +400,48 @@ fn ensure_resolved(state: &mut HelpState) {
 ///
 /// The rewrite is a splice at byte ranges the build script recorded, so no
 /// markdown is parsed at run time.
-fn resolved_markdown(text: &PageText, locale: &str, docs_dir: Option<&Path>) -> String {
+///
+/// An image is looked up under the language the *text* came from
+/// ([`PageText::locale`]) — a page a locale has not translated is the English
+/// page, screenshots and all — and then under English, since a translation
+/// that has not had its screenshots retaken still shows the English ones.
+fn resolved_markdown(text: &PageText, docs_dir: Option<&Path>) -> String {
     if text.images.is_empty() {
         return text.markdown.to_owned();
     }
+    let markdown = text.markdown;
+    let image_dirs: Vec<PathBuf> = docs_dir.map_or_else(Vec::new, |dir| {
+        let mut dirs = vec![dir.join(text.locale)];
+        if text.locale != "en" {
+            dirs.push(dir.join("en"));
+        }
+        dirs
+    });
 
-    let mut out = String::with_capacity(text.markdown.len());
+    let mut out = String::with_capacity(markdown.len());
     let mut cursor = 0;
     for image in text.images {
+        // The spans are byte offsets the build script measured in this very
+        // text, but a span that does not fit it — out of order, past the end, or
+        // through the middle of a multi-byte character — must not panic the Help
+        // window on the slice. Such an image is left exactly as written.
+        let (Some(before), Some(after)) =
+            (markdown.get(cursor..image.start), markdown.get(image.end..))
+        else {
+            continue;
+        };
+        if image.end < image.start {
+            continue;
+        }
+
         // The recorded span covers the destination inside `![alt](dest)`. An
         // image that is present replaces just that; one that is not replaces the
         // whole construct, closing paren included, or the `)` would be left in
         // the prose.
-        let on_disk = docs_dir
-            .map(|dir| dir.join(locale).join(image.path))
-            .filter(|path| path.is_file());
+        let on_disk = image_dirs
+            .iter()
+            .map(|dir| dir.join(image.path))
+            .find(|path| path.is_file());
 
         let (replace_from, replace_to, replacement) = match on_disk {
             Some(path) => (
@@ -424,26 +450,21 @@ fn resolved_markdown(text: &PageText, locale: &str, docs_dir: Option<&Path>) -> 
                 format!("file://{}", path.to_string_lossy().replace('\\', "/")),
             ),
             None => {
-                let opening = text.markdown[..image.start]
-                    .rfind("![")
-                    .unwrap_or(image.start);
-                let closing = text.markdown[image.end..]
+                // `![` and `)` are ASCII, so both ends land on a character
+                // boundary of a text whose spans did.
+                let opening = before.rfind("![").map_or(image.start, |at| cursor + at);
+                let closing = after
                     .find(')')
                     .map_or(image.end, |offset| image.end + offset + 1);
                 (opening, closing, format!("*{}*", image.alt))
             }
         };
 
-        // Spans come in source order, but a malformed one must not make the
-        // splice walk backwards and panic on the slice.
-        if replace_from < cursor || replace_to > text.markdown.len() {
-            continue;
-        }
-        out.push_str(&text.markdown[cursor..replace_from]);
+        out.push_str(&markdown[cursor..replace_from]);
         out.push_str(&replacement);
         cursor = replace_to;
     }
-    out.push_str(&text.markdown[cursor..]);
+    out.push_str(&markdown[cursor..]);
     out
 }
 
@@ -462,44 +483,118 @@ mod tests {
     #[test]
     fn a_page_without_images_is_passed_through() {
         let text = PageText {
+            locale: "en",
             markdown: "# Title\n\nBody.\n",
             images: &[],
             links: &[],
         };
-        assert_eq!(resolved_markdown(&text, "en", None), text.markdown);
+        assert_eq!(resolved_markdown(&text, None), text.markdown);
     }
+
+    const MARKDOWN: &str = "Before ![The gizmo](images/gizmo.png) after.";
+    const DEST: &str = "images/gizmo.png";
+    // `PageText` holds `&'static` slices, matching the generated table, so the
+    // fixture's images have to be a const rather than a local.
+    const START: usize = 7 + "![The gizmo](".len();
+    const IMAGES: &[ImageRef] = &[ImageRef {
+        start: START,
+        end: START + DEST.len(),
+        path: DEST,
+        alt: "The gizmo",
+    }];
 
     /// With no docs folder — the case a broken install, or a `cargo run` from a
     /// checkout without one, lands in — the image must degrade to its alt text
     /// and leave no markdown syntax behind.
     #[test]
     fn a_missing_image_becomes_its_alt_text() {
-        const MARKDOWN: &str = "Before ![The gizmo](images/gizmo.png) after.";
-        const DEST: &str = "images/gizmo.png";
-        // `PageText` holds `&'static` slices, matching the generated table, so
-        // the fixture's images have to be a const rather than a local.
-        const START: usize = 7 + "![The gizmo](".len();
-        const IMAGES: &[ImageRef] = &[ImageRef {
-            start: START,
-            end: START + DEST.len(),
-            path: DEST,
-            alt: "The gizmo",
-        }];
         assert_eq!(&MARKDOWN[START..START + DEST.len()], DEST);
         let text = PageText {
+            locale: "en",
             markdown: MARKDOWN,
             images: IMAGES,
             links: &[],
         };
-        let resolved = resolved_markdown(&text, "en", None);
+        let resolved = resolved_markdown(&text, None);
         assert_eq!(resolved, "Before *The gizmo* after.");
         assert!(!resolved.contains("]("), "left markdown syntax behind");
+    }
+
+    /// A docs folder holding only `en/images/gizmo.png`, made fresh per test.
+    fn docs_with_english_image(test: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("review-ui-help-{test}-{}", std::process::id()));
+        let images = dir.join("en").join("images");
+        std::fs::create_dir_all(&images).expect("create the docs folder");
+        std::fs::write(images.join("gizmo.png"), b"png").expect("write the image");
+        dir
+    }
+
+    /// An image is looked up under the language its page's text came from: a
+    /// page a locale has not translated is the English page, and its images are
+    /// the English ones. So is a translated page's, until its own are taken.
+    #[test]
+    fn an_image_resolves_from_the_language_its_text_came_from() {
+        let dir = docs_with_english_image("locale");
+        for locale in ["en", "de"] {
+            let text = PageText {
+                locale,
+                markdown: MARKDOWN,
+                images: IMAGES,
+                links: &[],
+            };
+            let resolved = resolved_markdown(&text, Some(&dir));
+            assert!(
+                resolved.contains("file://") && resolved.contains("/en/images/gizmo.png"),
+                "{locale}: the image did not resolve to the English one: {resolved}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A span that does not fit the text it is applied to — what the English
+    /// page's offsets do to a translation — must leave the page readable rather
+    /// than panic the Help window on a slice through a multi-byte character.
+    #[test]
+    fn a_span_that_does_not_fit_its_text_is_left_alone() {
+        // `ü` is two bytes, so byte 9 is the middle of the second one; the
+        // second span is past the end of the text altogether.
+        const TRANSLATED: &str = "Davor üü ![Der Gizmo](images/gizmo.png) danach.";
+        const SPLIT: &[ImageRef] = &[
+            ImageRef {
+                start: 9,
+                end: 10,
+                path: DEST,
+                alt: "Der Gizmo",
+            },
+            ImageRef {
+                start: 400,
+                end: 420,
+                path: DEST,
+                alt: "Der Gizmo",
+            },
+        ];
+        assert!(
+            !TRANSLATED.is_char_boundary(9),
+            "the fixture must split a character"
+        );
+        let text = PageText {
+            locale: "de",
+            markdown: TRANSLATED,
+            images: SPLIT,
+            links: &[],
+        };
+        let dir = docs_with_english_image("boundary");
+        for docs_dir in [None, Some(dir.as_path())] {
+            assert_eq!(resolved_markdown(&text, docs_dir), TRANSLATED);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn every_page_resolves_without_a_docs_directory() {
         for page in Page::ALL {
-            let resolved = resolved_markdown(page.text("en"), "en", None);
+            let resolved = resolved_markdown(page.text("en"), None);
             assert!(
                 !resolved.contains("](images/"),
                 "{}: an unresolved image reference survived",

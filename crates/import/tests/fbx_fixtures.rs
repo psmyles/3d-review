@@ -176,6 +176,7 @@ fn import_carries_nodes_and_per_triangle_material() {
 /// mapping: if it drifted, the per-vertex influence sums below would be wrong
 /// (or `SkinData::validate` at the funnel would already have failed the load).
 #[test]
+#[ignore = "needs a skinned character; SK_Player_01.fbx was proprietary and removed in a9c6db3"]
 fn import_carries_skeleton_and_skin() {
     let path = fixture("SK_Player_01.fbx");
     if !path.exists() {
@@ -388,6 +389,8 @@ fn assert_rest_locals_recompose(model: &review_model::ModelData) {
 /// playable range, every track names a real node, and the rest pose's
 /// skinning is consistent with the file's world transforms.
 #[test]
+#[ignore = "needs a skinned multi-clip file; AN_ZombiedogLocomotion.fbx was proprietary and \
+            removed in a9c6db3"]
 fn import_carries_animation_clips() {
     let path = fixture("AN_ZombiedogLocomotion.fbx");
     if !path.exists() {
@@ -464,15 +467,12 @@ fn rigid_clip_moves_nodes() {
 /// gives. `clip_bounds` narrows that walk to the corners the clip can actually
 /// move, the difference between a 5-second load and a 100-second one on a large
 /// scene, so this pins the narrowed answer to the definition it replaced, over
-/// real files rather than a synthetic one: a skinned character (the skin arm of
-/// the predicate), a rigid destructible (the node arm), and a locomotion clip.
+/// a real file rather than a synthetic one: a rigid destructible (the node arm
+/// of the predicate). The skinned character and the locomotion clip that
+/// covered the skin arm were proprietary and left the repository in a9c6db3.
 #[test]
 fn measured_clip_bounds_match_walking_every_corner() {
-    for name in [
-        "SK_Player_01.fbx",
-        "AN_ZombiedogLocomotion.fbx",
-        "SM_Wall_Break_4x3m.fbx",
-    ] {
+    for name in ["SM_Wall_Break_4x3m.fbx"] {
         let path = fixture(name);
         if !path.exists() {
             skipping(format!("{} is not present", path.display()));
@@ -630,6 +630,7 @@ fn every_fixture_captures_valid_extras() {
 /// (mesh node → bone) and `TransformLink` (bind → world), which must be
 /// consistent with the palette matrix the viewer derives.
 #[test]
+#[ignore = "needs a skinned character; SK_Player_01.fbx was proprietary and removed in a9c6db3"]
 fn skin_clusters_carry_authored_matrices() {
     let path = fixture("SK_Player_01.fbx");
     if !path.exists() {
@@ -656,6 +657,7 @@ fn skin_clusters_carry_authored_matrices() {
 /// transformed by that cluster's skinning matrix, and the recomposed rest
 /// pose reproduces every world transform.
 #[test]
+#[ignore = "needs a skinned character; SK_Player_01.fbx was proprietary and removed in a9c6db3"]
 fn rest_pose_skinning_matches_bind() {
     let path = fixture("SK_Player_01.fbx");
     if !path.exists() {
@@ -795,7 +797,9 @@ fn a_classic_material_imports_as_a_dielectric() {
 /// usable afterwards.
 #[test]
 fn a_panicking_progress_sink_unwinds_without_taking_the_importer_with_it() {
-    let path = fixture("SM_Speaker_01a.fbx");
+    // Any fixture will do: the sink panics on the Building stage, which every
+    // load reports from the marshal.
+    let path = fixture("meter_cube.fbx");
     if !path.exists() {
         skipping("the fixture is not present");
         return;
@@ -831,10 +835,11 @@ fn a_panicking_progress_sink_unwinds_without_taking_the_importer_with_it() {
 /// Stopping the plain read fails with `UFBX_ERROR_CANCELLED`, but stopping inside
 /// the bit stream only feeds the inflater zeroes, so it surfaces as "Bad DEFLATE
 /// data" — an ordinary parse error. Which path a file takes depends on where its
-/// first progress report lands: the 326 KB fixture cancels on the read, the 26 MB
-/// one inside the deflate stream. The bridge records its own answer rather than
-/// reading `error.type`, and this is what holds it to that — the deflate case is
-/// the common one, since most binary FBX is compressed.
+/// first progress report lands: the 2.4 MB ASCII fixture has no deflate stream
+/// at all and cancels on the read, the 26 MB binary one inside the deflate
+/// stream. The bridge records its own answer rather than reading `error.type`,
+/// and this is what holds it to that — the deflate case is the common one, since
+/// most binary FBX is compressed.
 #[test]
 fn a_superseded_load_is_cancelled_rather_than_parsed() {
     use std::sync::Arc;
@@ -846,7 +851,7 @@ fn a_superseded_load_is_cancelled_rather_than_parsed() {
     let cancel = review_import::CancelToken::new(Arc::clone(&generation), 6);
     assert!(cancel.is_cancelled());
 
-    for name in ["SM_Speaker_01a.fbx", "stylized_tree_branch_01.fbx"] {
+    for name in ["SM_Wall_Break_4x3m.fbx", "stylized_tree_branch_01.fbx"] {
         let path = fixture(name);
         if !path.exists() {
             skipping(format!("{name} is not present"));
@@ -866,9 +871,9 @@ fn a_superseded_load_is_cancelled_rather_than_parsed() {
     // A live token loads normally — the cancel path must not be reachable by
     // accident. A small fixture, since what is being checked is the token, not
     // the parse.
-    let small = fixture("SM_Speaker_01a.fbx");
+    let small = fixture("meter_cube.fbx");
     if !small.exists() {
-        skipping("SM_Speaker_01a.fbx is not present");
+        skipping("meter_cube.fbx is not present");
         return;
     }
     let live = review_import::CancelToken::new(Arc::clone(&generation), 7);

@@ -55,6 +55,12 @@ pub fn selection_bounds(
     selected_nodes: &[u32],
 ) -> Option<Bounds> {
     let mask = selected_triangle_mask(model, selection, selected_nodes)?;
+    // A model that deforms is drawn in its default pose, not the bind pose its
+    // buffer holds: measure the selection where it is drawn, as `bounds` is.
+    if model.needs_deform() {
+        let ctx = review_model::anim::AnimContext::new(model);
+        return review_model::anim::triangle_rest_bounds(model, &ctx, &mask);
+    }
     let mut bounds = Bounds::EMPTY;
     for (triangle, &included) in mask.iter().enumerate() {
         if !included {

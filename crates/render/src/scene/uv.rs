@@ -40,6 +40,10 @@ impl SceneGpu {
         uv: &UvFrame<'_>,
         uv_camera: UvCamera,
     ) -> GpuResult<()> {
+        // No GTAO runs here, so nothing is converging (`idle_ao_history`) — including
+        // an average the 3D view left a few frames short, or the one a resize below
+        // throws away.
+        self.idle_ao_history();
         // The UV viewport shows the source model, so its derived buffers belong in the
         // source slot (see the note in `render`).
         self.activate(SlotId::Source);

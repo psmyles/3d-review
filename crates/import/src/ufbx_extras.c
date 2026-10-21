@@ -72,12 +72,31 @@ static size_t review_extras_push(void **data, size_t *count, size_t *capacity, s
     return first;
 }
 
+/* One embedded blob already copied into `bytes`, keyed by the ufbx memory it was
+   copied from. */
+typedef struct review_extras_content {
+    const void *data;
+    size_t size;
+    review_import_bytes bytes;
+} review_extras_content;
+
 /* Every list in the capture is kept as (data, count, capacity) triples in this
    builder while filling, then handed to the output struct. */
 typedef struct review_extras_builder {
     review_import_extras *out;
     const ufbx_scene *scene;
     int failed;
+    /* Why the capture failed, when it was for a reason other than running out
+       of memory (a count past its 32-bit limit, a mesh the geometry pass laid
+       out differently); NULL otherwise. */
+    const char *error;
+
+    /* The embedded content already in `bytes`. ufbx gives a texture its video's
+       content by *pointer*, so without this a scene stored every image once per
+       texture using it plus once for the video. Builder-owned, freed by the entry
+       point on every path. */
+    review_extras_content *contents;
+    size_t content_count, content_capacity;
 
     size_t prop_capacity;
     size_t node_capacity, light_capacity, camera_capacity, lod_group_capacity, lod_level_capacity;
@@ -273,6 +292,39 @@ static review_import_bytes review_extras_bytes(review_extras_builder *b, ufbx_bl
     }
     out.offset = first;
     out.length = blob.size;
+    return out;
+}
+
+/* Embedded texture / video content: `review_extras_bytes`, but a blob already
+   copied is handed back by its first copy's range rather than copied again. A
+   texture with a video names the video's own memory (ufbx assigns
+   `texture->content = texture->video->content`), so this is what keeps an image
+   shared by a video and every texture over it to one copy. */
+static review_import_bytes review_extras_content_bytes(review_extras_builder *b, ufbx_blob blob)
+{
+    review_import_bytes out = { 0, 0 };
+    size_t index;
+    if (blob.size == 0 || !blob.data) {
+        return out;
+    }
+    for (index = 0; index < b->content_count; index++) {
+        if (b->contents[index].data == blob.data && b->contents[index].size == blob.size) {
+            return b->contents[index].bytes;
+        }
+    }
+    out = review_extras_bytes(b, blob);
+    if (b->failed) {
+        return out;
+    }
+    /* The memo is only ever an economy: if it cannot grow, the next user of
+       this blob simply copies it again. */
+    if (review_extras_grow((void **)&b->contents, &b->content_capacity, b->content_count + 1,
+                           sizeof(review_extras_content))) {
+        b->contents[b->content_count].data = blob.data;
+        b->contents[b->content_count].size = blob.size;
+        b->contents[b->content_count].bytes = out;
+        b->content_count++;
+    }
     return out;
 }
 
@@ -548,7 +600,7 @@ static void review_extras_capture_textures(review_extras_builder *b)
         dst.uv_scale[0] = texture->uv_transform.scale.x;
         dst.uv_scale[1] = texture->uv_transform.scale.y;
         dst.uv_scale[2] = texture->uv_transform.scale.z;
-        dst.content = review_extras_bytes(b, texture->content);
+        dst.content = review_extras_content_bytes(b, texture->content);
         if (texture->video && texture->video->typed_id < scene->videos.count &&
             texture->video->typed_id <= INT32_MAX) {
             dst.video = (int32_t)texture->video->typed_id;
@@ -591,7 +643,7 @@ static void review_extras_capture_videos(review_extras_builder *b)
         dst.filename = review_extras_str(b, video->filename);
         dst.absolute_filename = review_extras_str(b, video->absolute_filename);
         dst.relative_filename = review_extras_str(b, video->relative_filename);
-        dst.content = review_extras_bytes(b, video->content);
+        dst.content = review_extras_content_bytes(b, video->content);
         dst.props = review_extras_props(b, &video->props);
         review_extras_push_video(b, &dst, 1);
     }
@@ -823,7 +875,6 @@ static int review_extras_capture_mesh(review_extras_builder *b, const ufbx_node 
     size_t face_index;
     size_t running = 0;
     size_t index;
-    int ok = 1;
 
     memset(&dst, 0, sizeof(dst));
     dst.node = bases->node;
@@ -832,6 +883,7 @@ static int review_extras_capture_mesh(review_extras_builder *b, const ufbx_node 
     if (bases->corner_first > UINT32_MAX || bases->corner_count > UINT32_MAX ||
         bases->logical_first > UINT32_MAX || bases->logical_count > UINT32_MAX ||
         bases->face_first > UINT32_MAX || bases->face_count > UINT32_MAX) {
+        b->error = "FBX mesh exceeds the 32-bit limit of the source-property capture";
         return 0;
     }
     dst.corner_first = (uint32_t)bases->corner_first;
@@ -872,11 +924,14 @@ static int review_extras_capture_mesh(review_extras_builder *b, const ufbx_node 
     }
     if (running != bases->corner_count) {
         free(corner_of_index);
+        b->error = "malformed FBX: mesh extras drifted from the geometry pass";
         return 0;
     }
 
     /* Color sets: set 0's values are the geometry's vertex colors already; the
-       rest are captured per corner in the same corner order. */
+       rest are captured per corner in the same corner order. A set whose values
+       the file indexes out of range is left out on its own — it is optional
+       data, and one bad layer must not cost the export every other property. */
     {
         size_t set_first = b->out->color_set_count;
         size_t set_index;
@@ -884,20 +939,20 @@ static int review_extras_capture_mesh(review_extras_builder *b, const ufbx_node 
             const ufbx_color_set *set = &mesh->color_sets.data[set_index];
             review_import_color_set entry;
             memset(&entry, 0, sizeof(entry));
-            entry.name = review_extras_str(b, set->name);
             entry.index = set->index;
             entry.value_first = UINT32_MAX;
             if (set_index > 0 && set->vertex_color.exists) {
                 size_t value_first = b->out->color_value_count;
+                int set_ok = 1;
                 if (value_first > UINT32_MAX) {
                     b->failed = 1;
                     break;
                 }
-                for (face_index = 0; face_index < mesh->faces.count; face_index++) {
+                for (face_index = 0; set_ok && face_index < mesh->faces.count; face_index++) {
                     ufbx_face face = mesh->faces.data[face_index];
                     size_t corner;
-                    for (corner = 0; corner < face.num_indices; corner++) {
-                        ufbx_vec4 color = review_extras_get_vec4(&set->vertex_color, (size_t)face.index_begin + corner, &ok);
+                    for (corner = 0; set_ok && corner < face.num_indices; corner++) {
+                        ufbx_vec4 color = review_extras_get_vec4(&set->vertex_color, (size_t)face.index_begin + corner, &set_ok);
                         double values[4];
                         values[0] = color.x;
                         values[1] = color.y;
@@ -906,8 +961,15 @@ static int review_extras_capture_mesh(review_extras_builder *b, const ufbx_node 
                         review_extras_push_color_value(b, values, 4);
                     }
                 }
+                if (!set_ok) {
+                    /* Take back what this set pushed and leave it out. */
+                    b->out->color_value_count = value_first;
+                    b->out->skipped_layer_count++;
+                    continue;
+                }
                 entry.value_first = (uint32_t)value_first;
             }
+            entry.name = review_extras_str(b, set->name);
             review_extras_push_color_set(b, &entry, 1);
         }
         if (set_first > UINT32_MAX) {
@@ -1006,14 +1068,23 @@ static int review_extras_capture_mesh(review_extras_builder *b, const ufbx_node 
            `needed - 1`. The capture is discarded as a whole once `failed` is set. */
         if (!b->failed && b->out->vertex_crease_count >= needed && mesh->vertex_crease.exists
             && bases->logical_count > 0) {
+            int crease_ok = 1;
             dst.has_vertex_crease = 1;
-            for (index = 0; index < bases->logical_count && index < mesh->vertex_first_index.count; index++) {
+            for (index = 0; crease_ok && index < bases->logical_count && index < mesh->vertex_first_index.count; index++) {
                 uint32_t first_corner = mesh->vertex_first_index.data[index];
                 if (first_corner == UFBX_NO_INDEX || first_corner >= mesh->num_indices) {
                     continue;
                 }
                 b->out->vertex_crease[bases->logical_first + index] =
-                    review_extras_get_real(&mesh->vertex_crease, first_corner, &ok);
+                    review_extras_get_real(&mesh->vertex_crease, first_corner, &crease_ok);
+            }
+            if (!crease_ok) {
+                /* Optional, like a color set: drop this part's layer and put
+                   back the zeros every part without one carries. */
+                memset(b->out->vertex_crease + bases->logical_first, 0,
+                       bases->logical_count * sizeof(double));
+                dst.has_vertex_crease = 0;
+                b->out->skipped_layer_count++;
             }
         }
     }
@@ -1076,9 +1147,6 @@ static int review_extras_capture_mesh(review_extras_builder *b, const ufbx_node 
     }
 
     free(corner_of_index);
-    if (!ok) {
-        return 0;
-    }
     review_extras_push_mesh(b, &dst, 1);
     return 1;
 }
@@ -1593,20 +1661,27 @@ int review_import_capture_extras(const ufbx_scene *scene,
     review_extras_capture_textures(&builder);
     review_extras_capture_videos(&builder);
     review_extras_capture_materials(&builder, material_sources, material_count);
-    if (!builder.failed && !review_extras_capture_meshes(&builder)) {
-        if (!builder.failed) {
-            review_import_set_error_message(out_error, "malformed FBX: mesh extras drifted from the geometry pass");
-            review_import_free_extras(out);
-            return 0;
-        }
+    if (!builder.failed && !review_extras_capture_meshes(&builder) && !builder.failed) {
+        /* A mesh the capture could not describe, for the reason it recorded. */
+        review_import_set_error_message(out_error, builder.error
+            ? builder.error
+            : "malformed FBX: mesh extras drifted from the geometry pass");
+        free(builder.contents);
+        review_import_free_extras(out);
+        return 0;
     }
     review_extras_capture_poses(&builder);
     review_extras_capture_display_layers(&builder);
     review_extras_capture_selection_sets(&builder);
     review_extras_capture_animation(&builder, material_sources, material_count, channel_of_element, clip_of_stack);
 
+    free(builder.contents);
     if (builder.failed) {
-        review_import_set_error_message(out_error, "out of memory while recording source properties");
+        /* Every push sets `failed` both on a failed allocation and on a count
+           past the 32-bit indices the capture stores. */
+        review_import_set_error_message(out_error, builder.error
+            ? builder.error
+            : "out of memory or past a 32-bit limit while recording source properties");
         review_import_free_extras(out);
         return 0;
     }

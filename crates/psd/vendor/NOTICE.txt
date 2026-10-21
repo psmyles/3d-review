@@ -23,8 +23,11 @@ the commit above, and every hunk is marked `review-psd patch` in the source.
       writing past the plane or reading past the RLE buffer.
   P2  PsdParseImageDataSection.cpp - plane sizes in 64-bit arithmetic (refused
       past 32 bits), every allocation null-checked, the RLE payload bounded by
-      the image data section it sits in, channel count < 256 refused rather than
-      asserted, and a failed decode frees what it allocated and returns nullptr.
+      the image data section it sits in, the uncompressed planes checked against
+      that section before the first is allocated (a truncated RAW file used to
+      have every plane allocated and zero-filled first), channel count < 256
+      refused rather than asserted, and a failed decode frees what it allocated
+      and returns nullptr.
 
 Header validation (bit depth, colour mode, channel count, size caps) is not a
 patch: it lives in ../src/wrapper.cpp, which also no longer calls the image

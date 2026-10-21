@@ -4,11 +4,17 @@
 //! enough to assert exact counts on but is not representative: it has one node,
 //! one material, twelve triangles and no seams worth speaking of. These run the
 //! same pipeline over actual scanned and modelled assets — hundreds of thousands
-//! of triangles, real UV seams, and (for the character) multiple materials and a
-//! skin deformer — where the interesting failures live.
+//! of triangles, real UV seams, multi-node and multi-material scenes — where the
+//! interesting failures live.
 //!
 //! Each test skips itself when its fixture or the vendored meshoptimizer sources
 //! are absent, so a checkout without them still passes.
+//!
+//! The skinned character several of these ran on, `SK_Player_01.fbx`, was
+//! removed in a9c6db3 with the other proprietary models. The tests that only
+//! needed *a game asset* or *several materials* run on the remaining fixtures
+//! now; the two that need a skin are kept, ignored, until a skinned fixture
+//! returns — the synthetic `process` tests cover the skin meanwhile.
 
 #![cfg(has_meshopt)]
 
@@ -25,13 +31,19 @@ use common::{fixture, fixture_path, run};
 /// Every fixture the tests below load. Asserted to exist by
 /// [`every_fixture_the_suite_loads_exists`], so a rename cannot quietly turn the
 /// whole suite green.
+///
+/// Not the ones only the ignored tests load: requiring a fixture the
+/// repository no longer has would fail every run for no test at all.
 const FIXTURES: [&str; 5] = [
-    "SK_Player_01.fbx",
     "SM_column04.fbx",
     "lucy.fbx",
     "monkey.fbx",
+    "stylized_palm_plant_04.fbx",
     "xyzrgb_dragon.fbx",
 ];
+
+/// The skinned character the ignored tests need.
+const SKINNED: &str = "SK_Player_01.fbx";
 
 /// Assert the structural guarantees every processed mesh must satisfy, whatever
 /// the stack did to it.
@@ -91,7 +103,7 @@ const POSITION_WELD: WeldParams = WeldParams {
 /// expansion down to something near the authored vertex count.
 #[test]
 fn welding_a_game_asset_removes_most_of_the_duplicate_corners() {
-    let Some(model) = fixture("SK_Player_01.fbx") else {
+    let Some(model) = fixture("stylized_palm_plant_04.fbx") else {
         return;
     };
     let before = model.vertices.len();
@@ -110,7 +122,7 @@ fn welding_a_game_asset_removes_most_of_the_duplicate_corners() {
         model.indices.len(),
         "welding removes no triangles"
     );
-    assert_consistent(&result.lods[0].model, "welded character");
+    assert_consistent(&result.lods[0].model, "welded palm");
 }
 
 /// A scanned mesh imported without authored normals gets per-face ones, so every
@@ -163,7 +175,7 @@ fn position_welding_a_scan_collapses_it_and_rebuilds_usable_normals() {
 /// target as squarely as a LOD level does — the two share the code that aims it.
 #[test]
 fn a_reduce_over_a_game_asset_hits_its_target_in_place() {
-    let Some(model) = fixture("SK_Player_01.fbx") else {
+    let Some(model) = fixture("SM_column04.fbx") else {
         return;
     };
     let source_triangles = model.indices.len() / 3;
@@ -282,7 +294,7 @@ fn a_flat_shaded_scan_simplifies_once_its_attribute_seams_are_dealt_with() {
 /// targets, keep shrinking, and stay structurally sound at every level.
 #[test]
 fn a_lod_chain_over_a_game_asset_hits_its_targets() {
-    let Some(model) = fixture("SK_Player_01.fbx") else {
+    let Some(model) = fixture("SM_column04.fbx") else {
         return;
     };
     let source_triangles = model.indices.len() / 3;
@@ -332,7 +344,7 @@ fn a_lod_chain_over_a_game_asset_hits_its_targets() {
     );
 
     for lod in &result.lods {
-        assert_consistent(&lod.model, &format!("character LOD {}", lod.level));
+        assert_consistent(&lod.model, &format!("column LOD {}", lod.level));
         assert!(
             lod.metrics.acmr > 0.0 && lod.metrics.atvr > 0.0,
             "LOD {} carries measured cache figures",
@@ -377,19 +389,8 @@ fn vertex_cache_optimization_improves_acmr_without_touching_geometry() {
     );
 }
 
-/// A multi-material, multi-node character. Every triangle must keep a material
-/// and node tag that still addresses a real slot — the property that forced
-/// processing to work per (node, material) submesh in the first place.
-#[test]
-fn a_multi_material_character_keeps_every_triangle_tagged() {
-    let Some(model) = fixture("SK_Player_01.fbx") else {
-        return;
-    };
-    assert!(
-        model.materials.len() > 1,
-        "this fixture is expected to carry several materials"
-    );
-
+/// The stack the tagging and skin tests run: a weld, then one halving level.
+fn weld_and_halve() -> OptStack {
     let mut stack = OptStack::default();
     stack.push_op(OpKind::Weld(WeldParams::default()));
     stack.push_op(OpKind::SimplifyLod(LodParams {
@@ -402,10 +403,25 @@ fn a_multi_material_character_keeps_every_triangle_tagged() {
             target_error: 0.05,
         }],
     }));
+    stack
+}
 
-    let result = run(&model, &stack);
+/// A multi-material, multi-node asset. Every triangle must keep a material and
+/// node tag that still addresses a real slot — the property that forced
+/// processing to work per (node, material) submesh in the first place.
+#[test]
+fn a_multi_material_asset_keeps_every_triangle_tagged() {
+    let Some(model) = fixture("stylized_palm_plant_04.fbx") else {
+        return;
+    };
+    assert!(
+        model.materials.len() > 1,
+        "this fixture is expected to carry several materials"
+    );
+
+    let result = run(&model, &weld_and_halve());
     for lod in &result.lods {
-        let label = format!("character LOD {}", lod.level);
+        let label = format!("palm LOD {}", lod.level);
         assert_consistent(&lod.model, &label);
 
         let triangle_count = lod.model.indices.len() / 3;
@@ -429,41 +445,52 @@ fn a_multi_material_character_keeps_every_triangle_tagged() {
             "{label}: the mesh still uses several materials, found {distinct:?}"
         );
     }
-
-    // The fixture is skinned; every level keeps a skin over its own vertices,
-    // valid by the same guard the import runs, with the clips beside it.
-    if let Some(source_skin) = &model.skin {
-        for lod in &result.lods {
-            let skin = lod
-                .model
-                .skin
-                .as_ref()
-                .expect("skinning is kept on every level");
-            assert_eq!(skin.logical_vertex_count(), lod.model.vertices.len());
-            assert_eq!(skin.clusters.len(), source_skin.clusters.len());
-            assert!(
-                lod.model.validate_deform().is_ok(),
-                "LOD {} deform data",
-                lod.level
-            );
-            assert_eq!(lod.model.animations.len(), model.animations.len());
-        }
-        assert!(
-            !result
-                .warnings
-                .iter()
-                .any(|warning| warning.to_string().contains("skin")),
-            "nothing about the skin was dropped: {:?}",
-            result.warnings
-        );
-    }
 }
 
-/// An excluded object must come through byte-identical while its neighbours are
-/// optimized around it.
+/// A skinned character: every level keeps a skin over its own vertices, valid
+/// by the same guard the import runs, with the clips beside it.
+#[test]
+#[ignore = "needs a skinned fixture; SK_Player_01.fbx was removed in a9c6db3"]
+fn a_skinned_character_keeps_its_skin_on_every_level() {
+    let Some(model) = fixture(SKINNED) else {
+        return;
+    };
+    let source_skin = model.skin.as_ref().expect("the fixture is skinned");
+
+    let result = run(&model, &weld_and_halve());
+    for lod in &result.lods {
+        assert_consistent(&lod.model, &format!("character LOD {}", lod.level));
+        let skin = lod
+            .model
+            .skin
+            .as_ref()
+            .expect("skinning is kept on every level");
+        assert_eq!(skin.logical_vertex_count(), lod.model.vertices.len());
+        assert_eq!(skin.clusters.len(), source_skin.clusters.len());
+        assert!(
+            lod.model.validate_deform().is_ok(),
+            "LOD {} deform data",
+            lod.level
+        );
+        assert_eq!(lod.model.animations.len(), model.animations.len());
+    }
+    assert!(
+        !result
+            .warnings
+            .iter()
+            .any(|warning| warning.to_string().contains("skin")),
+        "nothing about the skin was dropped: {:?}",
+        result.warnings
+    );
+}
+
+/// An excluded object must come through with every triangle while its
+/// neighbours are optimized around it — and, since the lossless index pass
+/// reaches it too, counted as the indexed mesh it is rather than one vertex
+/// per face corner.
 #[test]
 fn excluding_a_node_leaves_its_geometry_untouched() {
-    let Some(model) = fixture("SK_Player_01.fbx") else {
+    let Some(model) = fixture("stylized_palm_plant_04.fbx") else {
         return;
     };
     // Pick the node owning the most triangles, so the assertion has something
@@ -507,6 +534,29 @@ fn excluding_a_node_leaves_its_geometry_untouched() {
     assert!(
         lod1.stats.triangle_count < model.indices.len() / 3,
         "the rest of the model was still simplified"
+    );
+
+    // Indexed, not corner-split: as many vertices as the stats panel's GPU
+    // Verts figure says the object has.
+    let indexed: usize = model
+        .mesh_group_stats()
+        .iter()
+        .filter(|group| group.node == node)
+        .map(|group| group.gpu_vertex_count)
+        .sum();
+    let used: std::collections::HashSet<u32> = lod1
+        .indices
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(&lod1.triangles.node)
+        .filter(|&(_, &owner)| owner == node)
+        .flat_map(|(corners, _)| corners.iter().copied())
+        .collect();
+    assert_eq!(
+        used.len(),
+        indexed,
+        "the excluded object is counted as its indexed mesh"
     );
 }
 
@@ -716,36 +766,51 @@ fn bake_ao_writes_bounded_deterministic_colors() {
     }
 }
 
-/// Recalculating a skinned character's normals splits vertices at its hard
-/// edges, and every copy must keep the skin its original had — checked by the
-/// same guard import runs, over the level's own vertices.
-#[test]
-fn recalculating_a_skinned_characters_normals_keeps_its_skin() {
-    let Some(model) = fixture("SK_Player_01.fbx") else {
-        return;
-    };
+/// Recalculating normals splits vertices at the hard edges and changes no
+/// triangle; every normal comes back unit length.
+fn recalculate_normals(model: &ModelData, label: &str) -> ModelData {
     let mut stack = OptStack::default();
     stack.push_op(OpKind::RecalculateNormals(NormalParams::default()));
-    let result = run(&model, &stack);
-    let level = &result.lods[0].model;
-    assert_consistent(level, "recalculated character");
+    let result = run(model, &stack);
+    let level = result.lods[0].model.clone();
+    assert_consistent(&level, label);
     assert_eq!(
         level.indices.len(),
         model.indices.len(),
-        "no triangle changed"
+        "{label}: no triangle changed"
     );
-    if model.skin.is_some() {
-        let skin = level.skin.as_ref().expect("the skin is kept");
-        assert_eq!(skin.logical_vertex_count(), level.vertices.len());
-        assert!(level.validate_deform().is_ok());
-    }
     assert!(
         level
             .vertices
             .iter()
             .all(|vertex| (vertex.normal.length() - 1.0).abs() < 1e-3),
-        "every normal is unit length"
+        "{label}: every normal is unit length"
     );
+    level
+}
+
+#[test]
+fn recalculating_a_real_assets_normals_keeps_every_triangle() {
+    let Some(model) = fixture("SM_column04.fbx") else {
+        return;
+    };
+    recalculate_normals(&model, "recalculated column");
+}
+
+/// Recalculating a skinned character's normals splits vertices at its hard
+/// edges, and every copy must keep the skin its original had — checked by the
+/// same guard import runs, over the level's own vertices.
+#[test]
+#[ignore = "needs a skinned fixture; SK_Player_01.fbx was removed in a9c6db3"]
+fn recalculating_a_skinned_characters_normals_keeps_its_skin() {
+    let Some(model) = fixture(SKINNED) else {
+        return;
+    };
+    assert!(model.skin.is_some(), "the fixture is skinned");
+    let level = recalculate_normals(&model, "recalculated character");
+    let skin = level.skin.as_ref().expect("the skin is kept");
+    assert_eq!(skin.logical_vertex_count(), level.vertices.len());
+    assert!(level.validate_deform().is_ok());
 }
 
 /// The tangent rebuild splits a vertex only at a mirrored-UV seam, so on a real
@@ -753,7 +818,7 @@ fn recalculating_a_skinned_characters_normals_keeps_its_skin() {
 /// splitting on every tangent difference would show up here as a jump.
 #[test]
 fn the_tangent_rebuild_adds_only_a_few_vertices_on_a_real_asset() {
-    let Some(model) = fixture("SK_Player_01.fbx") else {
+    let Some(model) = fixture("stylized_palm_plant_04.fbx") else {
         return;
     };
     let mut indexed = OptStack::default();

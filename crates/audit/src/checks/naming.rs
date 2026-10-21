@@ -9,7 +9,7 @@ use review_model::naming::{lod_base, lod_suffix as parse_lod_suffix};
 use super::Outcome;
 use crate::context::Context;
 use crate::finding::{Measured, Offender, Skip, Threshold};
-use crate::glob::GlobSet;
+use crate::glob::{Glob, GlobSet};
 use crate::profile::RuleConfig;
 
 /// The characters every engine and file system accepts in an object name.
@@ -130,13 +130,6 @@ pub(super) fn lod_suffix(ctx: &Context<'_>) -> Outcome {
     Outcome::judged(offenders, Threshold::None)
 }
 
-/// The literal text before a pattern's first wildcard — the prefix a collision
-/// pattern like `UCX_*` stands for.
-fn literal_head(pattern: &str) -> &str {
-    let end = pattern.find(['*', '?', '[']).unwrap_or(pattern.len());
-    &pattern[..end]
-}
-
 /// `name` with a trailing `_<digits>` index removed (`Crate_01` → `Crate`).
 fn strip_index(name: &str) -> &str {
     match name.rfind('_') {
@@ -155,6 +148,15 @@ pub(super) fn collision_prefix(ctx: &Context<'_>, config: &RuleConfig) -> Outcom
     let Ok(set) = GlobSet::new(patterns) else {
         return Outcome::skip(Skip::InvalidPattern);
     };
+    // The patterns one by one as well, in the profile's order: the first that
+    // matches a name says which part of it is the render mesh's.
+    let Ok(globs) = patterns
+        .iter()
+        .map(|pattern| Glob::new(pattern))
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return Outcome::skip(Skip::InvalidPattern);
+    };
     let model = ctx.model;
     let render_meshes: std::collections::HashSet<&str> = ctx
         .authored_nodes()
@@ -167,13 +169,9 @@ pub(super) fn collision_prefix(ctx: &Context<'_>, config: &RuleConfig) -> Outcom
         .authored_nodes()
         .filter_map(|index| {
             let name = &model.nodes[index].name;
-            let head = patterns
-                .iter()
-                .find(|pattern| {
-                    crate::glob::Glob::new(pattern).is_ok_and(|glob| glob.matches(name))
-                })
-                .map(|pattern| literal_head(pattern))?;
-            let target = name.get(head.len()..).unwrap_or("");
+            // What the pattern's `*` matched, not merely what follows its literal
+            // head: `UC[XP]_*` takes four characters off `UCX_Crate`, not two.
+            let target = globs.iter().find_map(|glob| glob.star_span(name))?;
             let named =
                 render_meshes.contains(target) || render_meshes.contains(strip_index(target));
             (!named).then(|| {
@@ -235,9 +233,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn heads_and_indices() {
-        assert_eq!(literal_head("UCX_*"), "UCX_");
-        assert_eq!(literal_head("UC[XP]_*"), "UC");
+    fn indices() {
         assert_eq!(strip_index("Crate_01"), "Crate");
         assert_eq!(strip_index("Crate"), "Crate");
         assert_eq!(strip_index("Crate_"), "Crate_");

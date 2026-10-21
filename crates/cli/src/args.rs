@@ -13,7 +13,7 @@
 //! * a list is one value, separated by commas (`--lods 0.5,0.25`), which is how
 //!   a multiple choice arrives.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 use review_audit::{Engine, Severity};
@@ -374,7 +374,10 @@ impl Given {
             .and_then(|(_, value)| value.as_ref())
     }
 
-    fn text(&self, name: &str) -> Option<String> {
+    /// The value as trimmed text, for an option whose value is a word or a
+    /// number rather than a path. (Not `text`: that is a text sink's name to
+    /// `no_inline_strings`, which would read the option names as prose.)
+    fn trimmed(&self, name: &str) -> Option<String> {
         self.value(name)
             .map(|value| value.to_string_lossy().trim().to_owned())
     }
@@ -413,8 +416,8 @@ fn parse_command(command: CommandName, args: Vec<OsString>) -> Result<Parsed, Us
             positional_only = true;
             continue;
         }
-        let (name, inline) = match text.split_once('=') {
-            Some((name, value)) => (name.to_owned(), Some(OsString::from(value))),
+        let (name, inline) = match split_inline(&arg) {
+            Some((name, value)) => (name, Some(value)),
             None => (text.clone(), None),
         };
         let Some(spec) = SPECS
@@ -470,17 +473,79 @@ fn parse_command(command: CommandName, args: Vec<OsString>) -> Result<Parsed, Us
     Ok(Parsed::Run(Run { common, command }))
 }
 
+/// `--name=value` split at its first `=`, or `None` when there is none.
+///
+/// Split on the argument as the OS handed it over, not on a lossy reading of
+/// it: a value is often a path, and one that is not valid Unicode must arrive
+/// exactly as it does after a space (`--out <path>`), not with its odd bytes
+/// replaced. The name is the option's, plain ASCII when it is one at all.
+fn split_inline(arg: &OsStr) -> Option<(String, OsString)> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        let wide: Vec<u16> = arg.encode_wide().collect();
+        let at = wide.iter().position(|&unit| unit == u16::from(b'='))?;
+        Some((
+            String::from_utf16_lossy(&wide[..at]),
+            OsString::from_wide(&wide[at + 1..]),
+        ))
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let bytes = arg.as_bytes();
+        let at = bytes.iter().position(|&byte| byte == b'=')?;
+        Some((
+            String::from_utf8_lossy(&bytes[..at]).into_owned(),
+            OsStr::from_bytes(&bytes[at + 1..]).to_os_string(),
+        ))
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let text = arg.to_string_lossy();
+        let (name, value) = text.split_once('=')?;
+        Some((name.to_owned(), OsString::from(value)))
+    }
+}
+
+/// The report a command line names, read leniently - for one [`parse`]
+/// refused, so a report an earlier run left at that path can still be taken
+/// away. The last `--report` before any `--` wins, as it does when the line is
+/// accepted, and an empty value names none.
+pub(crate) fn report_path(args: &[OsString]) -> Option<PathBuf> {
+    let mut found = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--" {
+            break;
+        }
+        let value = match split_inline(arg) {
+            Some((name, value)) if name == REPORT => Some(value),
+            Some(_) => continue,
+            None if arg == REPORT => args
+                .next()
+                .filter(|value| !value.to_string_lossy().starts_with("--"))
+                .cloned(),
+            None => continue,
+        };
+        found = value
+            .filter(|value| !value.to_string_lossy().trim().is_empty())
+            .map(PathBuf::from);
+    }
+    found
+}
+
 fn optimize_args(given: &Given) -> Result<OptimizeArgs, String> {
     let Some(out) = given.path(OUT) else {
         return Err(tr(k::USAGE_NEEDS_OUT).into_owned());
     };
-    let lods = match given.text(LODS) {
+    let lods = match given.trimmed(LODS) {
         None => None,
         Some(value) if value.eq_ignore_ascii_case(NO_LODS) => Some(Lods::None),
         Some(value) => Some(Lods::Ratios(ratio_list(LODS, &value)?)),
     };
     let reduce = given
-        .text(REDUCE)
+        .trimmed(REDUCE)
         .map(|value| ratio(REDUCE, &value))
         .transpose()?;
     let preset = given.path(PRESET);
@@ -505,7 +570,7 @@ fn optimize_args(given: &Given) -> Result<OptimizeArgs, String> {
             "ascii" => FbxFormat::Ascii,
             _ => FbxFormat::Binary,
         }),
-        suffix: given.text(SUFFIX).unwrap_or_default(),
+        suffix: given.trimmed(SUFFIX).unwrap_or_default(),
         if_exists: match choice(given, IF_EXISTS, IF_EXISTS_CHOICES)? {
             Some("skip") => IfExists::Skip,
             Some("replace") => IfExists::Replace,
@@ -515,7 +580,7 @@ fn optimize_args(given: &Given) -> Result<OptimizeArgs, String> {
 }
 
 fn audit_args(given: &Given) -> Result<AuditArgs, String> {
-    let profile = match given.text(PROFILE) {
+    let profile = match given.trimmed(PROFILE) {
         None => ProfileChoice::Builtin(Engine::Generic),
         Some(value) => match PROFILE_CHOICES
             .iter()
@@ -545,7 +610,7 @@ fn choice(
     name: &str,
     choices: &'static [&'static str],
 ) -> Result<Option<&'static str>, String> {
-    let Some(value) = given.text(name) else {
+    let Some(value) = given.trimmed(name) else {
         return Ok(None);
     };
     choices
@@ -790,6 +855,66 @@ mod tests {
         ));
         assert!(matches!(parse_line("--help"), Ok(Parsed::Help(None))));
         assert!(matches!(parse_line("--version"), Ok(Parsed::Version)));
+    }
+
+    /// A value after `=` keeps the bytes it was given, as one after a space
+    /// does: a path that is not valid Unicode used to arrive with U+FFFD in it.
+    #[test]
+    fn a_value_after_an_equals_sign_keeps_bytes_that_are_not_unicode() {
+        #[cfg(windows)]
+        let (inline, value) = {
+            use std::os::windows::ffi::OsStringExt;
+            let value: Vec<u16> = vec![u16::from(b'o'), 0xD800, u16::from(b'x')];
+            let mut inline: Vec<u16> = "--out=".encode_utf16().collect();
+            inline.extend(&value);
+            (OsString::from_wide(&inline), OsString::from_wide(&value))
+        };
+        #[cfg(unix)]
+        let (inline, value) = {
+            use std::os::unix::ffi::OsStringExt;
+            (
+                OsString::from_vec(b"--out=o\xffx".to_vec()),
+                OsString::from_vec(b"o\xffx".to_vec()),
+            )
+        };
+        #[cfg(any(windows, unix))]
+        {
+            assert!(value.to_str().is_none(), "the value is not Unicode");
+            let line = ["optimize", "a.fbx", "--lods", "0.5"]
+                .into_iter()
+                .map(OsString::from)
+                .chain([inline]);
+            let Ok(Parsed::Run(run)) = parse(line) else {
+                panic!("refused");
+            };
+            let Command::Optimize(args) = run.command else {
+                panic!("not optimize");
+            };
+            assert_eq!(args.out, PathBuf::from(value));
+        }
+    }
+
+    #[test]
+    fn a_refused_line_still_names_its_report() {
+        let path = |line: &str| {
+            report_path(
+                &line
+                    .split_whitespace()
+                    .map(OsString::from)
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(
+            path("audit a.fbx --report r.json --fail-on sometimes"),
+            Some(PathBuf::from("r.json"))
+        );
+        assert_eq!(
+            path("audit --report=first.json --frobnicate --report=last.json"),
+            Some(PathBuf::from("last.json"))
+        );
+        assert_eq!(path("audit a.fbx --report --recurse"), None);
+        assert_eq!(path("info a.fbx -- --report r.json"), None);
+        assert_eq!(path("info a.fbx --reporting r.json"), None);
     }
 
     #[test]

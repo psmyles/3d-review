@@ -23,8 +23,21 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
     });
     ui.separator();
     if panel_footer(ui, PAGE).clicked() {
-        state.anti_aliasing = AntiAliasing::default();
+        reset(state);
     }
+}
+
+/// The footer's reset: the default MSAA level, or the nearest one this adapter
+/// can render. The on/off state is owned by the status-bar toggle, as it is for
+/// the other tools with one, so a reset leaves `enabled` where the user put it —
+/// resetting a level must not switch antialiasing back on.
+fn reset(state: &mut UiState) {
+    state.anti_aliasing = AntiAliasing {
+        enabled: state.anti_aliasing.enabled,
+        msaa: state
+            .capabilities
+            .nearest_msaa(AntiAliasing::default().msaa),
+    };
 }
 
 /// "MSAA" row: a dropdown over the multisample levels. Only levels the active
@@ -52,4 +65,37 @@ fn msaa_row(ui: &mut egui::Ui, state: &mut UiState) {
             }
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reset_keeps_antialiasing_off_when_the_user_turned_it_off() {
+        let mut state = UiState {
+            anti_aliasing: AntiAliasing {
+                enabled: false,
+                msaa: MsaaSamples::X8,
+            },
+            ..UiState::default()
+        };
+        reset(&mut state);
+        assert!(!state.anti_aliasing.enabled);
+        assert_eq!(state.anti_aliasing.msaa, AntiAliasing::default().msaa);
+    }
+
+    #[test]
+    fn a_reset_never_picks_a_level_the_adapter_cannot_render() {
+        let mut state = UiState::default();
+        // No 2x here, which is the default.
+        state.capabilities.msaa_levels = vec![MsaaSamples::Off, MsaaSamples::X4];
+        state.anti_aliasing.msaa = MsaaSamples::X4;
+        reset(&mut state);
+        assert_eq!(
+            state.anti_aliasing.msaa,
+            MsaaSamples::Off,
+            "the highest level the adapter has below the default"
+        );
+    }
 }

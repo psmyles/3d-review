@@ -46,7 +46,8 @@ pub(crate) fn wireframe_edge_indices(model: &ModelData, hidden_nodes: &[u32]) ->
     };
 
     if model.faces.is_empty() {
-        // Triangle-edge fallback, mirroring `triangulated_wireframe_lines`.
+        // No face table to trace, so fall back to every triangle's three edges:
+        // diagonals included, and an edge two triangles share listed twice.
         let hidden = HiddenFilter::new(model, hidden_nodes);
         for (triangle_index, triangle) in model.indices.as_chunks::<3>().0.iter().enumerate() {
             if hidden.is_hidden(triangle_index) {

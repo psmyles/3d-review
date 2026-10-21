@@ -4,7 +4,9 @@
 //! The profile editor follows the Opt inspector's shape: copy the profile out,
 //! let the widgets edit the copy, and write it back **only if it differs**, so
 //! an idle frame never bumps the profile revision (which would re-run the audit
-//! every frame).
+//! every frame). Its text fields go one step further and write back only when
+//! the edit is finished (see [`committed_text_edit`]), so typing a word is one
+//! revision rather than one per character.
 
 use review_audit::{
     AuditProfile, AuditReport, Axis, Category, Engine, ParamKind, ParamValue, RuleId, RuleResult,
@@ -415,7 +417,13 @@ fn profile_editor(ui: &mut egui::Ui, state: &mut UiState) -> Option<AuditIntent>
                 .page(Page::AudProfiles),
         );
         grid_control(ui, |ui| {
-            ui.add(egui::TextEdit::singleline(&mut edited.name).desired_width(f32::INFINITY));
+            let id = egui::Id::new("aud_profile_name");
+            let (_, finished) = committed_text_edit(ui, id, &edited.name, |text| {
+                egui::TextEdit::singleline(text).desired_width(f32::INFINITY)
+            });
+            if let Some(name) = finished {
+                edited.name = name;
+            }
         });
         ui.end_row();
 
@@ -570,28 +578,27 @@ fn param_widget(ui: &mut egui::Ui, salt: (RuleId, &str), kind: ParamKind, value:
                 });
         }
         (ParamKind::Patterns, ParamValue::Patterns(patterns)) => {
-            let mut text = patterns.join(", ");
-            let valid = review_audit::glob::GlobSet::new(patterns).is_ok();
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut text)
+            let id = egui::Id::new(("aud_param_patterns", salt));
+            let width = ui.available_width();
+            let mut valid = true;
+            let (response, finished) = committed_text_edit(ui, id, &patterns.join(", "), |text| {
+                // Judged by what the field holds now rather than by the list
+                // last committed, so a bad pattern shows as it is typed.
+                valid = review_audit::glob::GlobSet::new(&parse_patterns(text)).is_ok();
+                egui::TextEdit::singleline(text)
                     .hint_text(k::PATTERN_HINT)
-                    .desired_width(ui.available_width())
+                    .desired_width(width)
                     .text_color(if valid {
                         color::TEXT_BODY
                     } else {
                         color::SEVERITY_ERROR
-                    }),
-            );
+                    })
+            });
             if !valid {
-                let _ = response.clone().on_hover_text(k::PATTERN_INVALID);
+                let _ = response.on_hover_text(k::PATTERN_INVALID);
             }
-            if response.changed() {
-                *patterns = text
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|pattern| !pattern.is_empty())
-                    .map(str::to_owned)
-                    .collect();
+            if let Some(text) = finished {
+                *patterns = parse_patterns(&text);
             }
         }
         (kind, ParamValue::Number(number)) => {
@@ -611,5 +618,190 @@ fn param_widget(ui: &mut egui::Ui, salt: (RuleId, &str), kind: ParamKind, value:
         // A value of the wrong kind: `sanitize` repairs these on load, and the
         // editor never writes one.
         _ => {}
+    }
+}
+
+/// A patterns field's text as the list it names: comma-separated, each one
+/// trimmed, the empty ones dropped.
+fn parse_patterns(text: &str) -> Vec<String> {
+    text.split(',')
+        .map(str::trim)
+        .filter(|pattern| !pattern.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// What a [`committed_text_edit`] is holding while it is being typed in: the
+/// text so far, and the value it was begun from.
+#[derive(Debug, Clone)]
+struct Draft {
+    base: String,
+    text: String,
+}
+
+/// A single-line text field that hands its text back once, when the edit is
+/// finished, rather than on every keystroke.
+///
+/// Every write to the profile bumps its revision, and a revision is an audit run
+/// and an undo step, so a field written back per keystroke re-ran the audit once
+/// a character. A field rebuilt from the profile every frame also cannot hold
+/// text the profile has no way to store: the patterns field re-joined the parsed
+/// list, so the comma before a second pattern vanished as soon as it was typed.
+///
+/// So while the field has focus, the text being typed lives in egui's temporary
+/// memory under the field's id and the profile is left alone. The first frame the
+/// field is without focus — Enter, a click elsewhere, Tab — returns that text to
+/// commit, and `Esc` returns nothing, putting the field back as it was. A draft
+/// whose starting value has since changed underneath it (an undo, a loaded
+/// profile) is dropped rather than written over the new value.
+///
+/// `build` makes the field from the text it edits, so a caller can style it by
+/// what is being typed.
+fn committed_text_edit(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    committed: &str,
+    build: impl FnOnce(&mut String) -> egui::TextEdit<'_>,
+) -> (egui::Response, Option<String>) {
+    let draft_id = id.with("draft");
+    let stored: Option<Draft> = ui.data(|data| data.get_temp(draft_id));
+    let had_draft = stored.is_some();
+    let draft = stored.filter(|draft| draft.base == committed);
+    let editing = draft.is_some();
+    let mut text = draft.map_or_else(|| committed.to_owned(), |draft| draft.text);
+
+    let response = ui.add(build(&mut text).id(id));
+    if response.has_focus() {
+        if response.changed() {
+            // `build` styled the field by the text before this keystroke.
+            ui.ctx().request_repaint();
+        }
+        let draft = Draft {
+            base: committed.to_owned(),
+            text,
+        };
+        ui.data_mut(|data| data.insert_temp(draft_id, draft));
+        return (response, None);
+    }
+    if had_draft {
+        ui.data_mut(|data| data.remove::<Draft>(draft_id));
+    }
+    let cancelled = ui.input(|input| input.key_pressed(egui::Key::Escape));
+    (response, (editing && !cancelled).then_some(text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A field driven a frame at a time, the way a user types into it.
+    struct Field {
+        ctx: egui::Context,
+        id: egui::Id,
+        /// The value the field writes back to, as the profile holds it.
+        value: String,
+        /// How many times the field handed a value back.
+        commits: usize,
+    }
+
+    impl Field {
+        fn new(value: &str) -> Self {
+            Self {
+                ctx: egui::Context::default(),
+                id: egui::Id::new("committed_text_edit_test"),
+                value: value.to_owned(),
+                commits: 0,
+            }
+        }
+
+        /// One frame delivering `events`.
+        fn frame(&mut self, events: Vec<egui::Event>) {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 200.0),
+                )),
+                focused: true,
+                events,
+                ..Default::default()
+            };
+            let (id, value) = (self.id, self.value.clone());
+            let mut finished = None;
+            let output = self.ctx.run_ui(input, |ui| {
+                finished =
+                    committed_text_edit(ui, id, &value, |text| egui::TextEdit::singleline(text)).1;
+            });
+            output.drop_without_applying_deltas();
+            if let Some(text) = finished {
+                self.value = text;
+                self.commits += 1;
+            }
+        }
+
+        fn focus(&mut self) {
+            self.ctx.memory_mut(|memory| memory.request_focus(self.id));
+            self.frame(Vec::new());
+        }
+
+        fn type_text(&mut self, text: &str) {
+            self.frame(vec![egui::Event::Text(text.to_owned())]);
+        }
+
+        fn press(&mut self, key: egui::Key) {
+            let event = |pressed| egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            };
+            self.frame(vec![event(true), event(false)]);
+            // The frame after, where a focus change made at the end of the last
+            // pass shows.
+            self.frame(Vec::new());
+        }
+    }
+
+    /// The bug this field exists for: typed a character at a time, a second
+    /// pattern used to lose the comma in front of it.
+    #[test]
+    fn a_second_pattern_can_be_typed_in_order() {
+        let mut field = Field::new("*.fbx");
+        field.focus();
+        for text in [",", " ", "*", ".", "o", "b", "j"] {
+            field.type_text(text);
+        }
+        assert_eq!(field.commits, 0, "nothing is written while typing");
+        field.press(egui::Key::Enter);
+        assert_eq!(field.commits, 1, "one edit is one write");
+        assert_eq!(parse_patterns(&field.value), ["*.fbx", "*.obj"]);
+    }
+
+    #[test]
+    fn escape_puts_the_field_back() {
+        let mut field = Field::new("Studio");
+        field.focus();
+        field.type_text(" draft");
+        field.press(egui::Key::Escape);
+        assert_eq!(field.commits, 0);
+        assert_eq!(field.value, "Studio");
+    }
+
+    /// An undo or a loaded profile replaces the value mid-edit: the stale draft
+    /// must not be written over it.
+    #[test]
+    fn a_draft_is_dropped_when_its_value_changes_underneath_it() {
+        let mut field = Field::new("Studio");
+        field.focus();
+        field.type_text(" draft");
+        field.value = "Loaded".to_owned();
+        field.press(egui::Key::Enter);
+        assert_eq!(field.value, "Loaded");
+    }
+
+    #[test]
+    fn patterns_split_on_commas_and_drop_the_empty_ones() {
+        assert_eq!(parse_patterns(" *.fbx , ,*.obj,"), ["*.fbx", "*.obj"]);
+        assert!(parse_patterns("  ").is_empty());
     }
 }

@@ -189,6 +189,12 @@ fn main() -> anyhow::Result<()> {
         settings::restore(&mut app.ui);
         // The audit profile used last, edits and all.
         audit::restore_saved_profile(&mut app);
+        // What was restored is where the session starts, not an edit made in it.
+        // The undo baseline was taken by `App::default`, before the restore
+        // bumped the profile's revision; left there, the first Ctrl+Z on the
+        // start screen would "undo" the restore - and the settled-profile save
+        // would then write the default over the profile on disk.
+        app.reset_undo_history();
     }
     let outcome = event_loop
         .run_app(&mut app)
@@ -214,6 +220,10 @@ struct App {
     /// swapchain pass the scene composited into (`docs/ARCHITECTURE.md`, Platform
     /// decisions D3).
     egui_renderer: Option<EguiRenderer>,
+    /// egui texture changes a frame produced but could not hand the renderer,
+    /// because the backbuffer was refused before the chrome was prepared. Held
+    /// for the next frame that draws (`frame.rs`).
+    undelivered_textures: frame::UndeliveredTextures,
     drag_mode: Option<DragMode>,
     /// A press that has not yet been confirmed as the viewer's to act on.
     ///
@@ -265,16 +275,23 @@ struct App {
     /// ever drew the same number would leave one of them stale on screen.
     model_revision_counter: u64,
     /// Generation of the newest model-load request (imports run on a worker
-    /// thread — see `loading.rs`). A finished import carrying an older
+    /// thread — see `loading/`). A finished import carrying an older
     /// generation was superseded by a newer open or a Ctrl+N and is dropped,
     /// so a slow parse can never overwrite what the user asked for since.
     ///
     /// Shared with the workers rather than kept as a plain `u64`, so each one can
     /// also *read* it: dropping a stale result keeps the wrong model off screen,
-    /// but the parse and the measuring behind it run to completion either way,
-    /// and on a large FBX that is several seconds of work for something nobody
-    /// will see. A worker whose generation has moved on stops instead.
+    /// but the parse behind it runs to completion either way, and on a large FBX
+    /// that is several seconds of work for something nobody will see. A worker
+    /// whose generation has moved on stops instead.
     model_load_generation: Arc<AtomicU64>,
+    /// Generation of the model on screen, which its measuring worker (`loading/
+    /// measure.rs`) is cancelled through and its measurements are matched
+    /// against. Separate from [`Self::model_load_generation`] because a request
+    /// supersedes the parses in flight the moment it is made, but the model on
+    /// screen only when the request has produced one to replace it: a request
+    /// that fails leaves that model where it was, and it has to stay measured.
+    measure_generation: Arc<AtomicU64>,
     /// The Opt workspace's processing state. `None` until the user first opens
     /// the workspace — a session that never does pays nothing for it.
     opt: Option<opt::OptSubsystem>,
@@ -458,6 +475,7 @@ impl Default for App {
             egui_ctx: None,
             egui_state: None,
             egui_renderer: None,
+            undelivered_textures: frame::UndeliveredTextures::default(),
             drag_mode: None,
             pending_drag: None,
             drag_in_opt_right_view: false,
@@ -474,6 +492,7 @@ impl Default for App {
             scene_revision: 0,
             model_revision_counter: 0,
             model_load_generation: Arc::new(AtomicU64::new(0)),
+            measure_generation: Arc::new(AtomicU64::new(0)),
             opt: None,
             audit: audit::AuditSubsystem::default(),
             scene_bvh: None,
@@ -721,17 +740,12 @@ impl App {
             .filter(|level| supported_counts.contains(&level.sample_count()))
             .collect();
         // A remembered level can be one this adapter cannot do (the settings were
-        // saved on another GPU): step down to the highest level it can.
-        let levels = &self.ui.capabilities.msaa_levels;
-        let wanted = self.ui.anti_aliasing.msaa;
-        if !levels.is_empty() && !levels.contains(&wanted) {
-            self.ui.anti_aliasing.msaa = levels
-                .iter()
-                .copied()
-                .filter(|level| level.sample_count() <= wanted.sample_count())
-                .max_by_key(|level| level.sample_count())
-                .unwrap_or(levels[0]);
-        }
+        // saved on another GPU): step down to the highest level it can, by the same
+        // rule the Anti Aliasing panel's reset uses.
+        self.ui.anti_aliasing.msaa = self
+            .ui
+            .capabilities
+            .nearest_msaa(self.ui.anti_aliasing.msaa);
 
         self.ui.capabilities.overdraw = gpu.supports_overdraw();
         self.ui.about.info.renderer = gpu.backend_name().to_owned();

@@ -85,7 +85,7 @@ use winit::window::Window;
 /// (D8), so it starts from the first line of `main` and the window is created
 /// alongside it. [`Self::attach`] joins the thread and puts a swapchain on the
 /// finished window.
-pub struct GpuBringUp(std::thread::JoinHandle<GpuResult<backend::Device>>);
+pub struct GpuBringUp(std::thread::JoinHandle<GpuResult<SokolDevice>>);
 
 impl GpuBringUp {
     /// Join the bring-up and create the swapchain on `window`, yielding the [`Gpu`]
@@ -109,13 +109,45 @@ impl GpuBringUp {
     }
 }
 
+/// The backend device with sokol_gfx set up on it: the pair whose teardown order is
+/// load-bearing.
+///
+/// sokol keeps the device as raw pointers it took no reference on (each backend's
+/// `fill_environment` says how), so it has to be shut down *before* the device those
+/// pointers name is released. This type makes that structural rather than a
+/// convention: its `Drop` runs `sg_shutdown`, and Rust runs a value's `Drop` before it
+/// drops the value's fields. The device is wrapped the moment it exists, before
+/// `sg_setup`, so every path that lets go of it — a failed [`GpuBringUp::attach`] or
+/// [`Gpu::headless`], a bring-up that errors after setting sokol up — shuts sokol down
+/// first.
+pub(crate) struct SokolDevice {
+    device: backend::Device,
+}
+
+impl std::ops::Deref for SokolDevice {
+    type Target = backend::Device;
+
+    fn deref(&self) -> &backend::Device {
+        &self.device
+    }
+}
+
+impl Drop for SokolDevice {
+    fn drop(&mut self) {
+        if sg::isvalid() {
+            sg::shutdown();
+        }
+    }
+}
+
 /// The process's GPU: the device sokol_gfx runs on and the window's swapchain.
 ///
-/// One of these exists for the life of the process. Its `Drop` shuts sokol_gfx down,
-/// so it must be the **last** GPU-holding field of `App` to be dropped — every
-/// wrapper's own `Drop` guards on `sg::isvalid()` for the same reason.
+/// One of these exists for the life of the process. Dropping it shuts sokol_gfx down
+/// (its [`SokolDevice`], the first field, goes first), so it must be the **last**
+/// GPU-holding field of `App` to be dropped — every wrapper's own `Drop` guards on
+/// `sg::isvalid()` for the same reason.
 pub struct Gpu {
-    device: backend::Device,
+    device: SokolDevice,
     swapchain: backend::Swapchain,
     /// The `--tracy` GPU profiler (D18). Built on the first frame of an armed run
     /// and `None` on every normal one, where nothing profiling-related exists at
@@ -169,8 +201,12 @@ impl Gpu {
     }
 
     /// The device, and sokol_gfx set up on it. Runs on the bring-up thread.
-    fn bring_up() -> GpuResult<backend::Device> {
-        let device = backend::Device::create()?;
+    fn bring_up() -> GpuResult<SokolDevice> {
+        // Owned by the guard before sokol ever sees it: an early return below drops
+        // the guard, which shuts sokol down (if it came up) before the device goes.
+        let device = SokolDevice {
+            device: backend::Device::create()?,
+        };
 
         let mut desc = sg::Desc::new();
         desc.environment.defaults = sg::EnvironmentDefaults {
@@ -329,14 +365,6 @@ impl Gpu {
                 gpu_profiler::disable_tracy_gpu();
                 log::warn!("GPU profiling unavailable: {error}");
             }
-        }
-    }
-}
-
-impl Drop for Gpu {
-    fn drop(&mut self) {
-        if sg::isvalid() {
-            sg::shutdown();
         }
     }
 }

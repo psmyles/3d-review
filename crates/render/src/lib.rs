@@ -295,6 +295,11 @@ impl<'a> SceneFrame<'a> {
             // nodes — which mean nothing on another mesh.
             audit: None,
             trajectories: None,
+            // So are these bounds the source's: its rest bounds, or a clip's
+            // envelope. Kept, they drew the source's All Meshes box around the
+            // processed mesh while the dimension labels measured the processed one;
+            // `None` boxes the mesh this frame draws by its own bounds.
+            scene_bounds: None,
             ..*self
         }
     }
@@ -493,8 +498,10 @@ impl Renderer {
     /// that advanced it, or a single-event redraw would report the state from before
     /// its own reset and the average would stall at one sample.
     ///
-    /// False whenever AO is off, the view is one of the flat data-inspection ones, or
-    /// the result has already converged.
+    /// False whenever AO is off, the view is one of the flat data-inspection ones or an
+    /// overdraw view, the frame drew no 3D view at all (the UV and Tex viewports), or
+    /// the result has already converged — whatever an earlier frame was doing, since
+    /// every render entry point idles the averages before deciding which of them run.
     pub fn is_ao_converging(&self) -> bool {
         self.scene.as_ref().is_some_and(SceneGpu::ao_converging)
     }
@@ -624,8 +631,10 @@ impl Renderer {
         background: TexBackground,
     ) -> GpuResult<()> {
         // Nothing the 3D, UV or Opt views derived is on screen here (invariant 3).
-        // The meshes themselves stay uploaded, so returning costs no rebuild.
+        // The meshes themselves stay uploaded, so returning costs no rebuild. No
+        // GTAO runs either, so no average is converging (`is_ao_converging`).
         if let Some(scene) = self.scene.as_mut() {
+            scene.idle_ao_history();
             scene.release_opt_views();
             scene.release_uv_views();
             scene.release_overdraw();

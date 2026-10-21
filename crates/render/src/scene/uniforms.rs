@@ -87,7 +87,7 @@ pub(super) fn scene_uniforms(
         ],
         // `w` enables the vertex-stage deform path (skinning + blend shapes).
         camera_position: camera
-            .eye_position()
+            .eye_for(projection)
             .extend(if deform { 1.0 } else { 0.0 })
             .to_array(),
         env_params: [
@@ -108,7 +108,7 @@ pub(super) fn scene_uniforms(
             // `w` flags the skin-weight heat map.
             skin_weight_value(debug),
         ],
-        view: camera.view_matrix().to_cols_array_2d(),
+        view: camera.view_matrix_for(projection).to_cols_array_2d(),
         selection_color,
     }
 }

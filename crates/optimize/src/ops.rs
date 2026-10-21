@@ -30,45 +30,129 @@ use crate::submesh::Submesh;
 ///   attributes are close enough. This is what rejoins a seam split only by
 ///   float drift.
 ///
-/// Tangents are never compared. They are a *derived* basis — regenerated after
-/// any geometry change — so letting a stale tangent difference keep two
-/// otherwise identical vertices apart would block welds for no benefit.
+/// "Compare colors" covers every colour set, not only the first: a seam in a
+/// second set is as real as one in the first.
+///
+/// Tangents are never compared here, unlike in [`index_losslessly`]. A Weld is
+/// an operation that changes the shape ([`OpKind::alters_geometry`]), so every
+/// level it reaches has its tangents rebuilt afterwards — re-split by
+/// handedness wherever a mirror seam needs two bases — and a tangent difference
+/// would only keep apart two vertices whose tangents are about to be replaced.
+/// Authored tangents are no exception: the rebuild overwrites them too.
+///
+/// [`OpKind::alters_geometry`]: crate::stack::OpKind::alters_geometry
 pub fn weld(submesh: &mut Submesh, params: &WeldParams) -> Result<(), OptError> {
     let _z = crate::prof::zone!("Weld Vertices");
 
+    let compared = Compared {
+        normals: params.compare_normals,
+        uvs: params.compare_uvs,
+        colors: params.compare_colors,
+        tangents: false,
+        handedness: false,
+        creases: false,
+    };
+    merge_vertices(submesh, compared, params.attribute_tolerance)?;
+    // A weld blind to normals keeps one of each merged group's normals
+    // arbitrarily; the survivor then describes one face rather than the surface.
+    if !params.compare_normals && !submesh.is_empty() {
+        submesh.normals_stale = true;
+    }
+    Ok(())
+}
+
+/// Merge vertices that are identical in **everything** they carry — the
+/// lossless index pass every run starts with (`process::index_mesh`).
+///
+/// Everything means every attribute the export writes back or a deform reads:
+/// the position, the normal, every UV set, the vertex colour and every further
+/// colour set, the vertex crease, the deform row ([`Submesh::row_ids`]) and —
+/// when the source **authored** its tangents — the whole tangent, handedness
+/// included. That last one is what keeps a UV mirror seam apart: its two sides
+/// share a position, a normal and a UV and differ only in the sign of the
+/// bitangent, and merging them hands one side the other's basis, which the
+/// export then writes ([`crate::export`] writes `Vertex::tangent` for a mesh
+/// whose tangents were authored).
+///
+/// A tangent the import *synthesized* (the file had no tangent layer, or no
+/// capture is here to say whether it had one) is compared by its handedness
+/// alone. Import builds it on the corner-split buffer, where each corner sees
+/// only its own polygon, so its direction is faceted: on `SM_column04.fbx`
+/// comparing the whole tangent keeps all 30018 corners apart, against 5284
+/// without, and the pass would index nothing. The sign of `w` is not faceted -
+/// it is the UV winding, which only flips across a mirror seam - and it is what
+/// an engine splits that seam on, whether it reads the file's tangents or
+/// builds its own. `ModelData::mesh_group_stats` keys on the same sign, which is
+/// what keeps the GPU Verts row equal to this pass's baseline.
+pub(crate) fn index_losslessly(
+    submesh: &mut Submesh,
+    tangents_authored: bool,
+) -> Result<(), OptError> {
+    let compared = Compared {
+        normals: true,
+        uvs: true,
+        colors: true,
+        tangents: tangents_authored,
+        handedness: true,
+        creases: true,
+    };
+    merge_vertices(submesh, compared, 0.0)
+}
+
+/// Which attributes a vertex merge compares. Positions and deform rows always
+/// are: two vertices that skin or morph differently are different vertices
+/// however alike they look, and merging them would hand one of them the other's
+/// binding.
+#[derive(Debug, Clone, Copy)]
+struct Compared {
+    normals: bool,
+    /// Every UV set.
+    uvs: bool,
+    /// The vertex colour and every further colour set.
+    colors: bool,
+    /// The whole tangent, `w` included.
+    tangents: bool,
+    /// The sign of the tangent's `w` alone, for a tangent whose direction is not
+    /// worth comparing (see [`index_losslessly`]). Implied by `tangents`.
+    handedness: bool,
+    /// The vertex crease, where the piece carries one.
+    creases: bool,
+}
+
+/// The merge behind [`weld`] and [`index_losslessly`]: exact when `tolerance`
+/// is zero, within `tolerance` per attribute component otherwise (tangents and
+/// creases are compared only exactly — the tolerance path is the Weld
+/// operation's, which compares neither).
+fn merge_vertices(
+    submesh: &mut Submesh,
+    compared: Compared,
+    tolerance: f32,
+) -> Result<(), OptError> {
     if submesh.is_empty() {
         return Ok(());
     }
     let vertex_count = submesh.vertices.len();
 
-    // Deform rows are part of a vertex's identity for every weld: two vertices
-    // that skin or morph differently are different vertices however alike they
-    // look, and merging them would hand one of them the other's binding.
     let row_ids = submesh.row_ids();
-    let (remap, unique) = if params.attribute_tolerance > 0.0 {
+    let (remap, unique) = if tolerance > 0.0 {
         let positions = submesh.positions();
-        let attributes = AttributeView::new(submesh, params);
+        let attributes = AttributeView::new(submesh, compared);
         meshopt::generate_vertex_remap_custom(
             &submesh.indices,
             &positions,
             vertex_count,
             |a, b| {
-                attributes.within_tolerance(a, b, params.attribute_tolerance)
+                attributes.within_tolerance(a, b, tolerance)
                     && (row_ids.is_empty() || row_ids.get(a as usize) == row_ids.get(b as usize))
             },
         )?
     } else {
-        let (key_bytes, stride) = weld_key(submesh, params, &row_ids);
+        let (key_bytes, stride) = vertex_key(submesh, compared, &row_ids);
         meshopt::generate_vertex_remap(&submesh.indices, &key_bytes, vertex_count, stride)?
     };
 
     submesh.indices = meshopt::remap_index_buffer(&submesh.indices, &remap)?;
     submesh.apply_vertex_remap(&remap, unique);
-    // A weld blind to normals keeps one of each merged group's normals
-    // arbitrarily; the survivor then describes one face rather than the surface.
-    if !params.compare_normals {
-        submesh.normals_stale = true;
-    }
     Ok(())
 }
 
@@ -214,14 +298,20 @@ pub fn simplify(
 /// material rather than by shape: a dense decorative trim keeps detail nobody
 /// can see while a sparse panel beside it loses its silhouette.
 ///
-/// Returns the worst error, as [`simplify`] does. Pieces whose UV-set count
-/// disagrees cannot share an attribute stream and are simplified one by one.
+/// Pieces whose UV-set count disagrees cannot share an attribute stream and
+/// are simplified one by one, as are the pieces of a sloppy simplify.
+///
+/// Returns the worst error, as [`simplify`] does, beside every failure. One
+/// piece failing (a non-finite position, say) costs only that piece, which is
+/// left exactly as it was — the pipeline's failure policy — while the others
+/// are still simplified. Simplified together, one failure is the whole
+/// object's, and the whole object is left as it was.
 pub fn simplify_object(
     pieces: &mut Vec<&mut Submesh>,
     settings: &SimplifySettings,
     target_triangles: usize,
     target_error: f32,
-) -> Result<f32, OptError> {
+) -> ObjectSimplified {
     let _z = crate::prof::zone!("Simplify Object");
 
     pieces.retain(|piece| !piece.is_empty());
@@ -235,15 +325,52 @@ pub fn simplify_object(
         // One piece, or a simplifier that would invent cross-piece triangles
         // (the sloppy one clusters vertices without regard to which piece they
         // came from): each piece toward its own share of the target.
-        let mut worst = 0.0f32;
+        let mut outcome = ObjectSimplified::default();
         for piece in pieces.iter_mut() {
             let share = (target_triangles as f64 * piece.triangle_count() as f64
                 / total.max(1) as f64)
                 .round() as usize;
-            worst = worst.max(simplify(piece, settings, share, target_error)?);
+            // `simplify` writes the piece only once the simplifier has
+            // answered, so a piece that fails is still the piece it was.
+            match simplify(piece, settings, share, target_error) {
+                Ok(error) => outcome.error = outcome.error.max(error),
+                Err(error) => outcome.failures.push(error),
+            }
         }
-        return Ok(worst);
+        return outcome;
     }
+    match simplify_together(pieces, settings, target_triangles, target_error) {
+        Ok(error) => ObjectSimplified {
+            error,
+            failures: Vec::new(),
+        },
+        Err(error) => ObjectSimplified {
+            error: 0.0,
+            failures: vec![error],
+        },
+    }
+}
+
+/// What [`simplify_object`] did with one object.
+#[derive(Debug, Default)]
+pub struct ObjectSimplified {
+    /// The worst error any piece reported.
+    pub error: f32,
+    /// One entry per failure; each left its piece (or, simplified together,
+    /// the object) as it was.
+    pub failures: Vec<OptError>,
+}
+
+/// [`simplify_object`]'s shared path: the pieces concatenated and simplified
+/// as one mesh. Nothing is written to a piece unless the whole simplify
+/// succeeded.
+fn simplify_together(
+    pieces: &mut [&mut Submesh],
+    settings: &SimplifySettings,
+    target_triangles: usize,
+    target_error: f32,
+) -> Result<f32, OptError> {
+    let total: usize = pieces.iter().map(|piece| piece.triangle_count()).sum();
 
     // Concatenate: each piece's vertices follow the previous piece's.
     let mut starts = Vec::with_capacity(pieces.len() + 1);
@@ -260,6 +387,12 @@ pub fn simplify_object(
         indices.extend(piece.indices.iter().map(|&index| index + base));
     }
     starts.push(vertices.len() as u32);
+    // Where every vertex was before the simplify, which is what identifies a
+    // vertex across pieces afterwards (see `deal_triangles`).
+    let original: Vec<[u32; 3]> = vertices
+        .iter()
+        .map(|vertex| position_key(vertex.position))
+        .collect();
 
     let outcome = simplify_buffers(
         &mut vertices,
@@ -270,39 +403,7 @@ pub fn simplify_object(
         target_error,
     )?;
 
-    // Deal the triangles back out. A triangle belongs to the piece its first
-    // corner came from; a corner from another piece (a collapse through a
-    // vertex where several pieces meet can leave one) is replaced by the owning
-    // piece's own vertex at the same position, which a border vertex always has.
-    let piece_of = |vertex: u32| starts.partition_point(|&start| start <= vertex) - 1;
-    let mut dealt: Vec<Vec<u32>> = vec![Vec::new(); pieces.len()];
-    let mut by_position: Vec<Option<HashMap<[u32; 3], u32>>> = vec![None; pieces.len()];
-    for triangle in outcome.indices.as_chunks::<3>().0.iter() {
-        let owner = piece_of(triangle[0]);
-        let mut local = [0u32; 3];
-        let mut whole = true;
-        for (slot, &vertex) in local.iter_mut().zip(triangle) {
-            if piece_of(vertex) == owner {
-                *slot = vertex - starts[owner];
-                continue;
-            }
-            let lookup = by_position[owner].get_or_insert_with(|| {
-                let range = starts[owner] as usize..starts[owner + 1] as usize;
-                vertices[range]
-                    .iter()
-                    .enumerate()
-                    .map(|(index, vertex)| (position_key(vertex.position), index as u32))
-                    .collect()
-            });
-            match lookup.get(&position_key(vertices[vertex as usize].position)) {
-                Some(&own) => *slot = own,
-                None => whole = false,
-            }
-        }
-        if whole {
-            dealt[owner].extend_from_slice(&local);
-        }
-    }
+    let mut dealt = deal_triangles(&outcome.indices, &starts, &original, &mut vertices);
 
     for (index, piece) in pieces.iter_mut().enumerate() {
         let range = starts[index] as usize..starts[index + 1] as usize;
@@ -310,10 +411,182 @@ pub fn simplify_object(
         for (channel, combined) in piece.uv_channels.iter_mut().zip(&uv_channels) {
             channel.copy_from_slice(&combined[range.clone()]);
         }
-        piece.indices = std::mem::take(&mut dealt[index]);
+        piece.indices = std::mem::take(&mut dealt.triangles[index]);
         piece.clear_polygons();
     }
+    // Then the borrowed vertices, now that every lender holds its refit values.
+    let piece_of = |vertex: u32| starts.partition_point(|&start| start <= vertex) - 1;
+    for (receiver, borrowed) in dealt.borrowed.iter().enumerate() {
+        for &vertex in borrowed {
+            let lender = piece_of(vertex);
+            let local = (vertex - starts[lender]) as usize;
+            let (to, from) = receiver_and_lender(pieces, receiver, lender);
+            to.append_copy_of(from, local);
+        }
+    }
     Ok(outcome.error)
+}
+
+/// Pieces `receiver` and `lender` of one object, the first writable — two
+/// distinct pieces, which [`deal_triangles`] only ever pairs.
+fn receiver_and_lender<'a>(
+    pieces: &'a mut [&mut Submesh],
+    receiver: usize,
+    lender: usize,
+) -> (&'a mut Submesh, &'a Submesh) {
+    debug_assert_ne!(receiver, lender);
+    if receiver < lender {
+        let (low, high) = pieces.split_at_mut(lender);
+        (&mut *low[receiver], &*high[0])
+    } else {
+        let (low, high) = pieces.split_at_mut(receiver);
+        (&mut *high[0], &*low[lender])
+    }
+}
+
+/// Where [`deal_triangles`] sent an object's triangles.
+struct Dealt {
+    /// Per piece, its triangles in its own numbering. An index at or past the
+    /// piece's vertex count names `borrowed[piece][index - count]`.
+    triangles: Vec<Vec<u32>>,
+    /// Per piece, the vertices of other pieces it has to append a copy of, by
+    /// their index in the concatenated array.
+    borrowed: Vec<Vec<u32>>,
+}
+
+/// Deal a simplified object's triangles back out to the pieces they belong to,
+/// each in its own piece's numbering.
+///
+/// `indices` addresses the concatenated vertex array, piece `p` owning
+/// `starts[p]..starts[p + 1]`, and `original` is every one of those vertices'
+/// position before the simplify.
+///
+/// Usually a triangle's corners all come from one piece. A collapse across a
+/// seam can leave one from another: under "Collapse across seams"
+/// (`meshopt_SimplifyPermissive`) a vertex where several pieces meet is a
+/// complex vertex, and meshoptimizer remaps every wedge of it to a target wedge
+/// of its own choosing — another piece's, when the piece has none at the
+/// target ("cross wedge collapses", `remapIndexBuffer` in the vendored
+/// `simplifier.cpp`). It keeps corner order, so the stray corner can be any of
+/// the three. The triangle therefore goes to the piece most of its corners came
+/// from (failing that, the first piece that can take it whole), and each stray
+/// corner is replaced by that piece's own vertex at the same point. Dealing by
+/// the first corner instead sent a triangle whose first corner was the stray
+/// one to a piece with no vertex at its other two corners, and the triangle was
+/// dropped: a hole at the material junction.
+///
+/// "The same point" is the position *before* the simplify. The refit writes
+/// only the vertices its result references and their position's
+/// representative (`finalizeVertices`), so a twin no triangle references any
+/// more keeps its old position, and matching on the moved one misses it. A
+/// twin the result references is preferred — it has been refit already, to the
+/// same point as every vertex sharing its position — and one that is not is
+/// moved to where the corner it stands in for now is, so the border stays
+/// closed.
+///
+/// Where the piece has no vertex at that point at all — the collapse moved its
+/// surface onto a point only another material reached — it borrows the stray
+/// vertex: a copy is appended to it, values and deform rows and all. That is
+/// the corner meshoptimizer chose, exactly as it would stand in a mesh of one
+/// material; leaving it out instead opened a hole wherever this happened, and
+/// on a patchwork of three materials that was one triangle in eight.
+fn deal_triangles(
+    indices: &[u32],
+    starts: &[u32],
+    original: &[[u32; 3]],
+    vertices: &mut [Vertex],
+) -> Dealt {
+    let pieces = starts.len().saturating_sub(1);
+    let piece_of = |vertex: u32| starts.partition_point(|&start| start <= vertex) - 1;
+    let mut referenced = vec![false; vertices.len()];
+    for &index in indices {
+        referenced[index as usize] = true;
+    }
+
+    // Per piece, built on first need: each original position the piece has a
+    // vertex at, mapped to one such vertex, a referenced one where there is.
+    let mut twins: Vec<Option<HashMap<[u32; 3], u32>>> = vec![None; pieces];
+    let mut twin = |piece: usize, at: [u32; 3]| -> Option<u32> {
+        let lookup = twins[piece].get_or_insert_with(|| {
+            let mut lookup: HashMap<[u32; 3], u32> = HashMap::new();
+            for vertex in starts[piece]..starts[piece + 1] {
+                lookup
+                    .entry(original[vertex as usize])
+                    .and_modify(|kept| {
+                        if !referenced[*kept as usize] && referenced[vertex as usize] {
+                            *kept = vertex;
+                        }
+                    })
+                    .or_insert(vertex);
+            }
+            lookup
+        });
+        lookup.get(&at).copied()
+    };
+
+    let mut dealt = Dealt {
+        triangles: vec![Vec::new(); pieces],
+        borrowed: vec![Vec::new(); pieces],
+    };
+    // (piece, lent vertex) -> the copy's index in that piece.
+    let mut copies: HashMap<(usize, u32), u32> = HashMap::new();
+    for triangle in indices.as_chunks::<3>().0.iter() {
+        let owners = triangle.map(piece_of);
+        if owners[0] == owners[1] && owners[1] == owners[2] {
+            let owner = owners[0];
+            dealt.triangles[owner].extend(triangle.iter().map(|&vertex| vertex - starts[owner]));
+            continue;
+        }
+        // The piece two corners agree on first, then the rest in corner order.
+        let mut candidates: Vec<usize> = Vec::with_capacity(3);
+        if owners[1] == owners[2] {
+            candidates.push(owners[1]);
+        }
+        for owner in owners {
+            if !candidates.contains(&owner) {
+                candidates.push(owner);
+            }
+        }
+
+        // Each corner resolved for `owner`: its own vertex, a twin, or `None`.
+        let mut resolve = |owner: usize| -> [Option<u32>; 3] {
+            triangle.map(|vertex| {
+                if piece_of(vertex) == owner {
+                    Some(vertex)
+                } else {
+                    twin(owner, original[vertex as usize])
+                }
+            })
+        };
+        let mut chosen = None;
+        for &owner in &candidates {
+            let resolved = resolve(owner);
+            if resolved.iter().all(Option::is_some) {
+                chosen = Some((owner, resolved));
+                break;
+            }
+        }
+        let (owner, resolved) = chosen.unwrap_or_else(|| (candidates[0], resolve(candidates[0])));
+
+        let base = starts[owner];
+        let count = starts[owner + 1] - base;
+        for (&vertex, own) in triangle.iter().zip(resolved) {
+            let local = match own {
+                Some(own) => {
+                    if own != vertex && !referenced[own as usize] {
+                        vertices[own as usize].position = vertices[vertex as usize].position;
+                    }
+                    own - base
+                }
+                None => *copies.entry((owner, vertex)).or_insert_with(|| {
+                    dealt.borrowed[owner].push(vertex);
+                    count + dealt.borrowed[owner].len() as u32 - 1
+                }),
+            };
+            dealt.triangles[owner].push(local);
+        }
+    }
+    dealt
 }
 
 /// A position as exact bits, `-0.0` folded into `0.0`.
@@ -599,19 +872,35 @@ impl AttributeLayout {
     }
 }
 
-/// Pack the attributes a weld compares into a tight byte key, one run of
+/// Pack the attributes a merge compares into a tight byte key, one run of
 /// `stride` bytes per vertex.
 ///
 /// Positions are always included. `-0.0` is folded to `0.0` and every NaN to one
 /// canonical NaN, because the comparison is bitwise: without that, two vertices
 /// at visually identical positions could fail to merge over a sign bit no one
 /// can see.
-fn weld_key(submesh: &Submesh, params: &WeldParams, row_ids: &[u32]) -> (Vec<u8>, usize) {
-    let uv_sets = weld_uv_sets(submesh, params);
+///
+/// meshoptimizer takes at most [`meshopt::MAX_VERTEX_SIZE`] bytes per vertex and
+/// asserts past it, which a model with enough UV and colour sets reaches (a
+/// Weld at 27 UV sets, the index pass sooner). Such a key is folded into one
+/// `u32` per vertex naming its whole byte run — the dedup the deform rows
+/// already get ([`Submesh::row_ids`]), so equal ids mean equal bytes exactly
+/// and nothing is merged that the full key would have kept apart.
+fn vertex_key(submesh: &Submesh, compared: Compared, row_ids: &[u32]) -> (Vec<u8>, usize) {
+    let uv_sets = key_uv_sets(submesh, compared);
+    let creases = compared.creases && !submesh.vertex_crease.is_empty();
+    let handedness = compared.handedness && !compared.tangents;
     let components = 3
-        + if params.compare_normals { 3 } else { 0 }
+        + if compared.normals { 3 } else { 0 }
         + uv_sets * 2
-        + if params.compare_colors { 4 } else { 0 }
+        + if compared.colors {
+            4 * (1 + submesh.color_channels.len())
+        } else {
+            0
+        }
+        + if compared.tangents { 4 } else { 0 }
+        + usize::from(handedness)
+        + usize::from(creases)
         + usize::from(!row_ids.is_empty());
     let stride = components * size_of::<f32>();
 
@@ -621,15 +910,15 @@ fn weld_key(submesh: &Submesh, params: &WeldParams, row_ids: &[u32]) -> (Vec<u8>
     };
 
     for (index, vertex) in submesh.vertices.iter().enumerate() {
-        push(vertex.position.x, &mut bytes);
-        push(vertex.position.y, &mut bytes);
-        push(vertex.position.z, &mut bytes);
-        if params.compare_normals {
-            push(vertex.normal.x, &mut bytes);
-            push(vertex.normal.y, &mut bytes);
-            push(vertex.normal.z, &mut bytes);
+        for value in vertex.position.to_array() {
+            push(value, &mut bytes);
         }
-        if params.compare_uvs {
+        if compared.normals {
+            for value in vertex.normal.to_array() {
+                push(value, &mut bytes);
+            }
+        }
+        if compared.uvs {
             if submesh.uv_channels.is_empty() {
                 push(vertex.uv.x, &mut bytes);
                 push(vertex.uv.y, &mut bytes);
@@ -641,25 +930,59 @@ fn weld_key(submesh: &Submesh, params: &WeldParams, row_ids: &[u32]) -> (Vec<u8>
                 }
             }
         }
-        if params.compare_colors {
-            push(vertex.vertex_color.x, &mut bytes);
-            push(vertex.vertex_color.y, &mut bytes);
-            push(vertex.vertex_color.z, &mut bytes);
-            push(vertex.vertex_color.w, &mut bytes);
+        if compared.colors {
+            for value in vertex.vertex_color.to_array() {
+                push(value, &mut bytes);
+            }
+            for channel in &submesh.color_channels {
+                let color = channel.get(index).copied().unwrap_or(glam::Vec4::ONE);
+                for value in color.to_array() {
+                    push(value, &mut bytes);
+                }
+            }
+        }
+        if compared.tangents {
+            for value in vertex.tangent.to_array() {
+                push(value, &mut bytes);
+            }
+        }
+        if handedness {
+            push(if vertex.tangent.w < 0.0 { -1.0 } else { 1.0 }, &mut bytes);
+        }
+        if creases {
+            push(
+                submesh.vertex_crease.get(index).copied().unwrap_or(0.0),
+                &mut bytes,
+            );
         }
         if let Some(&row) = row_ids.get(index) {
             bytes.extend_from_slice(&row.to_ne_bytes());
         }
     }
 
+    if stride > meshopt::MAX_VERTEX_SIZE {
+        return (fold_key(&bytes, stride), size_of::<u32>());
+    }
     (bytes, stride)
 }
 
-/// How many UV sets a weld key carries: none when UVs are not compared, every
+/// One `u32` per `stride`-byte run of `bytes`, equal exactly when the runs are.
+fn fold_key(bytes: &[u8], stride: usize) -> Vec<u8> {
+    let mut ids: HashMap<&[u8], u32> = HashMap::new();
+    let mut folded = Vec::with_capacity(bytes.len() / stride * size_of::<u32>());
+    for run in bytes.chunks_exact(stride) {
+        let next = ids.len() as u32;
+        let id = *ids.entry(run).or_insert(next);
+        folded.extend_from_slice(&id.to_ne_bytes());
+    }
+    folded
+}
+
+/// How many UV sets a merge key carries: none when UVs are not compared, every
 /// stored channel on a multi-set model, otherwise the single set that lives in
 /// [`Vertex::uv`].
-fn weld_uv_sets(submesh: &Submesh, params: &WeldParams) -> usize {
-    if !params.compare_uvs {
+fn key_uv_sets(submesh: &Submesh, compared: Compared) -> usize {
+    if !compared.uvs {
         0
     } else if submesh.uv_channels.is_empty() {
         1
@@ -685,19 +1008,21 @@ fn canonical(value: f32) -> f32 {
 struct AttributeView<'a> {
     vertices: &'a [Vertex],
     uv_channels: &'a [Vec<glam::Vec2>],
+    color_channels: &'a [Vec<glam::Vec4>],
     compare_normals: bool,
     compare_uvs: bool,
     compare_colors: bool,
 }
 
 impl<'a> AttributeView<'a> {
-    fn new(submesh: &'a Submesh, params: &WeldParams) -> Self {
+    fn new(submesh: &'a Submesh, compared: Compared) -> Self {
         Self {
             vertices: &submesh.vertices,
             uv_channels: &submesh.uv_channels,
-            compare_normals: params.compare_normals,
-            compare_uvs: params.compare_uvs,
-            compare_colors: params.compare_colors,
+            color_channels: &submesh.color_channels,
+            compare_normals: compared.normals,
+            compare_uvs: compared.uvs,
+            compare_colors: compared.colors,
         }
     }
 
@@ -716,14 +1041,23 @@ impl<'a> AttributeView<'a> {
         if self.compare_normals && !close(va.normal.to_array(), vb.normal.to_array(), tolerance) {
             return false;
         }
-        if self.compare_colors
-            && !close(
+        if self.compare_colors {
+            if !close(
                 va.vertex_color.to_array(),
                 vb.vertex_color.to_array(),
                 tolerance,
-            )
-        {
-            return false;
+            ) {
+                return false;
+            }
+            for channel in self.color_channels {
+                let (Some(ca), Some(cb)) = (channel.get(a as usize), channel.get(b as usize))
+                else {
+                    return false;
+                };
+                if !close(ca.to_array(), cb.to_array(), tolerance) {
+                    return false;
+                }
+            }
         }
         if self.compare_uvs {
             if self.uv_channels.is_empty() {
@@ -906,13 +1240,13 @@ mod tests {
         let strip_before = strip.triangle_count();
         let total = flat_grid.triangle_count() + strip_before;
         let mut pieces = vec![&mut flat_grid, &mut strip];
-        simplify_object(
+        let outcome = simplify_object(
             &mut pieces,
             &settings(SimplifyAlgorithm::Standard),
             total / 4,
             1.0,
-        )
-        .unwrap();
+        );
+        assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
         assert!(
             strip.triangle_count() * 10 >= strip_before * 9,
             "the curved piece kept {} of {strip_before} triangles",
@@ -935,13 +1269,13 @@ mod tests {
         let mut right = grid(1, 0.0, 1.0, 16, bumpy);
         let total = left.triangle_count() + right.triangle_count();
         let mut pieces = vec![&mut left, &mut right];
-        simplify_object(
+        let outcome = simplify_object(
             &mut pieces,
             &settings(SimplifyAlgorithm::WithAttributes),
             total / 5,
             1.0,
-        )
-        .unwrap();
+        );
+        assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
 
         let mut uses: HashMap<[[u32; 3]; 2], u32> = HashMap::new();
         for part in [&left, &right] {
@@ -966,6 +1300,351 @@ mod tests {
             "{} edges inside the surface opened up",
             opened.len()
         );
+    }
+
+    /// A cross-wedge collapse leaves a triangle over two vertices of piece A and
+    /// one of piece B — and the stray corner first, since meshoptimizer keeps
+    /// corner order. Dealt by its first corner it went to B, which has no vertex
+    /// at A's two corners, and was dropped: a hole at the material junction. It
+    /// belongs to A, whose own vertex at the stray corner's point stands in for
+    /// it — found by where the point *was*, because the refit moved the stray
+    /// corner and left A's vertex, which nothing referenced any more, behind.
+    #[test]
+    fn a_stray_corner_from_another_piece_is_dealt_to_the_majority() {
+        let at = |x: f32, y: f32| Vertex {
+            position: Vec3::new(x, y, 0.0),
+            ..Vertex::default()
+        };
+        // Piece A: 0..4, its border at x = 0; piece B: 4..8, its own copies of
+        // that border at 4 and 7.
+        let mut vertices = vec![
+            at(0.0, 0.0),
+            at(-1.0, 0.0),
+            at(-1.0, 1.0),
+            at(0.0, 1.0),
+            at(0.0, 0.0),
+            at(1.0, 0.0),
+            at(1.0, 1.0),
+            at(0.0, 1.0),
+        ];
+        let original: Vec<[u32; 3]> = vertices.iter().map(|v| position_key(v.position)).collect();
+        // The refit moved B's border vertex 4; A's twin 0 is unreferenced, so
+        // it kept the old position.
+        vertices[4].position = Vec3::new(0.1, 0.0, 0.0);
+        let indices = [4, 1, 2, 5, 6, 7];
+        let starts = [0, 4, 8];
+
+        let dealt = deal_triangles(&indices, &starts, &original, &mut vertices);
+
+        assert_eq!(
+            dealt.triangles[0],
+            vec![0, 1, 2],
+            "the triangle is A's, over A's own vertices"
+        );
+        assert_eq!(dealt.triangles[1], vec![1, 2, 3]);
+        assert!(dealt.borrowed.iter().all(Vec::is_empty), "a twin was there");
+        assert_eq!(
+            vertices[0].position,
+            Vec3::new(0.1, 0.0, 0.0),
+            "the stand-in moved to where the stray corner went, so the border stays closed"
+        );
+    }
+
+    /// A stray corner at a point its triangle's piece has no vertex at: the
+    /// piece borrows it, as a copy appended after its own vertices.
+    #[test]
+    fn a_stray_corner_with_no_twin_is_borrowed() {
+        let at = |x: f32, y: f32| Vertex {
+            position: Vec3::new(x, y, 0.0),
+            ..Vertex::default()
+        };
+        // Piece A: 0..3; piece B: 3..5, nowhere near A.
+        let mut vertices = vec![
+            at(0.0, 0.0),
+            at(1.0, 0.0),
+            at(1.0, 1.0),
+            at(5.0, 5.0),
+            at(6.0, 5.0),
+        ];
+        let original: Vec<[u32; 3]> = vertices.iter().map(|v| position_key(v.position)).collect();
+        let dealt = deal_triangles(&[3, 1, 2, 0, 4, 2], &[0, 3, 5], &original, &mut vertices);
+
+        assert_eq!(
+            dealt.triangles[0],
+            vec![3, 1, 2, 0, 4, 2],
+            "both triangles stay A's, its copies numbered after its own three"
+        );
+        assert_eq!(dealt.borrowed[0], vec![3, 4]);
+        assert!(dealt.triangles[1].is_empty() && dealt.borrowed[1].is_empty());
+    }
+
+    /// A patchwork of three materials over one bumpy surface, simplified as one
+    /// object with "Collapse across seams" on — the setting under which a
+    /// junction of materials is a vertex meshoptimizer may move, and corners
+    /// stray between pieces (without it every such vertex is locked). Welded by
+    /// exact position, the result has no edge used once except on its outer
+    /// rim, and every piece's deform rows still run parallel to its vertices.
+    ///
+    /// Measured before the fix: a 1/3 position-only run dropped 47 of its 384
+    /// triangles, every one a hole where materials meet.
+    #[test]
+    fn a_patchwork_of_materials_does_not_open_where_they_meet() {
+        let bumpy = |x: f32, y: f32| {
+            let z = 0.2 * (2.5 * x).sin() * (3.0 * y).cos() + 0.05 * (7.0 * x * y).sin();
+            (Vec3::new(x, y, z), Vec3::Z)
+        };
+        let source = grid(0, -1.0, 1.0, 24, bumpy);
+        let mut pieces: Vec<Submesh> = (0..3)
+            .map(|material| piece(material, Vec::new(), Vec::new()))
+            .collect();
+        let mut local_of: Vec<HashMap<u32, u32>> = vec![HashMap::new(); 3];
+        for (triangle, corners) in source.indices.as_chunks::<3>().0.iter().enumerate() {
+            let (column, row) = (triangle / 2 % 24, triangle / 2 / 24);
+            let material = (column / 3 + 2 * (row / 3) + column / 5) % 3;
+            let piece = &mut pieces[material];
+            for &corner in corners {
+                let next = piece.vertices.len() as u32;
+                let local = *local_of[material].entry(corner).or_insert(next);
+                if local == next {
+                    // Every material its own UV chart, as a border usually is.
+                    let mut vertex = source.vertices[corner as usize];
+                    vertex.uv += Vec2::splat(material as f32 * 2.0);
+                    piece.vertices.push(vertex);
+                    piece.skin.push_row(&[(material as u32, 1.0)]);
+                }
+                piece.indices.push(local);
+            }
+        }
+        let total: usize = pieces.iter().map(Submesh::triangle_count).sum();
+
+        for algorithm in [
+            SimplifyAlgorithm::Standard,
+            SimplifyAlgorithm::WithAttributes,
+        ] {
+            let mut across_seams = settings(algorithm);
+            across_seams.flags.permissive = true;
+            for ratio in [3, 5, 10, 20] {
+                let label = format!("{algorithm:?} 1/{ratio}");
+                let mut copy = pieces.clone();
+                let mut refs: Vec<&mut Submesh> = copy.iter_mut().collect();
+                let outcome = simplify_object(&mut refs, &across_seams, total / ratio, 1.0);
+                assert!(
+                    outcome.failures.is_empty(),
+                    "{label}: {:?}",
+                    outcome.failures
+                );
+                for part in &copy {
+                    assert!(
+                        part.indices
+                            .iter()
+                            .all(|&index| (index as usize) < part.vertices.len()),
+                        "{label}: an index past its piece"
+                    );
+                    assert_eq!(part.skin.offsets.len(), part.vertices.len() + 1, "{label}");
+                }
+                assert_eq!(
+                    opened_edges(&copy),
+                    0,
+                    "{label}: edges inside the surface opened up"
+                );
+            }
+        }
+    }
+
+    /// The edges of `parts`, welded by exact position, used by one triangle
+    /// only and not on the rim of the `-1..1` square they tile.
+    fn opened_edges(parts: &[Submesh]) -> usize {
+        let mut uses: HashMap<[[u32; 3]; 2], u32> = HashMap::new();
+        for part in parts {
+            for triangle in part.indices.as_chunks::<3>().0.iter() {
+                for k in 0..3 {
+                    let a = position_key(part.vertices[triangle[k] as usize].position);
+                    let b = position_key(part.vertices[triangle[(k + 1) % 3] as usize].position);
+                    *uses.entry(if a < b { [a, b] } else { [b, a] }).or_default() += 1;
+                }
+            }
+        }
+        let on_rim = |key: [u32; 3]| {
+            let (x, y) = (f32::from_bits(key[0]), f32::from_bits(key[1]));
+            x.abs() > 0.999 || y.abs() > 0.999
+        };
+        uses.iter()
+            .filter(|(edge, count)| **count == 1 && !(on_rim(edge[0]) && on_rim(edge[1])))
+            .count()
+    }
+
+    /// One piece failing costs only that piece: the others are simplified, and
+    /// the failure is reported rather than returned at the first error.
+    #[test]
+    fn one_failing_piece_leaves_the_rest_simplified() {
+        let mut good = grid(0, -1.0, 0.0, 16, flat);
+        let mut bad = grid(1, 0.0, 1.0, 16, flat);
+        // A non-finite position the wrappers refuse, and a UV-set count of its
+        // own, so the two are simplified one by one.
+        bad.vertices[5].position.x = f32::NAN;
+        bad.uv_channels = vec![bad.vertices.iter().map(|v| v.uv).collect()];
+        let bad_before = bad.indices.clone();
+        let good_before = good.triangle_count();
+        // The failing piece first, which is the order that used to stop early.
+        let mut pieces = vec![&mut bad, &mut good];
+        let outcome = simplify_object(
+            &mut pieces,
+            &settings(SimplifyAlgorithm::Standard),
+            good_before / 2,
+            1.0,
+        );
+
+        assert_eq!(outcome.failures.len(), 1, "{:?}", outcome.failures);
+        assert_eq!(
+            bad.indices, bad_before,
+            "the failing piece is left as it was"
+        );
+        assert!(
+            good.triangle_count() < good_before,
+            "the other piece is still simplified: {} of {good_before}",
+            good.triangle_count()
+        );
+    }
+
+    /// A UV mirror seam carried as the import carries it: every corner its own
+    /// vertex, the two sides of the seam alike in position, normal and UV and
+    /// opposite in handedness. Indexed, the seam has to stay two vertices when
+    /// the source authored those tangents — merged, one side exports the other's
+    /// basis — and the rest of the strip shares its vertices.
+    #[test]
+    fn the_index_pass_keeps_an_authored_mirror_seam_apart() {
+        let strip = |handedness: [f32; 2]| {
+            // Two quads sharing the column x = 1, the right one's U mirrored.
+            let at = |x: f32, y: f32, u: f32, w: f32| Vertex {
+                position: Vec3::new(x, y, 0.0),
+                normal: Vec3::Z,
+                uv: Vec2::new(u, y),
+                tangent: glam::Vec4::new(1.0, 0.0, 0.0, w),
+                ..Vertex::default()
+            };
+            let [left, right] = handedness;
+            let mut vertices = Vec::new();
+            let mut indices = Vec::new();
+            for quad in [
+                [
+                    at(0.0, 0.0, 0.0, left),
+                    at(1.0, 0.0, 1.0, left),
+                    at(1.0, 1.0, 1.0, left),
+                    at(0.0, 1.0, 0.0, left),
+                ],
+                [
+                    at(1.0, 0.0, 1.0, right),
+                    at(2.0, 0.0, 0.0, right),
+                    at(2.0, 1.0, 0.0, right),
+                    at(1.0, 1.0, 1.0, right),
+                ],
+            ] {
+                // Corner-split, as import leaves it.
+                for corner in [0, 1, 2, 0, 2, 3] {
+                    indices.push(vertices.len() as u32);
+                    vertices.push(quad[corner]);
+                }
+            }
+            piece(0, vertices, indices)
+        };
+
+        let mut mirrored = strip([1.0, -1.0]);
+        index_losslessly(&mut mirrored, true).expect("indexes");
+        assert_eq!(
+            mirrored.vertices.len(),
+            8,
+            "each quad's four corners, the seam's two once per side"
+        );
+        for triangle in mirrored.indices.as_chunks::<3>().0 {
+            let w = mirrored.vertices[triangle[0] as usize].tangent.w;
+            assert!(
+                triangle
+                    .iter()
+                    .all(|&i| mirrored.vertices[i as usize].tangent.w == w),
+                "no triangle borrows the other side's basis"
+            );
+        }
+
+        // The control: an unmirrored strip shares the seam.
+        let mut plain = strip([1.0, 1.0]);
+        index_losslessly(&mut plain, true).expect("indexes");
+        assert_eq!(plain.vertices.len(), 6);
+
+        // A tangent the import synthesized is compared by its handedness alone -
+        // see `index_losslessly` for why - so the mirror seam still splits...
+        let mut synthesized = strip([1.0, -1.0]);
+        index_losslessly(&mut synthesized, false).expect("indexes");
+        assert_eq!(synthesized.vertices.len(), 8);
+
+        // ...while a faceted direction with one handedness merges.
+        let mut faceted = strip([1.0, 1.0]);
+        for (corner, vertex) in faceted.vertices.iter_mut().enumerate() {
+            vertex.tangent.y = corner as f32 * 1e-3;
+        }
+        index_losslessly(&mut faceted, false).expect("indexes");
+        assert_eq!(faceted.vertices.len(), 6);
+    }
+
+    /// Two corners alike in everything but the second colour set, or the
+    /// crease, are two vertices: the export writes both layers back.
+    #[test]
+    fn the_index_pass_compares_every_colour_set_and_the_crease() {
+        let corner_split = || {
+            let mut quad = grid(0, 0.0, 1.0, 1, flat);
+            // Two triangles over six corners, the diagonal's two pairs alike.
+            let corners: Vec<u32> = quad.indices.clone();
+            quad.vertices = corners.iter().map(|&i| quad.vertices[i as usize]).collect();
+            quad.indices = (0..6).collect();
+            quad.color_channels = vec![vec![glam::Vec4::ONE; 6]];
+            quad.vertex_crease = vec![0.0; 6];
+            quad
+        };
+        let mut alike = corner_split();
+        index_losslessly(&mut alike, false).expect("indexes");
+        assert_eq!(alike.vertices.len(), 4, "the diagonal's corners merge");
+
+        // Corner 3 is corner 0's twin across the diagonal.
+        let mut colored = corner_split();
+        colored.color_channels[0][3] = glam::Vec4::new(1.0, 0.0, 0.0, 1.0);
+        index_losslessly(&mut colored, false).expect("indexes");
+        assert_eq!(colored.vertices.len(), 5, "a second-set colour seam holds");
+
+        let mut creased = corner_split();
+        creased.vertex_crease[3] = 0.5;
+        index_losslessly(&mut creased, false).expect("indexes");
+        assert_eq!(creased.vertices.len(), 5, "a crease difference holds");
+
+        // The Weld operation's "compare colors" covers the second set too.
+        let mut welded = corner_split();
+        welded.color_channels[0][3] = glam::Vec4::new(1.0, 0.0, 0.0, 1.0);
+        weld(&mut welded, &WeldParams::default()).expect("welds");
+        assert_eq!(welded.vertices.len(), 5);
+    }
+
+    /// More UV sets than meshoptimizer's 256-byte vertex key holds: the weld
+    /// folds its key rather than tripping the assert that aborts the process,
+    /// and still merges exactly what the full key says is equal.
+    #[test]
+    fn a_weld_over_thirty_uv_sets_still_welds_exactly() {
+        let mut quad = grid(0, 0.0, 1.0, 1, flat);
+        let corners: Vec<u32> = quad.indices.clone();
+        quad.vertices = corners.iter().map(|&i| quad.vertices[i as usize]).collect();
+        quad.indices = (0..6).collect();
+        quad.uv_channels = (0..30)
+            .map(|set| {
+                quad.vertices
+                    .iter()
+                    .map(|v| v.uv + Vec2::splat(set as f32))
+                    .collect()
+            })
+            .collect();
+        // The last set alone tells corner 3 from its twin, corner 0.
+        quad.uv_channels[29][3] += Vec2::splat(0.5);
+
+        weld(&mut quad, &WeldParams::default()).expect("a wide key welds");
+        assert_eq!(quad.vertices.len(), 5, "only the true duplicate merged");
+        index_losslessly(&mut quad, false).expect("and indexes");
+        assert_eq!(quad.vertices.len(), 5);
     }
 
     /// The error limit is a limit on how far the surface moves. A flat grid

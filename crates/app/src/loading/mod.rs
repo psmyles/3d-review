@@ -39,7 +39,6 @@ use std::time::Duration;
 use review_import::ImportError;
 use review_model::ModelData;
 use review_render::Renderer;
-use review_ui::Selection;
 
 use crate::dialog::Dialog;
 use crate::{APP_NAME, App, keys};
@@ -141,8 +140,10 @@ impl App {
     }
 
     /// Open `paths` the way `intent` says. A new session starts at once,
-    /// superseding anything in flight; anything else waits for the request being
-    /// parsed, so it is decided against what that one puts on screen.
+    /// superseding any parse in flight (the model on screen goes on being
+    /// measured until the new one replaces it); anything else waits for the
+    /// request being parsed, so it is decided against what that one puts on
+    /// screen.
     pub(crate) fn open_files(&mut self, mut paths: Vec<PathBuf>, intent: OpenIntent) {
         // The same file twice in one request would only be attached to itself.
         let mut seen: Vec<PathBuf> = Vec::with_capacity(paths.len());
@@ -206,14 +207,36 @@ impl App {
         self.model_load_generation.load(Ordering::Relaxed)
     }
 
-    /// Supersede every load in flight, and return the new generation.
+    /// Supersede every parse in flight, and return the new generation.
     ///
     /// One store does both jobs: a result carrying an older generation is dropped
     /// when it lands, and a worker reading the same counter through its
     /// [`review_import::CancelToken`] sees that it has been superseded and stops.
+    ///
+    /// The model on screen is not touched: its measuring runs on a counter of its
+    /// own ([`Self::supersede_measuring`]), because a request can still fail, and
+    /// the model it would have replaced has to stay measured if it does.
     fn supersede_loads(&mut self) -> u64 {
         let next = self.model_load_generation().saturating_add(1);
         self.model_load_generation.store(next, Ordering::Relaxed);
+        next
+    }
+
+    /// The generation of the model on screen, as its measurements are matched.
+    pub(crate) fn measure_generation(&self) -> u64 {
+        self.measure_generation.load(Ordering::Relaxed)
+    }
+
+    /// Stop measuring the model on screen, because it is being replaced, and
+    /// return the generation the next one is measured under.
+    ///
+    /// Only ever called with the replacement in hand: superseding when the
+    /// request is *made* cancelled the measuring of a model that then stayed on
+    /// screen whenever the request failed, and left it without a pick index,
+    /// clip envelopes, a source capture or an audit for the rest of the session.
+    fn supersede_measuring(&mut self) -> u64 {
+        let next = self.measure_generation().saturating_add(1);
+        self.measure_generation.store(next, Ordering::Relaxed);
         next
     }
 
@@ -316,30 +339,53 @@ impl App {
         };
         self.ui.materials_snapshot = Vec::new();
         self.ui.material_revision = material_revision;
-        self.reset_ui_for_new_model(&empty);
-        self.scene_model = empty;
-        self.scene_files.clear();
-        self.scene_extras = None;
-        self.scene_revision = self.next_model_revision();
-        self.reset_opt_for_new_model();
-        self.reset_audit_for_new_model();
+        self.replace_scene_model(empty, Vec::new());
         self.set_window_title(None);
 
         log::info!("reset to start state");
         self.redraw.requested = true;
     }
 
-    /// Re-point every piece of UI state that belongs to the *outgoing* model at
-    /// `model`, the one about to be shown — an empty [`ModelData`] for the Ctrl+N
-    /// start state. Both entry points go through here, since the steps are only
-    /// correct as a set: leaving one out strands the UI on indices, watches or
-    /// history that describe a model no longer on screen.
+    /// Make `model`, opened from `files`, the model on screen — an empty
+    /// [`ModelData`] and no files for the Ctrl+N start state — and re-point
+    /// everything that described the outgoing one at it. Both entry points go
+    /// through here, since the steps are only correct as a set: leaving one out
+    /// strands the UI on indices, watches or history that describe a model no
+    /// longer on screen. Returns the generation the new model is measured under.
     ///
-    /// Call it with the *new* materials already in [`UiState::materials_snapshot`]
-    /// and before `scene_model` is replaced: the undo rebaseline at the end
-    /// snapshots what everything above it has just set.
+    /// Call it with the *new* materials already in the renderer and in
+    /// [`UiState::materials_snapshot`]: the undo rebaseline at the end snapshots
+    /// what everything before it has set.
     ///
     /// [`UiState::materials_snapshot`]: review_ui::UiState::materials_snapshot
+    fn replace_scene_model(&mut self, model: Arc<ModelData>, files: Vec<PathBuf>) -> u64 {
+        self.reset_ui_for_new_model(&model);
+        // The outgoing model's measuring describes a model about to leave the
+        // screen; its results would be dropped on landing anyway.
+        let generation = self.supersede_measuring();
+        self.scene_model = model;
+        self.scene_files = files;
+        // The capture describing this model arrives on its own event a moment
+        // later; the previous model's must not stand in for it.
+        self.scene_extras = None;
+        self.scene_revision = self.next_model_revision();
+        // Any Opt result (and every per-object override) describes the previous
+        // model, so drop both before the new one is drawn.
+        self.reset_opt_for_new_model();
+        self.reset_audit_for_new_model();
+        // The undo history references the old model's indices / materials / pool;
+        // drop it and rebaseline to this state. Last, because the resets above
+        // bump revisions the snapshot compares (clearing the Opt overrides is a
+        // stack edit): a baseline taken before them would read their bumps as an
+        // edit on the next frame, and the first Ctrl+Z would put the outgoing
+        // model's per-object overrides onto this one.
+        self.reset_undo_history();
+        generation
+    }
+
+    /// Re-point every piece of UI state that belongs to the *outgoing* model at
+    /// `model`, the one about to be shown. Part of [`Self::replace_scene_model`],
+    /// which is the only caller.
     fn reset_ui_for_new_model(&mut self, model: &ModelData) {
         // Indexes the outgoing model's triangles; the worker rebuilds it for the
         // incoming one a moment after it is drawn.
@@ -351,8 +397,13 @@ impl App {
         self.announced_tool = review_ui::ViewportTool::View;
         self.ui.hover = None;
         // The Outliner selection, solo and hidden sets are node / material indices
-        // into the old model; the skeleton state likewise.
-        self.ui.selection = Selection::None;
+        // into the old model; the skeleton state likewise. Through the one helper
+        // `Esc` uses, so a texture inspected in the Textures tab is let go with
+        // the rest — the pool it was in is cleared below. The audit profile is
+        // the exception: it describes no model, so a load leaves it open.
+        let profile_open = self.ui.aud.profile_open;
+        self.ui.clear_selection();
+        self.ui.aud.profile_open = profile_open;
         self.ui.solo = false;
         self.ui.hidden_meshes.clear();
         self.ui.reset_skeletal_state(model);
@@ -379,9 +430,6 @@ impl App {
         // The previous model's texture watches / decode cache no longer apply
         // (the fresh materials carry no slots).
         self.reset_texture_state();
-        // The undo history references the old model's indices / materials / pool;
-        // drop it and rebaseline to this state.
-        self.reset_undo_history();
     }
 
     pub(crate) fn should_open_on_double_click(&self) -> bool {
@@ -443,6 +491,34 @@ fn format_load_time(elapsed: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A request supersedes the parses in flight the moment it is made, but
+    /// not the measuring of the model on screen: if every file of it fails, that
+    /// model stays, and it must go on being measured — its pick index, clip
+    /// envelopes, capture and audit all arrive through that worker.
+    #[test]
+    fn a_failed_open_leaves_the_model_on_screen_measured() {
+        let mut app = App::default();
+        let loads = app.model_load_generation();
+        let measuring = app.measure_generation();
+        app.open_files(
+            vec![PathBuf::from("no-such-model-anywhere.fbx")],
+            OpenIntent::NewSession,
+        );
+        assert!(
+            app.model_load_generation() > loads,
+            "the open superseded parses"
+        );
+        assert_eq!(
+            app.measure_generation(),
+            measuring,
+            "the model on screen is still measured under its own generation"
+        );
+        assert!(
+            app.loads.parsing.is_none(),
+            "the failed request is finished"
+        );
+    }
 
     #[test]
     fn load_time_reads_as_seconds() {

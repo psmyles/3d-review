@@ -28,8 +28,14 @@ impl SceneGpu {
         material_states: &[MaterialState],
         material_revision: u64,
     ) -> GpuResult<()> {
+        // Nothing is converging until this frame says so (`idle_ao_history`) — which
+        // only the left half does: the right half draws UV into the second set, and a
+        // set the Opt split ran GTAO into would otherwise go on reporting that run.
+        self.idle_ao_history();
         self.activate(SlotId::Source);
-        self.release_ghost_wireframes();
+        // What only the Opt comparison draws with goes (invariant 3) — all of it but
+        // the second target set, which this split draws its UV half into.
+        self.release_opt_derived();
         // The composites cover only the chrome-free rect; black under the chrome.
         frame.set_clear([0.0; 3]);
 

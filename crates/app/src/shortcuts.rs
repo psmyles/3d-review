@@ -34,21 +34,47 @@ pub(crate) fn primary_held(modifiers: ModifiersState) -> bool {
     }
 }
 
+/// Whether the OS's key repeat may fire the shortcut on `key` (lower-cased)
+/// again while it is held; `primary` says whether it is chorded with the
+/// primary modifier.
+///
+/// Only the commands that move one step per press repeat — undo, redo, and the
+/// selected clip's frame steps — which a held key walks through as it does in
+/// every editor. Everything else is a toggle or a one-shot: held, a toggle
+/// would flicker at the repeat rate (and end up wherever the release happened
+/// to fall), `F` would alternate its framing, `R` would restart the home
+/// transition every repeat so it never got there, and `Ctrl+O` would ask for a
+/// second dialog with the first still up. The flycam's movement keys are held
+/// by design and read the key state, not its repeats.
+fn repeats(key: &str, primary: bool) -> bool {
+    if primary {
+        matches!(key, "z" | "y")
+    } else {
+        matches!(key, "," | ".")
+    }
+}
+
 impl App {
     /// Dispatch a viewport keyboard shortcut. Keys modified by the primary
     /// modifier ([`primary_held`]) are file commands; the bare keys are view /
     /// camera shortcuts and only fire when no modifier is held (so every
     /// combination stays free). Everything here acts on key-down except the six
-    /// flycam movement keys, which are *held* rather than pressed.
+    /// flycam movement keys, which are *held* rather than pressed, and only the
+    /// bindings [`repeats`] names act on the OS's key repeat as well.
     /// Keyboard events egui has already consumed are filtered out by the caller.
     pub(crate) fn handle_keyboard_shortcut(&mut self, event: &KeyEvent) {
         // Escape clears the whole selection — the primary, both multi-selection
         // sets and the range anchor — whether it was made in the Outliner or by
         // clicking the viewport — and, in UV, the texture behind the layout.
         // It's a Named key, so handle it before the Character extraction below.
+        // None of the three Named keys repeats: Space would flicker playback on
+        // and off, and the other two have done their whole job on the press.
         if event.state == ElementState::Pressed
             && matches!(&event.logical_key, Key::Named(NamedKey::Escape))
         {
+            if event.repeat {
+                return;
+            }
             if self.ui.has_selection() {
                 self.ui.clear_selection();
                 self.redraw.requested = true;
@@ -68,7 +94,8 @@ impl App {
         if event.state == ElementState::Pressed
             && matches!(&event.logical_key, Key::Named(NamedKey::Space))
         {
-            if self.modifiers.is_empty()
+            if !event.repeat
+                && self.modifiers.is_empty()
                 && self.ui.mode.shows_pose()
                 && self.ui.animation.selected_clip.is_some()
             {
@@ -84,42 +111,37 @@ impl App {
         if event.state == ElementState::Pressed
             && matches!(&event.logical_key, Key::Named(NamedKey::F1))
         {
-            self.open_context_help();
+            if !event.repeat {
+                self.open_context_help();
+            }
             return;
         }
 
         let Key::Character(character) = &event.logical_key else {
             return;
         };
+        // Matched case-insensitively: winit's `ModifiersState` carries no Caps
+        // Lock bit, so no guard below can see it — with Caps Lock on the key
+        // arrives as "G" and an exact match would leave every shortcut dead.
+        let key = character.to_ascii_lowercase();
 
         if primary_held(self.modifiers) {
             // File commands fire on key-down only.
-            if event.state != ElementState::Pressed {
+            if event.state != ElementState::Pressed || (event.repeat && !repeats(&key, true)) {
                 return;
             }
-            if character.eq_ignore_ascii_case("n") {
-                self.reset_to_start_state();
-            } else if character.eq_ignore_ascii_case("o") {
-                self.open_model_from_dialog();
-            } else if character.eq_ignore_ascii_case("z") {
+            match key.as_str() {
+                "n" => self.reset_to_start_state(),
+                "o" => self.open_model_from_dialog(),
                 // Primary+Z undoes; Primary+Shift+Z redoes (the common alt-redo
                 // chord, and the only redo chord on a Mac).
-                if self.modifiers.shift_key() {
-                    self.redo();
-                } else {
-                    self.undo();
-                }
-            } else if character.eq_ignore_ascii_case("y") {
-                self.redo();
+                "z" if self.modifiers.shift_key() => self.redo(),
+                "z" => self.undo(),
+                "y" => self.redo(),
+                _ => {}
             }
             return;
         }
-
-        // Matched case-insensitively, exactly like the chords above: winit's
-        // `ModifiersState` carries no Caps Lock bit, so the guard above can't see
-        // it — with Caps Lock on the key arrives as "G" and an exact match would
-        // leave every one of these shortcuts dead.
-        let key = character.to_ascii_lowercase();
 
         // The flycam's six movement keys (`flycam.rs`) are *held*, not pressed:
         // they only set a direction bit here, and `step_flycam` moves the camera
@@ -141,7 +163,7 @@ impl App {
             return;
         }
 
-        if !self.modifiers.is_empty() {
+        if !self.modifiers.is_empty() || (event.repeat && !repeats(&key, false)) {
             return;
         }
 
@@ -298,5 +320,33 @@ impl App {
         let page = panel.unwrap_or_else(|| review_ui::workspace_help_page(self.ui.mode));
         self.ui.help.open_page(page);
         self.redraw.requested = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::repeats;
+
+    /// Holding a step command walks through its steps, as in every editor.
+    #[test]
+    fn the_step_commands_repeat_while_held() {
+        assert!(repeats("z", true), "undo");
+        assert!(repeats("y", true), "redo");
+        assert!(repeats(",", false), "a frame back");
+        assert!(repeats(".", false), "a frame on");
+    }
+
+    /// A held toggle must not flicker at the repeat rate, and a held one-shot
+    /// must not fire again — `Ctrl+O` would ask for a second dialog.
+    #[test]
+    fn toggles_and_one_shots_fire_once_per_press() {
+        for key in ["`", "1", "2", "3", "g", "i", "x", "q", "f", "r"] {
+            assert!(!repeats(key, false), "{key} must not repeat");
+        }
+        for chord in ["n", "o"] {
+            assert!(!repeats(chord, true), "primary+{chord} must not repeat");
+        }
+        // The frame steps are bare keys; chorded, they are not bound at all.
+        assert!(!repeats(".", true));
     }
 }

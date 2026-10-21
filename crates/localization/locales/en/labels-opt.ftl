@@ -119,6 +119,7 @@ labels-opt-warning-shrinkwrap-empty-voxels =
 labels-opt-warning-shrinkwrap-voxel-failed =
     Shrinkwrap: '{ $object }' could not be voxel remeshed ({ $detail }), so it was left as it
     is.
+labels-opt-warning-shrinkwrap-failed = Shrinkwrap: '{ $object }' was left as it is - { $detail }
 labels-opt-warning-shrinkwrap-resolution-lowered =
     Shrinkwrap: '{ $object }' would need more memory than a wrap is worth at resolution
     { $requested }, so it ran at { $resolution } instead.
@@ -183,8 +184,8 @@ labels-opt-note-unplaced-clusters = { $count ->
        *[other] { $count } skin clusters of '{ $mesh }' bind to nodes that could not be written.
     }
 labels-opt-note-nested-layered-textures = { $count ->
-        [one] One layered texture nested inside another layered texture was not written.
-       *[other] { $count } layered textures nested inside another layered texture were not written.
+        [one] One layered texture whose layers could not be placed was not written.
+       *[other] { $count } layered textures whose layers could not be placed were not written.
     }
 labels-opt-note-parent-chain-looped = A node's parent chain looped; that branch was exported flat.
 labels-opt-note-non-invertible-transform =
@@ -212,4 +213,15 @@ labels-opt-overrides-dropped = { $count ->
 labels-opt-overrides-by-position = { $count ->
         [one] One per-object setting came from an older preset that did not store object names, so it was matched by its place in the list - please check it landed on the object you meant.
        *[other] { $count } per-object settings came from an older preset that did not store object names, so they were matched by their place in the list - please check they landed on the objects you meant.
+    }
+
+# What loading a preset had to remove because it broke the rules the operation
+# stack keeps - only a preset edited by hand can.
+labels-opt-preset-lods-removed = { $count ->
+        [one] The preset had a second Generate LODs operation. A stack runs only one, so it was left out.
+       *[other] The preset had { $count } extra Generate LODs operations. A stack runs only one, so they were left out.
+    }
+labels-opt-preset-overrides-repaired = { $count ->
+        [one] One per-object setting in the preset did not match the operation it named, or repeated another one, so it was left out.
+       *[other] { $count } per-object settings in the preset did not match the operations they named, or repeated others, so they were left out.
     }

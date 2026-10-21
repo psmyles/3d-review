@@ -90,8 +90,10 @@ fn assert_curves_equal(
                         (ka.time - kb.time).abs() < 1e-6,
                         "{context}[{component}] key {index} time"
                     );
+                    // Relative: FBX stores a key's value as a 32-bit float,
+                    // whose step at a rotation of 265 degrees is 3e-5.
                     assert!(
-                        (ka.value - kb.value).abs() < 1e-5,
+                        (ka.value - kb.value).abs() < 1e-5 * (1.0 + ka.value.abs()),
                         "{context}[{component}] key {index} value {} vs {}",
                         ka.value,
                         kb.value
@@ -125,11 +127,13 @@ fn assert_curves_equal(
     }
 }
 
-/// The dog's clips come back as the same stacks, layers and authored curves,
-/// and bake to the same tracks.
+/// The wall's break comes back as the same stack, layer and authored curves —
+/// ninety-four animated pieces — and bakes to the same tracks. (This ran on
+/// the dog's locomotion clips, `AN_ZombiedogLocomotion.fbx`, until that fixture
+/// was removed in a9c6db3.)
 #[test]
 fn animation_curves_and_baked_clips_survive() {
-    let Some((model, extras)) = fixture("AN_ZombiedogLocomotion.fbx") else {
+    let Some((model, extras)) = fixture("SM_Wall_Break_4x3m.fbx") else {
         return;
     };
     assert!(!model.animations.is_empty());
@@ -216,8 +220,11 @@ fn animation_curves_and_baked_clips_survive() {
     }
 }
 
-/// Display layers keep their members and colors.
+/// Display layers keep their members and colors. No fixture left in the
+/// repository carries one; the writer probe's layer is checked by
+/// `synthetic_animation_selection_and_layer_survive` below.
 #[test]
+#[ignore = "needs a fixture with display layers; AN_ZombiedogLocomotion.fbx was removed in a9c6db3"]
 fn display_layers_survive() {
     let Some((model, extras)) = fixture("AN_ZombiedogLocomotion.fbx") else {
         return;

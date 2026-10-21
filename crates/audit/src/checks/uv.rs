@@ -8,7 +8,10 @@
 //! triangles sharing an edge never both claim a texel: any texel claimed twice
 //! is a real overlap.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use glam::Vec2;
+use review_model::extras::UvSetExtras;
 use review_model::uv_islands::{UvIslands, uv_islands};
 
 use super::{Outcome, count_param};
@@ -152,30 +155,109 @@ pub(super) fn missing(ctx: &Context<'_>) -> Outcome {
             .collect();
         return Outcome::judged(offenders, Threshold::None);
     };
-    let present = |mesh: &review_model::extras::MeshExtras| {
-        mesh.uv_sets.iter().filter(|set| set.has_values).count()
-    };
-    // The reference layout: the mesh with the most sets.
-    let reference = extras.meshes.iter().max_by_key(|mesh| present(mesh));
-    let reference_names: Vec<&str> = reference.map_or_else(Vec::new, |mesh| {
-        mesh.uv_sets.iter().map(|set| set.name.as_str()).collect()
-    });
-    let offenders = extras
+    let layouts: Vec<&[UvSetExtras]> = extras
         .meshes
         .iter()
-        .filter(|mesh| {
-            let count = present(mesh);
-            let names: Vec<&str> = mesh.uv_sets.iter().map(|set| set.name.as_str()).collect();
-            count == 0 || count < reference_names.len() || !reference_names.starts_with(&names)
-        })
-        .map(|mesh| {
+        .map(|mesh| mesh.uv_sets.as_slice())
+        .collect();
+    let offenders = parts_missing_uvs(&layouts)
+        .into_iter()
+        .map(|part| {
+            let mesh = &extras.meshes[part];
             Offender::node(
                 mesh.node as usize,
-                Some(Measured::Count(present(mesh) as u64)),
+                Some(Measured::Count(filled_channels(&mesh.uv_sets).len() as u64)),
             )
         })
         .collect();
     Outcome::judged(offenders, Threshold::None)
+}
+
+/// The parts (indices into `layouts`, each part's UV sets in the file's order)
+/// that lack UVs another part has.
+///
+/// An engine reads UV sets by channel, never by name - `map1` in one part and
+/// `UVMap` in the next are both its channel 0 - and a set the file declares but
+/// leaves empty is no set at all. So a part is reported when it fills no
+/// channel, when it leaves empty a channel some other part fills, or when it
+/// holds its sets in a different order from another part's.
+fn parts_missing_uvs(layouts: &[&[UvSetExtras]]) -> Vec<usize> {
+    let used: BTreeSet<usize> = layouts
+        .iter()
+        .flat_map(|sets| filled_channels(sets))
+        .collect();
+    let reordered = reordered_parts(layouts);
+    (0..layouts.len())
+        .filter(|&part| {
+            let channels = filled_channels(layouts[part]);
+            channels.is_empty()
+                || used
+                    .iter()
+                    .any(|channel| channels.binary_search(channel).is_err())
+                || reordered.contains(&part)
+        })
+        .collect()
+}
+
+/// The channels a part fills with UVs, ascending.
+fn filled_channels(sets: &[UvSetExtras]) -> Vec<usize> {
+    sets.iter()
+        .enumerate()
+        .filter(|(_, set)| set.has_values)
+        .map(|(channel, _)| channel)
+        .collect()
+}
+
+/// The parts (indices into `layouts`) holding the same sets as another part in
+/// a different order.
+///
+/// A name is the one thing a channel cannot say: two parts that both fill
+/// channels 0 and 1, one with `map1` then `lightmap` and the other the other
+/// way round, pass every channel check while each textures from the other's
+/// lightmap layout. Only that counts - a part that merely lacks a channel is
+/// already reported, and a name another part spells differently is only a
+/// name - so a conflict needs both parts to fill both channels.
+fn reordered_parts(layouts: &[&[UvSetExtras]]) -> BTreeSet<usize> {
+    let fills =
+        |part: usize, channel: usize| layouts[part].get(channel).is_some_and(|set| set.has_values);
+    // Name -> channel -> the parts filling that channel under that name. A
+    // name a part gives two of its sets says nothing about order.
+    let mut by_name: BTreeMap<&str, BTreeMap<usize, Vec<usize>>> = BTreeMap::new();
+    for (part, sets) in layouts.iter().enumerate() {
+        for (channel, set) in sets.iter().enumerate() {
+            let unique = sets.iter().filter(|other| other.name == set.name).count() == 1;
+            if set.has_values && !set.name.is_empty() && unique {
+                by_name
+                    .entry(set.name.as_str())
+                    .or_default()
+                    .entry(channel)
+                    .or_default()
+                    .push(part);
+            }
+        }
+    }
+    let mut flagged = BTreeSet::new();
+    for channels in by_name.values() {
+        for (&first, at_first) in channels {
+            for (&second, at_second) in channels.range(first + 1..) {
+                let one: Vec<usize> = at_first
+                    .iter()
+                    .copied()
+                    .filter(|&part| fills(part, second))
+                    .collect();
+                let other: Vec<usize> = at_second
+                    .iter()
+                    .copied()
+                    .filter(|&part| fills(part, first))
+                    .collect();
+                if !one.is_empty() && !other.is_empty() {
+                    flagged.extend(one);
+                    flagged.extend(other);
+                }
+            }
+        }
+    }
+    flagged
 }
 
 pub(super) fn out_of_range(ctx: &Context<'_>, channel: usize) -> Outcome {
@@ -412,7 +494,7 @@ pub(super) fn lightmap_padding(ctx: &Context<'_>, config: &RuleConfig) -> Outcom
         .filter(|(_, set)| !set.is_empty())
         .map(|(node, set)| Offender::elements(Some(node), ElementSet::Triangles(set)))
         .collect();
-    Outcome::judged(offenders, Threshold::Min(Measured::Count(padding as u64)))
+    Outcome::judged(offenders, Threshold::Min(Measured::Pixels(padding as f64)))
 }
 
 #[cfg(test)]
@@ -452,6 +534,68 @@ mod tests {
             Vec2::new(0.4, 0.8),
         ];
         assert_eq!(covered(uv, 16), covered([uv[0], uv[2], uv[1]], 16));
+    }
+
+    /// One part's UV sets, each `(name, has values)`.
+    fn sets(layout: &[(&str, bool)]) -> Vec<UvSetExtras> {
+        layout
+            .iter()
+            .enumerate()
+            .map(|(index, &(name, has_values))| UvSetExtras {
+                name: name.to_owned(),
+                index: index as u32,
+                has_values,
+            })
+            .collect()
+    }
+
+    fn missing(parts: &[&[(&str, bool)]]) -> Vec<usize> {
+        let owned: Vec<Vec<UvSetExtras>> = parts.iter().map(|layout| sets(layout)).collect();
+        let layouts: Vec<&[UvSetExtras]> = owned.iter().map(Vec::as_slice).collect();
+        parts_missing_uvs(&layouts)
+    }
+
+    #[test]
+    fn a_declared_but_empty_set_is_no_set_and_asks_nothing_of_the_others() {
+        // Every part declares a second set and leaves it empty, the one with
+        // the most sets included: nothing is missing.
+        let declared = [("map1", true), ("map2", false)];
+        assert!(missing(&[&declared, &declared, &[("map1", true)]]).is_empty());
+        // A part that leaves a channel empty that another fills is reported.
+        assert_eq!(
+            missing(&[&[("map1", true), ("map2", true)], &declared]),
+            [1]
+        );
+        assert_eq!(missing(&[&[("map1", true)], &[("map1", false)]]), [1]);
+    }
+
+    #[test]
+    fn uv_sets_are_matched_by_channel_not_by_name() {
+        // Maya's map1 and Blender's UVMap are both channel 0 to an engine.
+        assert!(missing(&[&[("map1", true)], &[("UVMap", true)]]).is_empty());
+        assert!(
+            missing(&[
+                &[("map1", true), ("lightmap", true)],
+                &[("UVMap", true), ("UVMap.001", true)],
+            ])
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_same_sets_in_another_order_are_reported_on_both_parts() {
+        let swapped = missing(&[
+            &[("map1", true), ("lightmap", true)],
+            &[("lightmap", true), ("map1", true)],
+            &[("map1", true), ("lightmap", true)],
+        ]);
+        assert_eq!(swapped, [0, 1, 2]);
+        // A part lacking a channel is reported for that alone: the part that
+        // has both, in its own order, is not out of order with it.
+        assert_eq!(
+            missing(&[&[("map1", true), ("map2", true)], &[("map2", true)]]),
+            [1]
+        );
     }
 
     #[test]

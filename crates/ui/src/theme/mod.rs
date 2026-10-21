@@ -102,10 +102,11 @@ pub fn with_opacity(color: Color32, opacity: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
 }
 
-/// The "remove this" mark, on the Opt stack's row buttons and the LOD list's.
+/// The "remove this" mark, on the Opt stack's row buttons, the LOD list's and the
+/// Inspector's texture rows.
 ///
 /// A capital X, not a multiplication sign: it is a mark either way, so it reads
 /// the same in every language and needs no catalog entry, but the bundled Inter
 /// has no glyph for U+2715 and it came out as a tofu box. Written once here so
-/// the two buttons cannot end up with different glyphs.
+/// the buttons cannot end up with different glyphs.
 pub const REMOVE_GLYPH: &str = "X";

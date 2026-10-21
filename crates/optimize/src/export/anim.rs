@@ -195,13 +195,12 @@ pub(crate) fn build_animation(
                     } else {
                         TARGET_NODE_ATTRIBUTE
                     };
-                    if let Some(&base) = placed.get(&(*node as usize)) {
-                        targets.push((kind, base, 0));
-                    }
                     // A later level's copy of the node animates the same way.
-                    if let Some(copies) = scene.level_copies.get(&(*node as usize)) {
-                        targets.extend(copies.iter().map(|&copy| (kind, copy, 0)));
-                    }
+                    targets.extend(
+                        placed_and_copies(scene, placed, *node as usize)
+                            .into_iter()
+                            .map(|target| (kind, target, 0)),
+                    );
                 }
                 review_model::extras::ElementRef::Material(material) => {
                     if (*material as usize) < scene.materials.len() {
@@ -259,7 +258,11 @@ pub(crate) fn build_animation(
         }
         let data = &mut scene.anim_layers[exported as usize];
         data.name = c_string_or_empty(&layer.name);
-        data.weight = layer.weight;
+        // The capture holds ufbx's reading, the file's `Weight` ÷ 100; the
+        // writer's field *is* the FBX `Weight`, a percent (template default
+        // 100). Passed through unscaled, every full-strength layer went out at
+        // 1 %, which a reader ignores only for the base layer.
+        data.weight = layer.weight * 100.0;
         data.props = props;
         data.anim_props = anim_props;
     }
@@ -270,7 +273,24 @@ pub(crate) fn build_animation(
     }
 }
 
-/// Display layers over the placed nodes.
+/// Every scene node a source node went out as: the node itself, then each
+/// suffixed per-level copy a chain made of it. What a layer, a set or a curve
+/// that names the source node applies to — the copies are the same node at
+/// another level, and animation already treated them so.
+pub(crate) fn placed_and_copies(
+    scene: &SceneData,
+    placed: &HashMap<usize, i32>,
+    node: usize,
+) -> Vec<i32> {
+    placed
+        .get(&node)
+        .copied()
+        .into_iter()
+        .chain(scene.level_copies.get(&node).into_iter().flatten().copied())
+        .collect()
+}
+
+/// Display layers over the placed nodes, and over every level copy of them.
 pub(crate) fn build_display_layers(
     scene: &mut SceneData,
     placed: &HashMap<usize, i32>,
@@ -278,20 +298,22 @@ pub(crate) fn build_display_layers(
 ) {
     for layer in &extras.display_layers {
         let props = scene.push_props(&layer.props);
+        let nodes = layer
+            .nodes
+            .iter()
+            .flat_map(|node| placed_and_copies(scene, placed, *node as usize))
+            .collect();
         scene.display_layers.push(DisplayLayerData {
             name: c_string_or_empty(&layer.name),
             props,
-            nodes: layer
-                .nodes
-                .iter()
-                .filter_map(|node| placed.get(&(*node as usize)).copied())
-                .collect(),
+            nodes,
         });
     }
 }
 
-/// Selection sets: node membership always; vertex / edge / face members
-/// mapped onto the exported level-0 mesh where its polygons survived.
+/// Selection sets: node membership always — of the node and of every level copy
+/// of it, as display layers and animation have it; vertex / edge / face members
+/// mapped onto the mesh each of those nodes carries, where its polygons survived.
 pub(crate) fn build_selection_sets(
     scene: &mut SceneData,
     placed: &HashMap<usize, i32>,
@@ -307,71 +329,18 @@ pub(crate) fn build_selection_sets(
             let Some(node_index) = entry.node else {
                 continue;
             };
-            let Some(&node) = placed.get(&(node_index as usize)) else {
-                continue;
-            };
-            let has_components =
-                !entry.vertices.is_empty() || !entry.edges.is_empty() || !entry.faces.is_empty();
-            let mesh = scene
-                .meshes
-                .iter()
-                .find(|mesh| mesh.level == 0 && mesh.source_node == Some(node_index as usize));
-            let (vertices, edges, faces) = match (mesh, has_components) {
-                (Some(mesh), true) => {
-                    let wanted_vertices: std::collections::HashSet<u32> =
-                        entry.vertices.iter().copied().collect();
-                    let wanted_edges: std::collections::HashSet<u32> =
-                        entry.edges.iter().copied().collect();
-                    let wanted_faces: std::collections::HashSet<u32> =
-                        entry.faces.iter().copied().collect();
-                    let vertices: Vec<i32> = mesh
-                        .source_corners
-                        .iter()
-                        .enumerate()
-                        .filter(|&(_, &corner)| {
-                            corner != u32::MAX
-                                && source
-                                    .corner_to_logical
-                                    .get(corner as usize)
-                                    .is_some_and(|logical| wanted_vertices.contains(logical))
-                        })
-                        .map(|(local, _)| local as i32)
-                        .collect();
-                    let edges: Vec<i32> = mesh
-                        .edge_sources
-                        .iter()
-                        .enumerate()
-                        .filter(|&(_, &edge)| edge != u32::MAX && wanted_edges.contains(&edge))
-                        .map(|(index, _)| index as i32)
-                        .collect();
-                    let faces: Vec<i32> = mesh
-                        .face_sources
-                        .iter()
-                        .enumerate()
-                        .filter(|&(_, &face)| face != u32::MAX && wanted_faces.contains(&face))
-                        .map(|(index, _)| index as i32)
-                        .collect();
-                    if vertices.len() < entry.vertices.len()
-                        || edges.len() < entry.edges.len()
-                        || faces.len() < entry.faces.len()
-                    {
-                        components_dropped += 1;
-                    }
-                    (vertices, edges, faces)
-                }
-                (None, true) => {
-                    components_dropped += 1;
-                    (Vec::new(), Vec::new(), Vec::new())
-                }
-                _ => (Vec::new(), Vec::new(), Vec::new()),
-            };
-            nodes.push(SelectionNodeData {
-                node,
-                include_node: entry.include_node,
-                vertices,
-                edges,
-                faces,
-            });
+            for node in placed_and_copies(scene, placed, node_index as usize) {
+                let (vertices, edges, faces, lost) =
+                    selection_components(scene, source, entry, node);
+                components_dropped += usize::from(lost);
+                nodes.push(SelectionNodeData {
+                    node,
+                    include_node: entry.include_node,
+                    vertices,
+                    edges,
+                    faces,
+                });
+            }
         }
         scene.selection_sets.push(SelectionSetData {
             name: c_string_or_empty(&set.name),
@@ -384,4 +353,56 @@ pub(crate) fn build_selection_sets(
             count: components_dropped,
         });
     }
+}
+
+/// One selection entry's vertex / edge / face members on the mesh scene node
+/// `node` carries, and whether any of them could not be found there.
+fn selection_components(
+    scene: &SceneData,
+    source: &ModelData,
+    entry: &review_model::extras::SelectionNodeExtras,
+    node: i32,
+) -> (Vec<i32>, Vec<i32>, Vec<i32>, bool) {
+    let has_components =
+        !entry.vertices.is_empty() || !entry.edges.is_empty() || !entry.faces.is_empty();
+    if !has_components {
+        return (Vec::new(), Vec::new(), Vec::new(), false);
+    }
+    let Some(mesh) = scene.meshes.iter().find(|mesh| mesh.node == node) else {
+        return (Vec::new(), Vec::new(), Vec::new(), true);
+    };
+    let wanted_vertices: std::collections::HashSet<u32> = entry.vertices.iter().copied().collect();
+    let wanted_edges: std::collections::HashSet<u32> = entry.edges.iter().copied().collect();
+    let wanted_faces: std::collections::HashSet<u32> = entry.faces.iter().copied().collect();
+    let vertices: Vec<i32> = mesh
+        .source_corners
+        .iter()
+        .enumerate()
+        .filter(|&(_, &corner)| {
+            corner != u32::MAX
+                && source
+                    .corner_to_logical
+                    .get(corner as usize)
+                    .is_some_and(|logical| wanted_vertices.contains(logical))
+        })
+        .map(|(local, _)| local as i32)
+        .collect();
+    let edges: Vec<i32> = mesh
+        .edge_sources
+        .iter()
+        .enumerate()
+        .filter(|&(_, &edge)| edge != u32::MAX && wanted_edges.contains(&edge))
+        .map(|(index, _)| index as i32)
+        .collect();
+    let faces: Vec<i32> = mesh
+        .face_sources
+        .iter()
+        .enumerate()
+        .filter(|&(_, &face)| face != u32::MAX && wanted_faces.contains(&face))
+        .map(|(index, _)| index as i32)
+        .collect();
+    let lost = vertices.len() < entry.vertices.len()
+        || edges.len() < entry.edges.len()
+        || faces.len() < entry.faces.len();
+    (vertices, edges, faces, lost)
 }

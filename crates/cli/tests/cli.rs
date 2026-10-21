@@ -55,6 +55,9 @@ fn text(path: &Path) -> &str {
 fn a_command_line_it_cannot_follow_exits_2_and_runs_nothing() {
     let folder = scratch("usage");
     let report_path = folder.join("report.json");
+    // One an earlier run left: after any run, the file is this run's or is
+    // not there, and a refused line writes none.
+    std::fs::write(&report_path, "{}").expect("a stale report");
     for args in [
         vec![],
         vec!["optimise", "a.fbx"],
@@ -78,7 +81,7 @@ fn a_command_line_it_cannot_follow_exits_2_and_runs_nothing() {
     }
     assert!(
         !report_path.exists(),
-        "a refused command line wrote a report"
+        "a refused command line left a report at its --report path"
     );
 }
 
@@ -160,6 +163,21 @@ fn info_reports_the_source_counts() {
     assert_eq!(report["triangles"], 12);
     assert_eq!(report["vertices"], 8);
     assert_eq!(report["results"][0]["counts"]["polygons"], 6);
+    // The axis is spelled as an audit profile spells one, never as a Rust
+    // variant (`PositiveY`, `Unnamed(3)`).
+    let up = &report["results"][0]["up_axis"];
+    let axes = [
+        "positive_x",
+        "negative_x",
+        "positive_y",
+        "negative_y",
+        "positive_z",
+        "negative_z",
+    ];
+    assert!(
+        up.is_null() || up.as_str().is_some_and(|axis| axes.contains(&axis)),
+        "{up}"
+    );
 }
 
 #[test]
@@ -240,6 +258,88 @@ fn optimize_never_writes_over_a_model_it_reads() {
     ]);
     assert_eq!(status(&output), 1);
     assert_eq!(std::fs::read(&model).expect("read"), before);
+}
+
+/// The output is always `<stem>.fbx` in lower case, and NTFS and APFS ignore
+/// case: `Rock.FBX` written out as `Rock.fbx` is the model itself, and so is
+/// `rock.fbx` typed for it.
+#[test]
+fn optimize_never_writes_over_a_model_it_reads_spelled_in_another_case() {
+    let Some(cube) = cube() else { return };
+    let folder = scratch("in-place-case");
+    let model = folder.join("Rock.FBX");
+    std::fs::copy(&cube, &model).expect("copied");
+    if !folder.join("rock.fbx").is_file() {
+        // A case-sensitive file system: `Rock.fbx` is another file, and
+        // writing it is right.
+        return;
+    }
+    let before = std::fs::read(&model).expect("read");
+    for typed in ["Rock.FBX", "rock.fbx"] {
+        let output = run(&[
+            "optimize",
+            text(&folder.join(typed)),
+            "--out",
+            text(&folder),
+            "--lods",
+            "0.5",
+            "--if-exists",
+            "replace",
+        ]);
+        assert_eq!(status(&output), 1, "{typed}");
+        assert_eq!(std::fs::read(&model).expect("read"), before, "{typed}");
+    }
+}
+
+/// Two models that would write one file: the second is refused, even when
+/// `--out` does not exist until the first model's export creates it - and
+/// refused as a collision within the run, not as a file already there that
+/// `--if-exists replace` may overwrite.
+#[test]
+fn two_models_writing_one_file_are_caught_though_the_out_folder_is_new() {
+    let Some(cube) = cube() else { return };
+    let folder = scratch("written-twice");
+    let copy = |relative: &str| {
+        let path = folder.join(relative);
+        std::fs::create_dir_all(path.parent().expect("a folder")).expect("folder");
+        std::fs::copy(&cube, &path).expect("copied");
+        path
+    };
+    let first = copy("a/body.fbx");
+    let second = copy("b/body.fbx");
+    let case_insensitive = folder.join("A").join("BODY.FBX").is_file();
+    let mut cases = vec![(first, second, "build")];
+    if case_insensitive {
+        // Two names differing only in case are one file too.
+        cases.push((copy("c/Body.fbx"), copy("d/body.fbx"), "build-case"));
+    }
+    for (first, second, out) in cases {
+        let out = folder.join(out);
+        let report_path = folder.join("report.json");
+        let output = run(&[
+            "optimize",
+            text(&first),
+            text(&second),
+            "--out",
+            text(&out),
+            "--reduce",
+            "0.5",
+            "--if-exists",
+            "replace",
+            "--report",
+            text(&report_path),
+        ]);
+        assert_eq!(status(&output), 1, "{}", stdout(&output));
+        let report = report(&report_path);
+        assert_eq!(report["done"], 1);
+        assert_eq!(report["failed"], 1);
+        assert_eq!(report["written"], 1);
+        let problem = report["results"][1]["problem"].as_str().expect("a problem");
+        assert!(
+            problem.contains(text(&first)),
+            "the second model is told which model has the file: {problem}"
+        );
+    }
 }
 
 #[test]

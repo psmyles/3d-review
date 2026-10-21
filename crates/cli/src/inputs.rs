@@ -8,7 +8,7 @@
 //! once.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::args::Common;
 use crate::console;
@@ -85,7 +85,7 @@ pub(crate) fn collect(arguments: &[PathBuf], recurse: bool) -> Inputs {
     let mut seen = HashSet::new();
     inputs
         .models
-        .retain(|model| seen.insert(canonical(&model.path)));
+        .retain(|model| seen.insert(identity(&model.path)));
     inputs
 }
 
@@ -129,22 +129,48 @@ fn is_fbx(path: &Path) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("fbx"))
 }
 
-/// `path` with every link and `..` resolved, or as given when it cannot be -
-/// for telling two spellings of one file apart.
-pub(crate) fn canonical(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+/// The one spelling of `path` two spellings of a file are told apart by -
+/// whether the file is there yet or not.
+///
+/// Absolute, with the longest part of it that exists resolved by the file
+/// system (every link and `..`, and on Windows the case each name has on disk)
+/// and the rest appended as given. That makes a file's identity the same before
+/// and after its folder is created, which is what lets a run compare a file it
+/// has yet to write with one an earlier model just wrote. Where the file system
+/// ignores case (Windows and macOS) the result is also folded to one case, so
+/// `Rock.fbx` is `Rock.FBX` even where neither exists to ask.
+pub(crate) fn identity(path: &Path) -> PathBuf {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let components: Vec<Component<'_>> = absolute.components().collect();
+    let resolved = (0..=components.len()).rev().find_map(|split| {
+        let existing: PathBuf = components[..split].iter().collect();
+        let mut resolved = std::fs::canonicalize(existing).ok()?;
+        for component in &components[split..] {
+            match component {
+                Component::ParentDir => {
+                    resolved.pop();
+                }
+                Component::CurDir => {}
+                other => resolved.push(other),
+            }
+        }
+        Some(resolved)
+    });
+    fold_case(resolved.unwrap_or(absolute))
 }
 
-/// [`canonical`] for a file that may not exist yet: its folder resolved, its
-/// name kept.
-pub(crate) fn canonical_destination(path: &Path) -> PathBuf {
-    match (path.parent(), path.file_name()) {
-        (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
-            canonical(parent).join(name)
-        }
-        (_, Some(name)) => canonical(Path::new(".")).join(name),
-        _ => path.to_path_buf(),
-    }
+/// `path` in the one case a case-insensitive file system cannot tell from any
+/// other. The price on a case-sensitive volume there (rare on both) is that two
+/// names differing only in case are taken for one file, so a run refuses to
+/// write the second rather than risk writing over the first.
+#[cfg(any(windows, target_os = "macos"))]
+fn fold_case(path: PathBuf) -> PathBuf {
+    PathBuf::from(path.to_string_lossy().to_lowercase())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn fold_case(path: PathBuf) -> PathBuf {
+    path
 }
 
 #[cfg(test)]
@@ -187,6 +213,49 @@ mod tests {
         assert!(missing.models.is_empty());
         assert_eq!(missing.unusable.len(), 1);
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A run compares a file it has yet to write with one an earlier model
+    /// wrote, so a file's identity cannot change when its folder is created -
+    /// it used to go from a relative key to a resolved one, and the second
+    /// model of two writing `build/body.fbx` wrote over the first.
+    #[test]
+    fn a_files_identity_does_not_change_when_its_folder_appears() {
+        let root = std::env::temp_dir().join(format!("review-cli-identity-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let file = root.join("build").join("props").join("body.fbx");
+        let before = identity(&file);
+        assert!(before.is_absolute(), "{}", before.display());
+        std::fs::create_dir_all(file.parent().expect("a folder")).expect("folders");
+        assert_eq!(identity(&file), before, "the folders now exist");
+        std::fs::write(&file, b"").expect("file");
+        assert_eq!(identity(&file), before, "the file now exists");
+        // Another spelling of the same place is the same file.
+        let dotted = root.join("build").join(".").join("props").join("body.fbx");
+        assert_eq!(identity(&dotted), before);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// NTFS and APFS ignore case: `Rock.FBX` on disk is the file `Rock.fbx`
+    /// writes to, and two outputs differing only in case are one file.
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn names_differing_only_in_case_are_one_file_where_case_is_ignored() {
+        let root =
+            std::env::temp_dir().join(format!("review-cli-identity-case-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let source = root.join("Rock.FBX");
+        std::fs::write(&source, b"").expect("file");
+        assert_eq!(identity(&root.join("Rock.fbx")), identity(&source));
+        assert_eq!(identity(&root.join("rock.fbx")), identity(&source));
+        // And where neither exists yet.
+        assert_eq!(
+            identity(&root.join("out").join("Body.fbx")),
+            identity(&root.join("OUT").join("body.fbx"))
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

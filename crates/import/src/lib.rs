@@ -24,6 +24,10 @@ use thiserror::Error;
 #[cfg(has_ufbx)]
 mod ffi;
 mod prof;
+// The funnel's repair step is ordinary safe Rust over `ModelData`, so it builds
+// (and its tests run) without the vendored ufbx; only `ffi` calls it.
+#[cfg_attr(not(has_ufbx), allow(dead_code))]
+mod repair;
 mod startup;
 mod tracy_alloc;
 
@@ -58,7 +62,7 @@ pub use review_model::CancelToken;
 
 /// The stage an import is in, as reported to [`load_model_with_progress`].
 ///
-/// These are the four measured phases of a load, in order; the numbers beside
+/// These are the five measured phases of a load, in order; the numbers beside
 /// them are a 2.8M-triangle, 120 MB FBX, which is the shape that made a progress
 /// indicator worth having at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,7 +87,9 @@ pub enum ImportStage {
 }
 
 impl ImportStage {
-    /// The user-facing verb for this stage, as it appears in the loading card.
+    /// A stable English name for this stage, for logs and the profiler. Not
+    /// user-facing: the loading card names a stage through `app`'s own catalog
+    /// key for it (invariant 12).
     pub fn label(self) -> &'static str {
         match self {
             Self::Reading => "Reading",
@@ -154,6 +160,14 @@ pub struct StagedImport {
     pub extras: PendingExtras,
 }
 
+impl StagedImport {
+    /// What the import had to leave out to load the model at all — see
+    /// [`PendingExtras::warnings`].
+    pub fn warnings(&self) -> &[String] {
+        self.extras.warnings()
+    }
+}
+
 /// The source-property capture as the C bridge left it: taken in the same
 /// extraction call as the geometry (invariant 7), but marshaled into
 /// [`SourceExtras`] only when [`PendingExtras::marshal`] is called — which
@@ -167,6 +181,10 @@ pub struct PendingExtras {
     /// `marshal` reports this rather than publishing nothing in silence.
     #[cfg(has_ufbx)]
     dropped: Option<String>,
+    /// What the import left out so the model could load at all: an animation
+    /// key, a blend shape or a skin binding whose values were not numbers, an
+    /// optional mesh layer whose values could not be read. One sentence each.
+    warnings: Vec<String>,
 }
 
 impl PendingExtras {
@@ -178,7 +196,18 @@ impl PendingExtras {
             handle: None,
             #[cfg(has_ufbx)]
             dropped: None,
+            warnings: Vec::new(),
         }
+    }
+
+    /// What the import had to leave out of the model (or of the capture) to
+    /// load it at all — a malformed animation key, blend shape or skin binding is
+    /// dropped on its own rather than failing the whole file, and this is the
+    /// record of it, for the caller to show. Empty for a file that loaded whole.
+    /// English diagnostics, like [`ImportError`]'s: a caller showing them passes
+    /// each through as a message variable.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
     }
 
     /// Marshal the capture against the model it was taken with. `Ok(None)` when

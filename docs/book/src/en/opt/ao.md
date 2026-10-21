@@ -52,6 +52,6 @@ taken from the part itself or from the nearest named part above it:
 
 - each level is shadowed only by its own group, plus every part with no such
   name,
-- parts with no such name are shadowed by the lowest level present.
+- parts with no such name are shadowed by the lowest level still visible.
 
 That means you can bake a whole visible set of levels correctly in one go.

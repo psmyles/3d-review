@@ -208,8 +208,6 @@ impl EguiRenderer {
 
         // One texture can collect several deltas in a frame — a full image followed by
         // patches — so they are applied in order, each into the CPU shadow.
-        // One texture can collect several deltas in a frame — a full image followed
-        // by patches — so they apply in order, each into the CPU shadow.
         for (&id, deltas) in &textures_delta.set {
             for delta in deltas {
                 self.apply_delta(id, delta)?;

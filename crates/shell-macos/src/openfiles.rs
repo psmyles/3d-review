@@ -123,11 +123,17 @@ pub(crate) fn take_pending() -> Vec<PathBuf> {
 /// `application:openURLs:`. Runs on the main thread, called by AppKit.
 ///
 /// Non-`file:` URLs are dropped: the viewer registers no URL scheme, so anything else
-/// arriving here is not ours to open — `path` is `None` for exactly those.
+/// arriving here is not ours to open. That takes `isFileURL`, not a missing `path`:
+/// `-[NSURL path]` answers for any hierarchical URL, so `https://host/a.fbx` has the
+/// path `/a.fbx`, and opening that would be opening a file nobody named.
 extern "C" fn open_urls(_this: &AnyObject, _cmd: Sel, _app: &AnyObject, urls: &NSArray<NSURL>) {
     for url in urls.iter() {
-        // SAFETY: `path` reads an immutable property of an `NSURL` AppKit just
-        // handed us.
+        // SAFETY: `isFileURL` reads an immutable property of an `NSURL` AppKit
+        // just handed us.
+        if !unsafe { url.isFileURL() } {
+            continue;
+        }
+        // SAFETY: as above, for `path`.
         let Some(path) = (unsafe { url.path() }) else {
             continue;
         };

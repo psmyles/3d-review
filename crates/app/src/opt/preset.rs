@@ -75,8 +75,8 @@ impl App {
                 return;
             }
         };
-        let mut stack = match preset::from_json(&json) {
-            Ok(stack) => stack,
+        let (mut stack, repairs) = match preset::from_json_with_repairs(&json) {
+            Ok(loaded) => loaded,
             Err(error) => {
                 self.notifications
                     .error(keys::app_notifications::preset_load_failed(
@@ -100,7 +100,10 @@ impl App {
             .success(keys::app_notifications::preset_loaded(
                 crate::loading::file_label(path),
             ));
-        for line in review_labels::opt::rebind_notes(report) {
+        for line in review_labels::opt::repair_notes(repairs)
+            .into_iter()
+            .chain(review_labels::opt::rebind_notes(report))
+        {
             self.notifications.warning(line);
         }
     }

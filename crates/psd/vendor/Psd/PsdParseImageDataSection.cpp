@@ -44,9 +44,9 @@ namespace
 
 	// review-psd patch (see ../NOTICE.txt): the two readers below size every buffer with
 	// 64-bit arithmetic, refuse a plane that would not fit the 32-bit counts psd_sdk reads
-	// with, check every allocation, and bound the RLE payload by the section it sits in. On
-	// any failure they free what they allocated and return nullptr rather than writing
-	// through a null or undersized buffer.
+	// with, check every allocation, and bound the RLE payload and the raw planes by the
+	// section they sit in. On any failure they free what they allocated and return nullptr
+	// rather than writing through a null or undersized buffer.
 	static ImageDataSection* AllocateImageDataSection(Allocator* allocator, unsigned int channelCount)
 	{
 		ImageDataSection* imageData = memoryUtil::Allocate<ImageDataSection>(allocator);
@@ -97,10 +97,17 @@ namespace
 
 	// ---------------------------------------------------------------------------------------------------------------------
 	// ---------------------------------------------------------------------------------------------------------------------
-	static ImageDataSection* ReadImageDataSectionRaw(SyncFileReader& reader, Allocator* allocator, unsigned int width, unsigned int height, unsigned int channelCount, unsigned int bytesPerPixel)
+	static ImageDataSection* ReadImageDataSectionRaw(SyncFileReader& reader, Allocator* allocator, unsigned int width, unsigned int height, unsigned int channelCount, unsigned int bytesPerPixel, uint64_t sectionLength)
 	{
 		uint32_t planeBytes = 0u;
 		if (channelCount == 0u || !PlaneBytes(width, height, bytesPerPixel, &planeBytes))
+			return nullptr;
+
+		// Uncompressed planes are stored whole after the 2-byte compression type, so the
+		// section must hold every one of them. Checked before the first plane is allocated:
+		// a truncated (or lying) header otherwise had gigabytes allocated and zero-filled
+		// before the short read was noticed.
+		if (static_cast<uint64_t>(planeBytes) * channelCount + 2u > sectionLength)
 			return nullptr;
 
 		ImageDataSection* imageData = AllocateImageDataSection(allocator, channelCount);
@@ -225,7 +232,7 @@ ImageDataSection* ParseImageDataSection(const Document* document, File* file, Al
 	const uint16_t compressionType = fileUtil::ReadFromFileBE<uint16_t>(reader);
 	if (compressionType == compressionType::RAW)
 	{
-		imageData = ReadImageDataSectionRaw(reader, allocator, width, height, channelCount, bitsPerChannel / 8u);
+		imageData = ReadImageDataSectionRaw(reader, allocator, width, height, channelCount, bitsPerChannel / 8u, section.length);
 	}
 	else if (compressionType == compressionType::RLE)
 	{

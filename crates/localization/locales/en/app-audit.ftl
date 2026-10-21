@@ -11,3 +11,4 @@ app-audit-saved-profile-reset = The saved audit profile couldn't be read, so the
     profile is in use: { $reason }
 app-audit-report-failed = Couldn't build the audit report: { $reason }
 app-audit-failed = The model couldn't be checked: { $reason }
+app-audit-start-failed = Couldn't start checking the model

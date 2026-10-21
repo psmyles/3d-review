@@ -113,15 +113,19 @@ typedef struct rvo_export_material_texture {
     int32_t texture;
 } rvo_export_material_texture;
 
-/* One material. With `props.count > 0` the authored properties define it (on top
- * of the template `shader` selects; `shading_model` names a custom one);
- * otherwise the viewer's PBR figures are written onto a Phong. */
+/* One material. With `authored` set, the authored properties define it — on top
+ * of the template `shader` selects (`shading_model` names a custom one) — and an
+ * empty `props` means the source declared none, so the template's defaults are
+ * what it had. Otherwise the viewer's PBR figures (`base_color` and the rest)
+ * are written onto a Phong. */
 typedef struct rvo_export_material {
     const char *name;
     uint32_t shader;
     /* NUL-terminated; only read for RVO_SHADER_CUSTOM. */
     const char *shading_model;
     rvo_export_prop_range props;
+    /* Non-zero for a material from the source-property capture. */
+    int32_t authored;
     double base_color[3];
     double emissive[3];
     double shininess_exponent;
@@ -414,11 +418,12 @@ typedef struct rvo_export_scene {
     /*
      * Centimeters per scene unit, written as FBX's `UnitScaleFactor`.
      *
-     * FBX declares its unit rather than fixing one, and its conventional default
-     * is centimeters. Import normalizes everything to meters, so the geometry
-     * that reaches here is metric and this must say 100 — otherwise a reader
-     * takes the coordinates as centimeters and the model comes back a hundred
-     * times too small.
+     * FBX declares its unit rather than fixing one. The caller writes the
+     * *source file's* own unit (1 for a centimeter file, 2.54 for inches, 100
+     * for meters) and has already expressed every coordinate below in it, so
+     * this and the coordinates agree by construction; a reader that resolved
+     * the factor without the coordinates (or the reverse) would bring the model
+     * back off by the ratio between the two.
      */
     double unit_scale_cm;
 

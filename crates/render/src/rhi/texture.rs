@@ -75,9 +75,17 @@ impl Texture {
     }
 
     /// Upload a decoded RGBA8 image (sRGB or raw) with a full CPU-generated mip
-    /// chain — the Tex viewport's images and, when that stage lands, the material
-    /// slots. A degenerate or short pixel buffer falls back to a 1×1 white texel: a
+    /// chain — the Tex viewport's images, the material slots and the UV view's
+    /// texture. A degenerate or short pixel buffer falls back to a 1×1 white texel: a
     /// decode hiccup must never fail the render path.
+    ///
+    /// Nor must a large image. The decoders accept up to 30000 px a side, which is
+    /// what source art can be, but a device creates nothing past its 2D limit (16384
+    /// on Direct3D 11 and Metal), and an image it refuses here used to fail every
+    /// draw that wanted it, every frame. So the chain's top levels that exceed the
+    /// limit are left out and the first one that fits is uploaded as the base: the
+    /// texture is the same image one or more mips down, the box filter's own
+    /// downsample, and a sampler never knows the difference.
     ///
     /// The chain is built here rather than on the decode worker D7 names, because it
     /// is not a property of the decoded image alone — the same pixels are uploaded
@@ -100,20 +108,36 @@ impl Texture {
         let expected = (width as usize)
             .checked_mul(height as usize)
             .and_then(|texels| texels.checked_mul(4));
-        if expected.is_none_or(|expected| rgba.len() < expected) {
+        let Some(rgba) = expected.and_then(|expected| rgba.get(..expected)) else {
             return Self::immutable_2d(&[255, 255, 255, 255], 1, 1, format, label);
-        }
+        };
 
         let levels = mips::levels_below_base(rgba, width, height, srgb);
+        let skip = max_image_size()
+            .map_or(0, |limit| levels_over_limit(width, height, limit))
+            .min(levels.len());
+        let (base, below) = match skip {
+            0 => (rgba, levels.as_slice()),
+            skip => (levels[skip - 1].as_slice(), &levels[skip..]),
+        };
+        let (base_width, base_height) = ((width >> skip).max(1), (height >> skip).max(1));
+        if skip > 0 {
+            log::warn!(
+                "'{}' is {width}x{height}, past what this device can hold; uploading its \
+                 {base_width}x{base_height} mip as the base level",
+                label.to_str().unwrap_or("texture"),
+            );
+        }
+
         let mut desc = sg::ImageDesc::new();
         desc._type = sg::ImageType::Dim2;
         desc.usage.immutable = true;
-        desc.width = width as i32;
-        desc.height = height as i32;
-        desc.num_mipmaps = levels.len() as i32 + 1;
+        desc.width = base_width as i32;
+        desc.height = base_height as i32;
+        desc.num_mipmaps = below.len() as i32 + 1;
         desc.pixel_format = format.sg();
-        desc.data.mip_levels[0] = sg::slice_as_range(rgba);
-        for (level, pixels) in levels.iter().enumerate() {
+        desc.data.mip_levels[0] = sg::slice_as_range(base);
+        for (level, pixels) in below.iter().enumerate() {
             desc.data.mip_levels[level + 1] = sg::slice_as_range(pixels);
         }
         desc.label = label.as_ptr();
@@ -270,5 +294,56 @@ impl Drop for Texture {
             sg::destroy_view(self.view);
             sg::destroy_image(self.image);
         }
+    }
+}
+
+/// The largest 2D image the device creates, on either axis, as sokol reports it.
+/// `None` when it reports nothing usable, which uploads at full size and leaves the
+/// refusal, if any, to the device.
+fn max_image_size() -> Option<u32> {
+    u32::try_from(sg::query_limits().max_image_size_2d)
+        .ok()
+        .filter(|&size| size > 0)
+}
+
+/// How many of a `width`×`height` chain's top levels exceed `limit` on either axis —
+/// the levels [`Texture::rgba8_mipped_or_white`] leaves out. Each level halves with
+/// a floor and never drops below one texel, exactly as [`mips`] builds them, so the
+/// count indexes that chain.
+fn levels_over_limit(width: u32, height: u32, limit: u32) -> usize {
+    let limit = limit.max(1);
+    // A one-texel level fits any limit, and `u32 >> 31` is at most one, so this
+    // stops before the shift could overflow.
+    (0..32)
+        .find(|&level| (width >> level).max(1) <= limit && (height >> level).max(1) <= limit)
+        .unwrap_or(31)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What a device refuses is dropped from the top of the chain and nothing
+    /// else: a 20000x6000 image is uploaded from its 10000x3000 mip on a
+    /// 16384 px device, an image that fits keeps every level, and the walk stops
+    /// on whichever axis binds.
+    #[test]
+    fn only_the_levels_past_the_device_limit_are_left_out() {
+        assert_eq!(levels_over_limit(20_000, 6_000, 16_384), 1);
+        assert_eq!(levels_over_limit(16_384, 16_384, 16_384), 0);
+        assert_eq!(levels_over_limit(16_385, 1, 16_384), 1);
+        assert_eq!(levels_over_limit(30_000, 30_000, 4_096), 3);
+        assert_eq!(levels_over_limit(1, 70_000, 16_384), 3);
+        // A degenerate limit still ends on the one-texel level.
+        assert_eq!(levels_over_limit(u32::MAX, u32::MAX, 0), 31);
+
+        // The level it names is the one the chain holds at that index, so the
+        // base that is uploaded is the base the device was asked for.
+        let (width, height) = (40, 12);
+        let base = vec![0u8; width * height * 4];
+        let chain = mips::levels_below_base(&base, width as u32, height as u32, false);
+        let skip = levels_over_limit(width as u32, height as u32, 16);
+        assert_eq!(skip, 2);
+        assert_eq!(chain[skip - 1].len(), (40 >> 2) * (12 >> 2) * 4);
     }
 }

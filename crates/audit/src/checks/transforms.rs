@@ -3,7 +3,6 @@
 
 use glam::{Mat4, Vec3};
 use review_model::NodeKind;
-use review_model::extras::CoordinateAxis;
 
 use super::Outcome;
 use crate::context::Context;
@@ -134,7 +133,7 @@ pub(super) fn up_axis(ctx: &Context<'_>, config: &RuleConfig) -> Outcome {
     let Some(extras) = ctx.extras else {
         return Outcome::skip(Skip::SourcePropertiesUnavailable);
     };
-    let Some(source) = axis(extras.scene.axes[1]) else {
+    let Some(source) = Axis::from_coordinate(extras.scene.axes[1]) else {
         return Outcome::skip(Skip::SourcePropertiesUnavailable);
     };
     let target = config.axis("target").unwrap_or(Axis::PositiveY);
@@ -155,16 +154,4 @@ fn scene_offender(measured: Measured) -> Offender {
         detail: None,
         elements: ElementSet::None,
     }
-}
-
-fn axis(axis: CoordinateAxis) -> Option<Axis> {
-    Some(match axis {
-        CoordinateAxis::PositiveX => Axis::PositiveX,
-        CoordinateAxis::NegativeX => Axis::NegativeX,
-        CoordinateAxis::PositiveY => Axis::PositiveY,
-        CoordinateAxis::NegativeY => Axis::NegativeY,
-        CoordinateAxis::PositiveZ => Axis::PositiveZ,
-        CoordinateAxis::NegativeZ => Axis::NegativeZ,
-        CoordinateAxis::Unknown | CoordinateAxis::Unnamed(_) => return None,
-    })
 }

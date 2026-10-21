@@ -132,6 +132,7 @@ labels-audit-value-meters = { $value } m
 labels-audit-value-degrees = { $value } deg
 labels-audit-value-per-square-meter = { $value } tris per sq m
 labels-audit-value-px-per-meter = { $value } px/m
+labels-audit-value-pixels = { $value } px
 labels-audit-value-square-pixels = { $value } sq px
 labels-audit-value-screen-size = { $value } of the screen
 labels-audit-value-unit = { $value } m per unit
@@ -238,7 +239,7 @@ labels-audit-rule-up-axis-why = { $engine ->
     }
 labels-audit-rule-up-axis-fix = Export with the engine's up axis.
 labels-audit-rule-uv-missing = Missing UVs
-labels-audit-rule-uv-missing-what = Parts with no UVs, with fewer UV sets than the other parts, or with their sets in a different order.
+labels-audit-rule-uv-missing-what = Parts with no UVs, without UVs in a set the other parts fill, or with their sets in a different order.
 labels-audit-rule-uv-missing-why = Without UVs nothing can be textured. Parts with mismatched sets get the wrong UVs wherever they share a material or a lightmap.
 labels-audit-rule-uv-missing-fix = Unwrap the part, and give every part the same UV sets in the same order.
 labels-audit-rule-uv-out-of-range = UVs outside 0-1

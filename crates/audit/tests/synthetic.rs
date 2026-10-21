@@ -235,6 +235,52 @@ fn coincident_unwelded_points_are_duplicates() {
     );
 }
 
+/// The headline figure is reported beside the bound it broke: the whole file
+/// against the file's budget, or the largest part against the per-part one -
+/// never the file's total beside the per-part bound, which reads as one part
+/// that big.
+#[test]
+fn a_triangle_budget_names_the_bound_it_broke() {
+    let model = build(
+        vec![mesh_node("A"), mesh_node("B")],
+        vec![
+            quad(0, [0.0, 0.0, 0.0]),
+            quad(0, [1.0, 0.0, 0.0]),
+            quad(1, [0.0, 2.0, 0.0]),
+        ],
+    );
+    let budget = |per_object: f64, total: f64| {
+        let report = audit_one(&model, RuleId::TriangleBudget, |profile| {
+            let params = &mut profile
+                .rules
+                .get_mut(&RuleId::TriangleBudget)
+                .unwrap()
+                .params;
+            params.insert("max_per_object".into(), ParamValue::Number(per_object));
+            params.insert("max_total".into(), ParamValue::Number(total));
+        });
+        report.result(RuleId::TriangleBudget).unwrap().clone()
+    };
+    let count = |n: u64| review_audit::Measured::Count(n);
+
+    // Only the file is over: 6 triangles against a budget of 5.
+    let file = budget(100.0, 5.0);
+    assert_eq!(file.status, Status::Fail);
+    assert_eq!(file.measured, Some(count(6)));
+    assert_eq!(file.threshold, review_audit::Threshold::Max(count(5)));
+
+    // Only a part is over: A's 4 triangles against 3 a part.
+    let part = budget(3.0, 100.0);
+    assert_eq!(part.measured, Some(count(4)));
+    assert_eq!(part.threshold, review_audit::Threshold::Max(count(3)));
+
+    // Both: the file's figure leads, so it is the file's bound beside it.
+    let both = budget(3.0, 5.0);
+    assert_eq!(both.measured, Some(count(6)));
+    assert_eq!(both.threshold, review_audit::Threshold::Max(count(5)));
+    assert_eq!(both.offenders.len(), 2, "the file, then part A");
+}
+
 #[test]
 fn ngons_are_counted_by_polygon() {
     let pentagon = face(
@@ -331,6 +377,21 @@ fn uv_overlap_and_flipped_islands() {
             RuleId::UvFlipped
         ),
         2
+    );
+}
+
+/// The padding is a distance in the lightmap's pixels, not a count of
+/// anything.
+#[test]
+fn lightmap_padding_is_judged_in_pixels() {
+    let mut model = build(vec![mesh_node("M")], vec![quad(0, [0.0, 0.0, 0.0])]);
+    model.stats.uv_set_count = 2;
+    let report = audit_one(&model, RuleId::LightmapPadding, |_| {});
+    let result = report.result(RuleId::LightmapPadding).unwrap();
+    assert_eq!(result.status, Status::Pass);
+    assert_eq!(
+        result.threshold,
+        review_audit::Threshold::Min(review_audit::Measured::Pixels(2.0))
     );
 }
 
@@ -503,6 +564,43 @@ fn collision_meshes_must_name_a_render_mesh() {
     assert_eq!(result.offenders[0].node, Some(2));
 }
 
+/// A prefix written with a class or a `?` stands for as many characters as it
+/// matched: `UC[XP]_*` against `UCX_Crate` names `Crate`, not `X_Crate`.
+#[test]
+fn a_collision_pattern_with_wildcards_in_its_prefix_strips_what_it_matched() {
+    let model = named(&[
+        ("Crate", NodeKind::Mesh, None),
+        ("UCX_Crate_01", NodeKind::Mesh, None),
+        ("UCP_Crate", NodeKind::Mesh, None),
+        ("UCX_Barrel_00", NodeKind::Mesh, None),
+    ]);
+    for prefixes in [vec!["UC[XP]_*"], vec!["UC?_*"], vec!["U[A-Z][A-Z]_*"]] {
+        let report = audit_one(&model, RuleId::CollisionPrefix, |profile| {
+            profile
+                .rules
+                .get_mut(&RuleId::CollisionPrefix)
+                .unwrap()
+                .params
+                .insert(
+                    "prefixes".into(),
+                    ParamValue::Patterns(prefixes.iter().map(|p| (*p).to_owned()).collect()),
+                );
+        });
+        let result = report.result(RuleId::CollisionPrefix).unwrap();
+        let offenders: Vec<Option<u32>> = result.offenders.iter().map(|o| o.node).collect();
+        assert_eq!(
+            offenders,
+            [Some(3)],
+            "{prefixes:?}: only the barrel names nothing"
+        );
+        assert_eq!(
+            result.offenders[0].measured,
+            Some(review_audit::Measured::Text("Barrel".into())),
+            "{prefixes:?}"
+        );
+    }
+}
+
 #[test]
 fn hierarchy_rules() {
     let model = named(&[
@@ -648,10 +746,11 @@ fn the_json_report_names_polygons_the_way_the_dcc_does() {
             ([-0.5, 0.8, 0.0], [0.0, 0.5]),
         ],
     );
-    let model = build(
+    let mut model = build(
         vec![mesh_node("Crate")],
         vec![quad(0, [3.0, 0.0, 0.0]), pentagon],
     );
+    model.stats.source_unit_meters = 0.01;
     let profile = AuditProfile::builtin(Engine::Generic);
     let report = run(
         AuditInput {
@@ -679,6 +778,9 @@ fn the_json_report_names_polygons_the_way_the_dcc_does() {
     assert_eq!(value["schema"], "3d-review.audit-report");
     assert_eq!(value["version"], 1);
     assert_eq!(value["source"]["file"], "crate.fbx");
+    // A centimetre is 0.01, not the seventeen digits of the f32 widened.
+    assert_eq!(value["source"]["unit_meters"], serde_json::json!(0.01));
+    assert_eq!(value["source"]["up_axis"], serde_json::Value::Null);
     let ngons = value["results"]
         .as_array()
         .unwrap()

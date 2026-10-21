@@ -261,9 +261,15 @@ enum Cell {
     /// A measured value.
     Value(String),
     /// This scope was measured and has nothing to report here — nothing is
-    /// selected, or a material slot has no authored vertex count. Shown as an em
-    /// dash, never a zero (invariant 5).
+    /// selected, or a material slot has no authored vertex count. Shown as a
+    /// hyphen, never a zero (invariant 5).
     Unmeasured,
+    /// The scope has not been measured yet: the per-draw-group table its sums
+    /// come from is still being built on the import worker. Left blank, the way
+    /// the `GPU Verts` row is left out until the same table lands — summing a
+    /// table that is not there would print a zero nothing measured, and a hyphen
+    /// would claim the scope was measured and came up short.
+    Pending,
     /// The row isn't about a slice of geometry at all (the UV-set count, the
     /// file's unit, the viewer's frame rate), so the column stays empty rather
     /// than claiming the scope was measured and came up short.
@@ -286,9 +292,10 @@ impl Cell {
 /// The All column is the source file's own figures as import carried them
 /// (invariant 5); the other two are measured off the mesh by
 /// [`UiState::scoped_stats`], summed from the per-draw-group table so no scan
-/// runs on the redraw path. A row with nothing to say for a scope shows an em
-/// dash, never a zero.
-pub(crate) fn stats_grid(ui: &mut egui::Ui, state: &UiState, scoped: ScopedStats) {
+/// runs on the redraw path. `scoped` is `None` until that table has arrived, and
+/// both columns stay blank until then. A row with nothing to say for a scope
+/// shows a hyphen, never a zero.
+pub(crate) fn stats_grid(ui: &mut egui::Ui, state: &UiState, scoped: Option<ScopedStats>) {
     let stats = &state.stats;
     ui.spacing_mut().item_spacing.y = size::STATS_ROW_SPACING;
 
@@ -379,34 +386,34 @@ fn scoped_row(
     ui: &mut egui::Ui,
     row: StatRow,
     all: usize,
-    scoped: ScopedStats,
+    scoped: Option<ScopedStats>,
     measure: impl Fn(&ScopeStats) -> Option<usize>,
 ) {
-    cells_row(
-        ui,
-        row,
+    let [selected, visible] = scoped_cells(scoped, |scoped| {
         [
-            Cell::Value(all.to_string()),
             Cell::measured(scoped.selected.as_ref().and_then(&measure)),
             Cell::measured(measure(&scoped.visible)),
-        ],
-    );
+        ]
+    });
+    cells_row(ui, row, [Cell::Value(all.to_string()), selected, visible]);
 }
 
 /// The vertex-split overhead, recomputed per scope from that scope's own two
 /// vertex counts rather than scaled off the whole model's — a selection of
 /// hard-edged props splits far more than the file's average.
-fn splits_row(ui: &mut egui::Ui, vertices: usize, gpu_vertices: usize, scoped: ScopedStats) {
+fn splits_row(
+    ui: &mut egui::Ui,
+    vertices: usize,
+    gpu_vertices: usize,
+    scoped: Option<ScopedStats>,
+) {
     let overhead = |vertices: Option<usize>, gpu_vertices: usize| {
         let vertices = vertices.filter(|&count| count > 0)?;
         let percent = (gpu_vertices as f32 - vertices as f32) / vertices as f32 * 100.0;
         Some(format!("{percent:+.0}%"))
     };
-    cells_row(
-        ui,
-        StatRow::VtxSplits,
+    let [selected, visible] = scoped_cells(scoped, |scoped| {
         [
-            Cell::from_text(overhead(Some(vertices), gpu_vertices)),
             Cell::from_text(
                 scoped
                     .selected
@@ -416,8 +423,26 @@ fn splits_row(ui: &mut egui::Ui, vertices: usize, gpu_vertices: usize, scoped: S
                 scoped.visible.vertex_count,
                 scoped.visible.gpu_vertex_count,
             )),
+        ]
+    });
+    cells_row(
+        ui,
+        StatRow::VtxSplits,
+        [
+            Cell::from_text(overhead(Some(vertices), gpu_vertices)),
+            selected,
+            visible,
         ],
     );
+}
+
+/// The Sel and Vis cells of a row: what `measure` makes of the scopes once they
+/// have been measured, and both [`Cell::Pending`] until then.
+fn scoped_cells(
+    scoped: Option<ScopedStats>,
+    measure: impl FnOnce(&ScopedStats) -> [Cell; 2],
+) -> [Cell; 2] {
+    scoped.map_or([Cell::Pending, Cell::Pending], |scoped| measure(&scoped))
 }
 
 /// A row whose value describes the file or the viewer as a whole, so it sits
@@ -450,7 +475,7 @@ fn cells_row(ui: &mut egui::Ui, row: StatRow, cells: [Cell; 3]) {
                 "{} {value}",
                 review_localization::tr(scope.heading())
             )),
-            Cell::Unmeasured | Cell::NotScoped => None,
+            Cell::Unmeasured | Cell::Pending | Cell::NotScoped => None,
         })
         .collect();
     let copy_text = format!("{label}: {}", measured.join(", "));
@@ -475,7 +500,7 @@ fn cells_row(ui: &mut egui::Ui, row: StatRow, cells: [Cell; 3]) {
                         // it is punctuation, and it is the same mark in every
                         // language the bundled fonts cover.
                         Cell::Unmeasured => paint_cell(ui, rect, "-", color::TEXT_MUTED),
-                        Cell::NotScoped => {}
+                        Cell::Pending | Cell::NotScoped => {}
                     }
                 }
             });
@@ -567,10 +592,9 @@ pub(crate) fn processed_stats_grid(ui: &mut egui::Ui, state: &UiState) {
         stats.0,
         baseline.map(|source| source.triangles),
     );
-    // "Mesh Verts", matching the source card's row of that name: both count the
-    // vertex buffer. Calling this one "Verts" put the same word on two different
-    // measurements — the file's DCC count on one card and the buffer length on
-    // the other — and the two cards read as contradicting each other.
+    // "Mesh Verts", not "Verts": this counts the vertex buffer, while the source
+    // card's "Verts" row is the file's DCC count. Putting the same word on the two
+    // measurements made the cards read as contradicting each other.
     delta_row(
         ui,
         StatRow::MeshVerts,
@@ -648,9 +672,11 @@ fn change(value: f32, source: Option<f32>) -> Option<(String, egui::Color32)> {
         return None;
     }
     let percent = (value - source) / source * 100.0;
-    // Below a twentieth of a percent the rounded figure would read "-0%", which
-    // looks like a bug rather than "unchanged".
-    if percent.abs() < 0.05 {
+    // The change prints to a whole percent, so anything up to half of one rounds
+    // to a tinted "+0%" or "-0%" — which looks like a bug rather than
+    // "unchanged". The cut-off is the printed precision, not a finer one, and it
+    // is inclusive: the formatter rounds an exact half to even, which is zero.
+    if percent.abs() <= UNCHANGED_UP_TO_PERCENT {
         return Some(("  0%".to_owned(), color::TEXT_MUTED));
     }
     let tint = if percent < 0.0 {
@@ -660,6 +686,10 @@ fn change(value: f32, source: Option<f32>) -> Option<(String, egui::Color32)> {
     };
     Some((format!("{percent:+.0}%"), tint))
 }
+
+/// The largest change [`change`] still prints as unchanged: half the whole
+/// percent it rounds to, at or below which the figure would read `+0%`.
+const UNCHANGED_UP_TO_PERCENT: f32 = 0.5;
 
 /// One stats row with an optional tinted change column to the right of the value.
 ///
@@ -772,11 +802,9 @@ fn stat_row(ui: &mut egui::Ui, row: StatRow, value: &str) {
     );
 }
 
-/// One row of the Tex viewport's card. Its rows have no scope columns and no
-/// change against a source, so they share `value_row` rather than `cells_row`.
 #[cfg(test)]
-mod human_size_tests {
-    use super::human_size;
+mod tests {
+    use super::*;
 
     #[test]
     fn a_size_reads_in_the_largest_unit_it_fills() {
@@ -785,5 +813,38 @@ mod human_size_tests {
         assert_eq!(human_size(1024), "1.0 KB");
         assert_eq!(human_size(1536 * 1024), "1.5 MB");
         assert_eq!(human_size(3 * 1024 * 1024 * 1024), "3.0 GB");
+    }
+
+    /// A change too small to survive the rounding reads as unchanged, untinted;
+    /// one that prints as at least a whole percent keeps its sign and its tint.
+    /// The cut-off used to be a twentieth of a percent, so anything from there
+    /// to a half printed as a tinted "+0%" or "-0%".
+    #[test]
+    fn a_change_that_rounds_to_zero_reads_as_unchanged() {
+        for percent in [0.0_f32, 0.04, 0.05, 0.3, 0.49, -0.05, -0.3, -0.49] {
+            let (text, tint) = change(100.0 + percent, Some(100.0)).expect("a change");
+            assert_eq!(text.trim(), "0%", "{percent}% printed as {text:?}");
+            assert_eq!(tint, color::TEXT_MUTED, "{percent}% was tinted");
+        }
+        for (percent, printed, tint) in [
+            (0.6_f32, "+1%", color::STATS_DELTA_WORSE),
+            (-0.6, "-1%", color::STATS_DELTA_BETTER),
+            (12.0, "+12%", color::STATS_DELTA_WORSE),
+            (-50.0, "-50%", color::STATS_DELTA_BETTER),
+        ] {
+            let (text, got) = change(100.0 + percent, Some(100.0)).expect("a change");
+            assert_eq!(text, printed, "{percent}%");
+            assert_eq!(got, tint, "{percent}%");
+        }
+        // Every figure that prints as unchanged must be one the cut-off caught:
+        // nothing on either side of it may print "+0%" or "-0%".
+        for step in -200..=200 {
+            let percent = step as f32 * 0.01;
+            let (text, _) = change(100.0 + percent, Some(100.0)).expect("a change");
+            assert!(
+                text != "+0%" && text != "-0%",
+                "{percent}% printed as a signed zero"
+            );
+        }
     }
 }

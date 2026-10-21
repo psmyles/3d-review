@@ -21,7 +21,6 @@
 
 #include <cmath>
 #include <cstring>
-#include <vector>
 #include <new>
 
 namespace {
@@ -125,14 +124,41 @@ bool psd_is_supported(const psd::Document* document) {
         && w * h * channels * (bits / 8u) <= MAX_PSD_PLANAR_BYTES;
 }
 
-// Everything parsed for one document, owned behind a single opaque handle.
+// Everything parsed for one document, owned behind a single opaque handle. The file's
+// bytes are the caller's, borrowed until fire_psd_free (see wrapper.h): copying them was
+// a second whole-file allocation per decode for nothing, since the Rust caller's slice
+// outlives the handle by construction.
 struct Doc {
     psd::MallocAllocator allocator;
-    std::vector<uint8_t> bytes;      // owned copy; MemoryFile points into this
+    const uint8_t* bytes = nullptr;  // borrowed; MemoryFile points into this
+    size_t size = 0;
     MemoryFile* file = nullptr;
     psd::Document* document = nullptr;
     psd::ImageDataSection* imageData = nullptr;
 };
+
+// Big-endian u16 at `offset` of the document's bytes, or `fallback` past the end.
+uint16_t read_be16(const Doc& d, uint64_t offset, uint16_t fallback) {
+    if (offset > d.size || d.size - offset < 2) {
+        return fallback;
+    }
+    return static_cast<uint16_t>((d.bytes[offset] << 8) | d.bytes[offset + 1]);
+}
+
+// Whether the merged image is stored uncompressed and its planes need more bytes than the
+// file has after the compression field. Such a file is truncated, and the patched
+// ParseImageDataSection refuses it before allocating a plane (review-psd patch P2); this
+// only names the refusal, which psd_sdk can report only as a null section.
+bool raw_planes_truncated(const Doc& d) {
+    const psd::Section& section = d.document->imageDataSection;
+    const uint16_t RAW = 0;
+    if (read_be16(d, section.offset, 0xFFFFu) != RAW) {
+        return false;
+    }
+    const uint64_t plane = static_cast<uint64_t>(d.document->width) * d.document->height
+        * (d.document->bitsPerChannel / 8u);
+    return plane * d.document->channelCount + 2u > section.length;
+}
 
 // sRGB encode of a linear value already clamped to 0..1 (IEC 61966-2-1).
 inline float linear_to_srgb(float v) {
@@ -177,8 +203,9 @@ fire_psd* fire_psd_open(const uint8_t* bytes, size_t len) {
     // Rust (that is UB). Catch everything and surface it as a null handle.
     try {
         Doc& d = handle->d;
-        d.bytes.assign(bytes, bytes + len);
-        d.file = new (std::nothrow) MemoryFile(&d.allocator, d.bytes.data(), d.bytes.size());
+        d.bytes = bytes;
+        d.size = len;
+        d.file = new (std::nothrow) MemoryFile(&d.allocator, d.bytes, d.size);
         if (!d.file) {
             fire_psd_free(handle);
             return nullptr;
@@ -192,7 +219,7 @@ fire_psd* fire_psd_open(const uint8_t* bytes, size_t len) {
         // past the end is not a short read — it leaves the image data starting beyond the
         // file, with psd_sdk's `size - offset` length wrapped round to gigabytes.
         if (!d.document || d.file->HadShortRead()
-            || d.document->imageDataSection.offset > d.bytes.size()) {
+            || d.document->imageDataSection.offset > d.size) {
             fire_psd_free(handle);
             return nullptr;
         }
@@ -242,7 +269,8 @@ int fire_psd_decode_merged(fire_psd* doc) {
     // A truncated document parses "successfully" — psd_sdk follows the header's own offsets
     // and never learns it ran off the end — so the composite would be built from the zeros we
     // substituted for the missing bytes. Refuse it rather than display a half-invented image.
-    if (d.file->HadShortRead()) {
+    // An uncompressed one is caught before that, by size, and returns no section at all.
+    if (d.file->HadShortRead() || (!d.imageData && raw_planes_truncated(d))) {
         return FIRE_PSD_TRUNCATED;
     }
     if (!d.imageData || !d.imageData->images
@@ -277,9 +305,12 @@ int fire_psd_read_merged_rgba8(const fire_psd* doc, uint8_t* out_pixels, size_t 
     const psd::PlanarImage* images = d.imageData->images;
     const bool isGray = document->colorMode == psd::colorMode::GRAYSCALE;
     // The first extra channel is the composite's transparency when the document has one
-    // (plane 1 for grayscale, plane 3 for RGB).
+    // (plane 1 for grayscale, plane 3 for RGB); any after it is never read. Decided from
+    // the header's channel count, the figure fire_psd_info_get reports, so the caller's
+    // idea of whether there is an alpha channel is this one (review-psd's
+    // `PsdImage::drawn_channels`). Decoding made one plane per channel, so it is there.
     const unsigned int alphaPlane = isGray ? 1u : 3u;
-    const bool hasAlpha = imageCount > alphaPlane;
+    const bool hasAlpha = document->channelCount > alphaPlane && imageCount > alphaPlane;
 
     for (size_t i = 0; i < pixels; ++i) {
         uint8_t r, g, b;

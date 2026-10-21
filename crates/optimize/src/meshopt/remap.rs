@@ -14,7 +14,8 @@ use super::*;
 /// Byte-equality vertex remap: vertices whose `stride` bytes are identical
 /// collapse to one. `vertex_bytes` must be `vertex_count * stride` long and
 /// fully initialized — meshoptimizer compares padding too, which is why callers
-/// build a tightly packed key rather than casting a Rust struct.
+/// build a tightly packed key rather than casting a Rust struct. `stride` is at
+/// most [`MAX_VERTEX_SIZE`].
 ///
 /// Returns `(remap, unique_vertex_count)` where `remap[old] = new`.
 pub fn generate_vertex_remap(
@@ -24,10 +25,11 @@ pub fn generate_vertex_remap(
     stride: usize,
 ) -> Result<(Vec<u32>, usize), OptError> {
     check_indices(indices, vertex_count)?;
+    check_vertex_size(stride)?;
     let expected = vertex_count
         .checked_mul(stride)
         .ok_or(OptError::SizeOverflow)?;
-    if stride == 0 || vertex_bytes.len() != expected {
+    if vertex_bytes.len() != expected {
         return Err(OptError::StreamLength {
             len: vertex_bytes.len(),
             expected,
@@ -39,7 +41,8 @@ pub fn generate_vertex_remap(
     // destination size); `indices` is a checked whole-triangle buffer whose
     // entries all address a vertex below `vertex_count`; `vertex_bytes` is
     // exactly `vertex_count * stride` initialized bytes, so reads of `stride`
-    // bytes at every vertex offset stay in bounds.
+    // bytes at every vertex offset stay in bounds; `stride` is in the
+    // `1..=256` upstream asserts on.
     let unique = unsafe {
         crate::ffi::meshopt_generateVertexRemap(
             remap.as_mut_ptr(),

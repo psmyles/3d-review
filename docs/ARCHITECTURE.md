@@ -107,7 +107,11 @@ a worker thread and answers through `UserEvent::DialogDone`, one at a time. The
 single exception is the startup error box, which `main` raises *after* `run_app`
 has returned. A request carries its own subject with it (the LOD chain to export,
 the serialized preset), so the answer acts on what the user was looking at when
-they asked rather than on whatever the state has since become.
+they asked rather than on whatever the state has since become. On Windows the
+picker is owned by the main window (`set_parent` reads the handle on the main
+thread; the dialog still opens on the worker), so it cannot fall behind it — the
+window takes no input while it is up. A request made while a dialog is already
+open is dropped with a notice rather than silently.
 
 **Model loading is staged.** The worker publishes the model as soon as it is
 *drawable* and keeps measuring against the `Arc` it just sent, posting each result
@@ -215,11 +219,18 @@ theme: `ffi/raw_scene.rs` and `ffi/raw_extras.rs` are the `#[repr(C)]` mirrors
 own the scene and the capture, `ffi/raw.rs` the unsafe pointer-to-slice and
 pointer-to-string helpers and the safe accessor built on each — one method per
 bridge array, returning a slice that borrows the struct owning it, which is the
-last of the `unsafe` — and `ffi/marshal_model.rs` + `ffi/marshal_extras.rs` the
+last of the `unsafe`. The accessors live on `Bridged<T>`, a read-only wrapper
+whose constructor is `unsafe`, so no safe code can change a pointer or a count
+and then read through it. `ffi/marshal_model.rs` + `ffi/marshal_extras.rs` are the
 majority of the crate by line count, which `deny(unsafe_code)` and read only
-through those accessors, so no raw pointer reaches them at all. Plus `src/ufbx_bridge.c`, `src/ufbx_bridge.h`,
+through those accessors, so no raw pointer reaches them at all. `src/repair.rs`
+runs just before `validate_deform` and drops a malformed key, shape or binding on
+its own rather than failing the file, recording one warning per repair on
+`PendingExtras::warnings` for the caller to show. Plus `src/ufbx_bridge.c`, `src/ufbx_bridge.h`,
 `src/ufbx_extras.c`, `src/ufbx_extras.h`, `build.rs`. Fixture-driven checks of
-the public API live in `tests/fbx_fixtures.rs`.
+the public API live in `tests/fbx_fixtures.rs`; scenes built in code (non-uniform
+and mirrored tangents, centimeter blend shapes, NaN keys) in
+`tests/synthetic_scenes.rs`.
 
 The bridge captures each node's rest local TRS; the skin cluster table (per
 mesh-bearing node: `geometry_to_bone × inverse(geometry_to_world)`) with a
@@ -227,8 +238,10 @@ per-influence cluster index and deformer method; the blend shapes (offsets
 pre-rotated into baked world orientation); and every animation stack baked with
 `ufbx_bake_anim` (file frame rate, no key reduction; `DeformPercent` element
 tracks become morph channels) — each with the same two-pass count→fill
-discipline. The Rust side sorts the morph entries into a CSR, validates through
-`validate_deform`, and measures `bounds` at the rest pose.
+discipline. The Rust side sorts the morph entries into a CSR, repairs and then
+validates through `validate_deform`, synthesizes a tangent for each vertex the
+file gave none (`generate_missing_tangents`, keeping authored ones), and measures
+`bounds` at the rest pose.
 
 The scene loads with `UFBX_INHERIT_MODE_HANDLING_HELPER_NODES` so `parent ×
 local` recomposes `node_to_world` exactly.
@@ -338,7 +351,7 @@ independent of the API underneath it.
 
 | File | Contents |
 | --- | --- |
-| `mod.rs` | `Gpu` (device + swapchain), `Frame` (one frame in flight, borrowing the `Gpu` so "one frame at a time" is a compile-time fact) |
+| `mod.rs` | `Gpu` (device + swapchain), `Frame` (one frame in flight, borrowing the `Gpu` so "one frame at a time" is a compile-time fact), `SokolDevice` (the device with sokol set up on it; its `Drop` runs `sg_shutdown` before the device is released, on every path — sokol keeps the device's raw pointer without a reference of its own) |
 | `job.rs` | `SwapchainJob`, a draw recorded before the swapchain pass and replayed inside it |
 | `make.rs` | Creating a sokol resource validated, with the pool slot freed if creation failed |
 | `sokol_log.rs` | The sokol logger — without it validation failures are silent — handing each line to the `log` facade |
@@ -404,7 +417,9 @@ between mismatched formats is a silent no-op.
   tables it indexes).
 - `material/` — the editable per-material table (the `material` uniform block,
   texture bindings 5-11, the anisotropic `material_sampler`) and its path-keyed
-  LRU texture cache. The GPU table is keyed on the model revision, the mode and,
+  LRU texture cache, which holds each upload's decoded image by `Weak` (so a model
+  load, which re-decodes every map, retires the last model's uploads rather than
+  matching a reused address). The GPU table is keyed on the model revision, the mode and,
   in Unique mode, the part count, so the Opt split's two meshes never share one.
 - `texture.rs` — source-texture decode by magic-byte dispatch: PSD via
   `review-psd`, JPEG via zune's fast path, PNG/TGA/TIFF/HDR/BMP/GIF/PNM via the
@@ -461,7 +476,9 @@ before either composite does and a shared set would show the second view in both
 Two half-width sets cost what one full-width set does, and the second is released
 the moment a single view is drawn — as is everything else only Opt uses (the ghost
 wireframe, the idle slot's derived views) the moment `render`, `render_uv` or the
-Tex path runs (`SceneGpu::release_opt_views`).
+Tex path runs (`SceneGpu::release_opt_views`). The Aud split draws through the
+second set itself, so it releases only the mesh-derived half
+(`release_opt_derived`).
 
 **Shaders are one source**: `src/shaders/review.glsl`, all twenty programs in
 sokol-shdc's annotated GLSL. `scripts/gen-shaders.{sh,ps1}` turns it into the
@@ -1290,5 +1307,5 @@ The structural rules the decisions add up to:
 | --- | --- |
 | **`rhi` owns the backend** | Nothing outside `render/src/rhi/` names an `sg::` type, a backend pixel format or a window handle. Every resource goes through a wrapper, every format is `Format`, every failure is a `GpuError`, and invalid input (a zero dimension, a refused drawable) is an error there rather than a sokol validation abort. |
 | **One swapchain pass** | Exactly one swapchain pass per frame — Metal presents inside `sg_end_pass`, so a second one would double-present. Everything a `Renderer::render_*` draws onscreen is therefore recorded as a deferred `SwapchainJob` and replayed when that pass opens; offscreen passes are issued directly. |
-| **Platform leaves** | The complete inventory of per-OS code: `rhi/backend/{d3d11,metal}.rs` (device, swapchain, GPU timer, bake readback), `crates/shell-macos` (open-file events, menu bar), and the packaging scripts. Nothing else in the workspace names an OS. |
+| **Platform leaves** | The complete inventory of per-OS code: `rhi/backend/{d3d11,metal}.rs` (device, swapchain, GPU timer, bake readback), `crates/shell-macos` (open-file events, menu bar), and the packaging scripts. Elsewhere an OS is named only for a convention, never a capability: the primary modifier (`app/shortcuts.rs`, `ui/lib.rs`), where per-user files live and how paths compare (`app/logging.rs`, `window_state.rs`, `paths.rs`), and the file dialog's owner window on Windows (`app/dialog.rs`). |
 | **Toolchain** | `rust-toolchain.toml` tracks stable rather than pinning a version, and shader edits are the only thing that needs a platform shader compiler (D5): a checkout that does not touch `review.glsl` builds from the committed bytecode. |

@@ -45,13 +45,25 @@ pub(crate) fn should_enable() -> bool {
 /// One profiled GPU pass. Each owns a fixed pair of timestamp slots (begin, end) in
 /// the per-frame array, in encode order, so a conditional pass (GTAO) keeps a stable
 /// identity in Tracy whether or not it ran in a given frame.
-#[derive(Clone, Copy)]
+///
+/// The Opt split draws its scene and occlusion passes **twice** a frame, once per
+/// half, so those five have a twin each for the right-hand view ([`Self::in_split`]).
+/// A pass timed twice into one pair of slots keeps only its second write — the GPU
+/// clock at the right half's begin and end — so the capture showed half the frame's
+/// scene cost under a name that claimed all of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Zone {
     Scene,
     GtaoGbuffer,
     GtaoDepthMips,
     Gtao,
     GtaoDenoise,
+    /// The Opt split's right-hand view of [`Self::Scene`] and the four GTAO passes.
+    SplitScene,
+    SplitGtaoGbuffer,
+    SplitGtaoDepthMips,
+    SplitGtao,
+    SplitGtaoDenoise,
     Composite,
     /// The frame as a whole — **written by the backend leaf, never by a pass.**
     ///
@@ -77,8 +89,26 @@ impl Zone {
             Zone::GtaoDepthMips => 4,
             Zone::Gtao => 6,
             Zone::GtaoDenoise => 8,
-            Zone::Composite => 10,
-            Zone::Frame => 12,
+            Zone::SplitScene => 10,
+            Zone::SplitGtaoGbuffer => 12,
+            Zone::SplitGtaoDepthMips => 14,
+            Zone::SplitGtao => 16,
+            Zone::SplitGtaoDenoise => 18,
+            Zone::Composite => 20,
+            Zone::Frame => 22,
+        }
+    }
+
+    /// This pass as the Opt split's right-hand view times it: its `Split*` twin, or
+    /// the zone itself for a pass a frame only ever runs once.
+    pub(crate) const fn in_split(self) -> Zone {
+        match self {
+            Zone::Scene => Zone::SplitScene,
+            Zone::GtaoGbuffer => Zone::SplitGtaoGbuffer,
+            Zone::GtaoDepthMips => Zone::SplitGtaoDepthMips,
+            Zone::Gtao => Zone::SplitGtao,
+            Zone::GtaoDenoise => Zone::SplitGtaoDenoise,
+            other => other,
         }
     }
 
@@ -90,6 +120,11 @@ impl Zone {
             Zone::GtaoDepthMips => "GTAO Depth Mips",
             Zone::Gtao => "GTAO Occlusion",
             Zone::GtaoDenoise => "GTAO Denoise",
+            Zone::SplitScene => "Scene Geometry (right view)",
+            Zone::SplitGtaoGbuffer => "GTAO G-Buffer (right view)",
+            Zone::SplitGtaoDepthMips => "GTAO Depth Mips (right view)",
+            Zone::SplitGtao => "GTAO Occlusion (right view)",
+            Zone::SplitGtaoDenoise => "GTAO Denoise (right view)",
             Zone::Composite => "Composite",
             Zone::Frame => "GPU Frame",
         }
@@ -98,18 +133,23 @@ impl Zone {
     /// The two timestamp-slot bits this zone occupies, for testing against the
     /// frame's measured `written` set — and, in the backend leaf, for declaring
     /// which slots it just wrote.
-    pub(crate) const fn slot_bits(self) -> u16 {
+    pub(crate) const fn slot_bits(self) -> u32 {
         (1 << self.base()) | (1 << (self.base() + 1))
     }
 }
 
 /// Encode order, used to walk a frame's timestamps when feeding Tracy.
-const ZONES: [Zone; 7] = [
+const ZONES: [Zone; 12] = [
     Zone::Scene,
     Zone::GtaoGbuffer,
     Zone::GtaoDepthMips,
     Zone::Gtao,
     Zone::GtaoDenoise,
+    Zone::SplitScene,
+    Zone::SplitGtaoGbuffer,
+    Zone::SplitGtaoDepthMips,
+    Zone::SplitGtao,
+    Zone::SplitGtaoDenoise,
     Zone::Composite,
     Zone::Frame,
 ];
@@ -118,12 +158,11 @@ const ZONES: [Zone; 7] = [
 /// per-frame storage from this.
 pub(crate) const TIMESTAMP_SLOTS: usize = ZONES.len() * 2;
 
-// Both backends track which slots a frame wrote in a `u16` bitmask, so the zone list
-// cannot outgrow 8 entries without widening that field. At 7 there is room for one
-// more; this is the check that turns the eighth into a compile error rather than a
-// zone that silently never reports.
+// Both backends track which slots a frame wrote in a `u32` bitmask, so the zone list
+// cannot outgrow 16 entries without widening that field. This is the check that turns
+// the seventeenth into a compile error rather than a zone that silently never reports.
 const _: () = assert!(
-    TIMESTAMP_SLOTS <= u16::BITS as usize,
+    TIMESTAMP_SLOTS <= u32::BITS as usize,
     "a zone's slot bits must fit the backends' `written` mask"
 );
 
@@ -266,3 +305,41 @@ const CONTEXT_NAME: &str = "GPU (Metal frame)";
 /// zones are there beside it. Do not "fix" it by claiming Vulkan or D3D12.
 #[cfg(target_os = "macos")]
 const CONTEXT_TYPE: GpuContextType = GpuContextType::Invalid;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every zone owns its own pair of slots, laid out in `ZONES` order: a shared or
+    /// skipped pair is a zone that reports another's ticks, or none at all.
+    #[test]
+    fn each_zone_owns_the_slot_pair_at_its_place_in_encode_order() {
+        for (index, zone) in ZONES.iter().enumerate() {
+            assert_eq!(zone.base(), index * 2, "{zone:?} is out of place");
+        }
+        let all = ZONES.iter().fold(0u32, |seen, zone| {
+            assert_eq!(seen & zone.slot_bits(), 0, "{zone:?} overlaps another zone");
+            seen | zone.slot_bits()
+        });
+        assert_eq!(all.count_ones() as usize, TIMESTAMP_SLOTS);
+    }
+
+    /// The split's right-hand view times every pass it repeats into a pair of its
+    /// own, and nothing a frame runs once is given a twin.
+    #[test]
+    fn the_split_view_times_its_passes_apart_from_the_first_view() {
+        let repeated = [
+            Zone::Scene,
+            Zone::GtaoGbuffer,
+            Zone::GtaoDepthMips,
+            Zone::Gtao,
+            Zone::GtaoDenoise,
+        ];
+        for zone in repeated {
+            assert_ne!(zone.in_split(), zone);
+            assert_eq!(zone.in_split().in_split(), zone.in_split());
+        }
+        assert_eq!(Zone::Composite.in_split(), Zone::Composite);
+        assert_eq!(Zone::Frame.in_split(), Zone::Frame);
+    }
+}

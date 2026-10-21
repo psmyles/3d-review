@@ -14,21 +14,29 @@ use crate::state::UiState;
 use crate::theme::{color, size};
 use crate::widgets::{Tip, tip};
 
-/// Draw one flattened list as full-width rows. Reads state only; everything it
-/// wants changed comes back in the [`RowsOutput`].
+/// Draw the `visible` slice of one flattened list as full-width rows, inside a
+/// `ScrollArea::show_rows` that has laid out room for all of them. Reads state
+/// only; everything it wants changed comes back in the [`RowsOutput`].
+///
+/// The rows butt against each other so the alternating bands read as
+/// continuous, which needs `ui` to carry no vertical item spacing — and so does
+/// `show_rows`, which places row `i` at `i` row heights below the list's top
+/// using the spacing it was called with. The caller zeroes it there.
 pub(super) fn draw_rows(
     ui: &mut egui::Ui,
     state: &UiState,
     model: &ModelData,
     rows: &[TreeRow],
+    visible: std::ops::Range<usize>,
     guides: bool,
 ) -> RowsOutput {
     let mut output = RowsOutput::default();
-    // Rows butt against each other so the alternating bands read as continuous.
-    ui.spacing_mut().item_spacing.y = 0.0;
     // Every row fills the panel's width, so the whole strip — not just its text —
     // is the target and the band spans edge to edge.
     let x_range = ui.max_rect().x_range();
+    // Where row 0 sits, whether or not it is among the rows laid out this frame:
+    // `show_rows` starts this `Ui` at the first visible row.
+    let list_top = ui.max_rect().top() - visible.start as f32 * size::OUTLINER_ROW_HEIGHT;
     let pointer = ui.ctx().pointer_interact_pos();
     let font = egui::TextStyle::Body.resolve(ui.style());
     // Detached from `ui` so the row can interleave painting with the `&mut ui`
@@ -43,7 +51,12 @@ pub(super) fn draw_rows(
         },
     );
 
-    for (index, row) in rows.iter().enumerate() {
+    for (index, row) in rows
+        .iter()
+        .enumerate()
+        .take(visible.end)
+        .skip(visible.start)
+    {
         let node = &model.nodes[row.node];
         let (slot, _) = ui.allocate_exact_size(
             egui::vec2(ui.available_width(), size::OUTLINER_ROW_HEIGHT),
@@ -237,10 +250,19 @@ pub(super) fn draw_rows(
         if row.selectable && response.hovered() && !on_eye && !on_arrow {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
-        if state.outliner.scroll_to_selection && state.selection == Selection::Node(row.node) {
-            response.scroll_to_me(None);
-            output.scrolled = true;
-        }
+    }
+
+    // Keyboard navigation can step onto a row that is not laid out this frame,
+    // so the scroll aims at where that row sits in the list rather than at its
+    // response — the same request `Response::scroll_to_me` makes.
+    if state.outliner.scroll_to_selection
+        && let Selection::Node(selected) = state.selection
+        && let Some(at) = rows.iter().position(|row| row.node == selected)
+    {
+        let top = list_top + at as f32 * size::OUTLINER_ROW_HEIGHT;
+        let rect = egui::Rect::from_x_y_ranges(x_range, top..=top + size::OUTLINER_ROW_HEIGHT);
+        ui.scroll_to_rect(rect, None);
+        output.scrolled = true;
     }
 
     output

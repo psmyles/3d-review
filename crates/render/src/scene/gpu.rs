@@ -19,10 +19,14 @@
 //! sample nothing, and the skybox's own), and applies exactly the uniform blocks
 //! that program declares.
 //!
-//! *Exactly* is the operative word, and shdc decides it: a resource a program does
-//! not actually read is stripped from its reflection, so binding it is as wrong as
-//! leaving a declared one empty. Three consequences worth knowing, each of which is
-//! a validation failure if got wrong:
+//! *Exactly* is the operative word for the uniform blocks and for every declared
+//! slot, and shdc decides it: a resource a program does not actually read is
+//! stripped from its reflection. Leaving a declared slot empty is a validation
+//! failure, and so is applying a uniform block the program does not declare. A view
+//! or sampler bound in a slot it does *not* declare is merely never read — sokol
+//! validates and gathers bindings by walking the shader's slots, not the value's —
+//! which is what lets [`SceneGpu::clip_bindings`] hand over a material's seven
+//! slots to a program that reads one. Three consequences worth knowing:
 //!
 //! * `fs_main` never samples the environment cube (the skybox does), so the mesh
 //!   binds three IBL maps, not four.
@@ -126,8 +130,12 @@ pub(crate) struct SceneGpu {
     pub(super) lines: LinePipelineSet,
     /// The composite, drawn into the frame's swapchain pass as a deferred job.
     pub(super) composite: Pipeline,
-    /// Mesh-only single-sample view-normal/Z G-buffer pass.
+    /// Mesh-only single-sample view-normal/Z G-buffer pass, back-face culled like
+    /// [`ScenePipelineSet::mesh`], and its unculled twin for the Backface Rendering
+    /// option. It must cull as the shaded mesh does: a face the scene pass culled
+    /// is not on screen, and written here it would replace the surface that is.
     pub(super) gtao_gbuffer_pipeline: Pipeline,
+    pub(super) gtao_gbuffer_double_sided: Pipeline,
     /// One level of the depth prefilter chain, fullscreen.
     pub(super) gtao_depth_mip_pipeline: Pipeline,
     /// Horizon-based occlusion, fullscreen.
@@ -203,26 +211,30 @@ impl SceneGpu {
             c"composite",
         )?;
         // The G-buffer shares `vs_main` with the mesh, so it takes the same vertex
-        // layout and indexed draws; it culls nothing (a back face still occludes) and
-        // writes its own depth.
-        let gtao_gbuffer_pipeline = Pipeline::new(&PipelineDesc {
-            attributes: &SCENE_VERTEX_LAYOUT,
-            indexed: true,
-            topology: Topology::Triangles,
-            cull: Cull::None,
-            depth: Depth::WRITE,
-            depth_bias: DepthBias::default(),
-            depth_format: Some(crate::rhi::SCENE_DEPTH_FORMAT),
-            ..PipelineDesc::offscreen(
-                shader::make(
-                    generated::gtao_gbuffer_shader_desc,
-                    shader::bytecode!("gtao_gbuffer"),
-                    c"gtao gbuffer",
-                )?,
-                GBUFFER_COLORS,
-                c"gtao gbuffer",
-            )
-        })?;
+        // layout and indexed draws; it culls exactly as the shaded mesh does (see the
+        // field) and writes its own depth.
+        let gtao_gbuffer = |cull: Cull, label: &'static std::ffi::CStr| {
+            Pipeline::new(&PipelineDesc {
+                attributes: &SCENE_VERTEX_LAYOUT,
+                indexed: true,
+                topology: Topology::Triangles,
+                cull,
+                depth: Depth::WRITE,
+                depth_bias: DepthBias::default(),
+                depth_format: Some(crate::rhi::SCENE_DEPTH_FORMAT),
+                ..PipelineDesc::offscreen(
+                    shader::make(
+                        generated::gtao_gbuffer_shader_desc,
+                        shader::bytecode!("gtao_gbuffer"),
+                        label,
+                    )?,
+                    GBUFFER_COLORS,
+                    label,
+                )
+            })
+        };
+        let gtao_gbuffer_pipeline = gtao_gbuffer(Cull::Back, c"gtao gbuffer")?;
+        let gtao_gbuffer_double_sided = gtao_gbuffer(Cull::None, c"gtao gbuffer double-sided")?;
         let gtao_pipeline = Pipeline::new(&PipelineDesc::offscreen(
             shader::make(
                 generated::gtao_shader_desc,
@@ -256,6 +268,7 @@ impl SceneGpu {
             lines: build_line_pipelines()?,
             composite: Pipeline::new(&PipelineDesc::swapchain(composite_shader, c"composite"))?,
             gtao_gbuffer_pipeline,
+            gtao_gbuffer_double_sided,
             gtao_depth_mip_pipeline,
             gtao_pipeline,
             gtao_denoise_pipeline,
@@ -270,7 +283,7 @@ impl SceneGpu {
             uv_grid: VertexBuffer::pullable(&uv_grid_lines(), c"uv grid")?,
             uv_texture: None,
             uv_checker: None,
-            targets: TargetSet::new(width, height, sample_count)?,
+            targets: TargetSet::new(width, height, sample_count, TargetSetId::Primary)?,
             split_targets: None,
             sample_count,
             requested_sample_count: sample_count,
@@ -292,6 +305,8 @@ impl SceneGpu {
         material_revision: u64,
         camera: OrbitCamera,
     ) -> GpuResult<()> {
+        // Nothing is converging until this frame says so (`idle_ao_history`).
+        self.idle_ao_history();
         // Every workspace but Opt draws the source model, and Opt may have left the
         // processed slot active. Without this the source mesh would be synced *into*
         // the processed slot — rebuilding both, and discarding the processed cache on
@@ -381,16 +396,7 @@ impl SceneGpu {
         // going looking for it: which of the denoise ping-pongs holds the result
         // depends on the pass count, and on a converged frame on the pass count of the
         // run that last actually happened.
-        let ao = gtao_active.then(|| {
-            self.record_gtao(
-                frame,
-                camera,
-                scene.projection,
-                scene.gtao,
-                targets,
-                &uniforms,
-            )
-        });
+        let ao = gtao_active.then(|| self.record_gtao(frame, camera, scene, targets, &uniforms));
         self.queue_composite(
             frame,
             &post_uniforms(
@@ -423,11 +429,19 @@ impl SceneGpu {
     /// The processed mesh itself stays uploaded, so returning to Opt redraws it
     /// without a rebuild.
     ///
-    /// Called by every path that is not Opt - the 3D scene, the UV viewport and
-    /// the Tex viewport - since leaving the workspace is not an event the
-    /// renderer sees, only a frame that draws something else.
+    /// Called by every single-view path that is not Opt - the 3D scene, the UV
+    /// viewport and the Tex viewport - since leaving the workspace is not an event
+    /// the renderer sees, only a frame that draws something else. The Aud split
+    /// draws through the second target set itself, so it takes only the
+    /// mesh-derived half ([`Self::release_opt_derived`]).
     pub(crate) fn release_opt_views(&mut self) {
         self.release_split_targets();
+        self.release_opt_derived();
+    }
+
+    /// [`Self::release_opt_views`] without the split's target set: both slots' ghost
+    /// wireframes and everything derived from the processed mesh.
+    pub(super) fn release_opt_derived(&mut self) {
         self.release_ghost_wireframes();
         match self.active_slot {
             SlotId::Processed => self.active.release_derived(),
@@ -569,7 +583,7 @@ impl SceneGpu {
         // alpha is the composite's coverage mask, so the cleared background reads as
         // "no geometry" and the post pass paints the chosen viewport background there
         // (in display space, after tone mapping).
-        frame.zone_begin(Zone::Scene);
+        frame.zone_begin(targets.zone(Zone::Scene));
         frame.begin_offscreen_pass(
             &[&targets.color, &targets.ambient],
             Some(&targets.depth),
@@ -611,7 +625,7 @@ impl SceneGpu {
             self.draw_line_views(frame, &views);
             frame.end_pass();
         }
-        frame.zone_end(Zone::Scene);
+        frame.zone_end(targets.zone(Zone::Scene));
     }
 
     /// The single-sample pass the lines draw in when the scene pass was

@@ -35,8 +35,14 @@ pub struct MessageDef {
     /// Attribute name, for an attribute like `.description`.
     pub attr: Option<String>,
     /// Variable names the pattern references (`$modifier`), sorted and deduped.
-    /// A message with any of these gets a typed formatter beside its key.
+    /// A message with any of these gets a typed formatter beside its key, which
+    /// takes them in this order.
     pub vars: Vec<String>,
+    /// The same names in the order the English sentence first uses them, for
+    /// the formatter's doc comment: every argument has the same type, so a call
+    /// that swaps two compiles, and reading the sentence's order beside the
+    /// parameters' is how a call site is checked.
+    pub vars_in_order: Vec<String>,
     /// The message's text with placeables collapsed, for the key's doc comment.
     pub preview: String,
 }
@@ -230,7 +236,7 @@ pub fn generate_keys(locales_dir: &Path, prefixes: &[&str], out_dir: &Path) -> R
             );
 
             if !def.vars.is_empty() {
-                let fn_name = name.to_lowercase();
+                let fn_name = fn_ident(&name.to_lowercase());
                 let params = def
                     .vars
                     .iter()
@@ -240,6 +246,16 @@ pub fn generate_keys(locales_dir: &Path, prefixes: &[&str], out_dir: &Path) -> R
                 let _ = writeln!(
                     rust,
                     "    /// `{target}`, with its variables. A missing argument is a compile error."
+                );
+                // Every parameter takes any value, so a call passing two in
+                // each other's place compiles; the doc says where each lands.
+                let _ = writeln!(rust, "    ///");
+                let _ = writeln!(
+                    rust,
+                    "    /// Arguments are alphabetical: {}. The sentence reads them as {}: {}",
+                    quoted(&def.vars, "`", "`"),
+                    quoted(&def.vars_in_order, "`{", "}`"),
+                    doc_escape(&def.preview),
                 );
                 let _ = writeln!(
                     rust,
@@ -405,9 +421,11 @@ fn message_def(
     path: &Path,
     line: usize,
 ) -> Result<MessageDef> {
-    let mut vars = BTreeSet::new();
+    let mut vars_in_order = Vec::new();
     let mut preview = String::new();
-    walk_pattern(pattern, &mut vars, &mut preview);
+    walk_pattern(pattern, &mut vars_in_order, &mut preview);
+    let mut vars = vars_in_order.clone();
+    vars.sort();
 
     for var in &vars {
         if !is_ident(var) || is_keyword(var) {
@@ -426,12 +444,16 @@ fn message_def(
         file: file.to_owned(),
         id: id.to_owned(),
         attr: attr.map(str::to_owned),
-        vars: vars.into_iter().collect(),
+        vars,
+        vars_in_order,
         preview: preview.split_whitespace().collect::<Vec<_>>().join(" "),
     })
 }
 
-fn walk_pattern(pattern: &ast::Pattern<&str>, vars: &mut BTreeSet<String>, preview: &mut String) {
+/// Walk a pattern, collecting its variables in the order the text first uses
+/// them (a select's selector, then its default variant, then the others) and
+/// a one-line preview of its default reading.
+fn walk_pattern(pattern: &ast::Pattern<&str>, vars: &mut Vec<String>, preview: &mut String) {
     for element in &pattern.elements {
         match element {
             ast::PatternElement::TextElement { value } => preview.push_str(value),
@@ -444,7 +466,7 @@ fn walk_pattern(pattern: &ast::Pattern<&str>, vars: &mut BTreeSet<String>, previ
 
 fn walk_expression(
     expression: &ast::Expression<&str>,
-    vars: &mut BTreeSet<String>,
+    vars: &mut Vec<String>,
     preview: &mut String,
 ) {
     match expression {
@@ -466,14 +488,12 @@ fn walk_expression(
     }
 }
 
-fn walk_inline(
-    inline: &ast::InlineExpression<&str>,
-    vars: &mut BTreeSet<String>,
-    preview: &mut String,
-) {
+fn walk_inline(inline: &ast::InlineExpression<&str>, vars: &mut Vec<String>, preview: &mut String) {
     match inline {
         ast::InlineExpression::VariableReference { id } => {
-            vars.insert(id.name.to_owned());
+            if !vars.iter().any(|var| var == id.name) {
+                vars.push(id.name.to_owned());
+            }
             preview.push('{');
             preview.push_str(id.name);
             preview.push('}');
@@ -590,6 +610,28 @@ fn is_ident(text: &str) -> bool {
     !text.is_empty()
         && !text.starts_with(|c: char| c.is_ascii_digit())
         && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// A formatter's name as Rust can spell it. The name is the message's own, so
+/// a message named for a keyword (`ui-transport-loop`, the day it gains a
+/// variable) would generate `fn loop`: a keyword becomes a raw identifier
+/// (`k::r#loop`), and the three a raw identifier cannot be take a trailing
+/// underscore instead (`self_`).
+fn fn_ident(name: &str) -> String {
+    match name {
+        "crate" | "self" | "super" => format!("{name}_"),
+        keyword if is_keyword(keyword) => format!("r#{keyword}"),
+        plain => plain.to_owned(),
+    }
+}
+
+/// `names` as a list for a doc comment, each wrapped in `open`/`close`.
+fn quoted(names: &[String], open: &str, close: &str) -> String {
+    names
+        .iter()
+        .map(|name| format!("{open}{name}{close}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn is_keyword(text: &str) -> bool {

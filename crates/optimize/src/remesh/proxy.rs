@@ -7,10 +7,10 @@
 //! object and leaves a hole along every seam.
 //!
 //! So the proxy concatenates the node's pieces and welds by **position bits**
-//! across all of them. That is lossy in every attribute — which is exactly right
-//! here, because no attribute crosses this boundary: the rebuild is told where
-//! the surface is and nothing else, and [`super::project`] puts the attributes
-//! back afterwards.
+//! across all of them ([`super::weld`]). That is lossy in every attribute —
+//! which is exactly right here, because no attribute crosses this boundary: the
+//! rebuild is told where the surface is and nothing else, and
+//! [`super::project`] puts the attributes back afterwards.
 
 use std::collections::HashMap;
 
@@ -18,6 +18,8 @@ use glam::Vec3;
 use review_model::Bounds;
 
 use crate::submesh::Submesh;
+
+use super::weld::position_key;
 
 /// One node's surface as the rebuild sees it.
 pub(crate) struct Proxy {
@@ -39,16 +41,6 @@ impl Proxy {
     pub(crate) fn triangle_count(&self) -> usize {
         self.indices.len() / 3
     }
-
-    /// Bounding-sphere radius, which is what the projection range is a fraction
-    /// of. Zero for an empty proxy.
-    pub(crate) fn radius(&self) -> f32 {
-        if self.bounds.is_empty() {
-            0.0
-        } else {
-            self.bounds.radius()
-        }
-    }
 }
 
 pub(crate) fn build(pieces: &[&Submesh]) -> Proxy {
@@ -68,6 +60,8 @@ pub(crate) fn build(pieces: &[&Submesh]) -> Proxy {
         let mut local: Vec<u32> = Vec::with_capacity(piece.vertices.len());
         for vertex in &piece.vertices {
             let key = position_key(vertex.position);
+            // Incremental rather than through `weld::weld`, because the
+            // renumbering is per piece and the hash map spans them all.
             let next = (positions.len() / 3) as u32;
             let slot = *slot_of.entry(key).or_insert_with(|| {
                 positions.extend_from_slice(&[
@@ -119,15 +113,4 @@ pub(crate) fn build(pieces: &[&Submesh]) -> Proxy {
         area: area as f32,
         bounds,
     }
-}
-
-/// A position as its exact bit pattern. Two vertices merge only when their
-/// coordinates are byte-for-byte equal — which is what a corner split produces,
-/// so it rejoins every seam import made and nothing the artist authored.
-fn position_key(position: Vec3) -> [u32; 3] {
-    [
-        position.x.to_bits(),
-        position.y.to_bits(),
-        position.z.to_bits(),
-    ]
 }

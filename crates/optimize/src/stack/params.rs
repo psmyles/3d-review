@@ -27,7 +27,8 @@ pub struct WeldParams {
     pub compare_normals: bool,
     /// Include UVs in the equality test. Off merges across UV seams.
     pub compare_uvs: bool,
-    /// Include vertex colors in the equality test.
+    /// Include vertex colors in the equality test — every colour set, not only
+    /// the first.
     pub compare_colors: bool,
 }
 

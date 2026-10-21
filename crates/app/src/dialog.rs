@@ -13,15 +13,17 @@
 //! has (`loading.rs`, `texture_manager.rs`, `opt.rs`): the request goes to a
 //! worker thread, the worker blocks on the OS dialog, and the answer comes home
 //! as a [`UserEvent::DialogDone`] applied on the main thread. The event loop
-//! keeps running the whole time, so the viewport still orbits and animates while
-//! the picker is up.
+//! keeps running the whole time, so the viewport still draws and animates while
+//! the picker is up. (On Windows the picker is owned by the window, so it stays
+//! in front of it and the window takes no input until it closes — see
+//! [`App::dialog_picker`].)
 //!
 //! Two consequences the inline version got for free and this one has to arrange:
 //!
 //! * **One dialog at a time.** A modal dialog made a second one unreachable —
 //!   the window it would have been asked from was frozen. Nothing freezes now, so
 //!   `Ctrl+O` twice in a row would open two pickers; [`App::ask`] drops a request
-//!   that arrives while one is open.
+//!   that arrives while one is open, and says so.
 //! * **The answer's payload is captured when the dialog opens, not when it
 //!   closes.** An export or a preset save is *about* something — a LOD chain, an
 //!   operation stack — and while the picker is up the user can still edit the
@@ -65,7 +67,8 @@ pub(crate) enum Dialog {
         /// materials and node names.
         source: Arc<ModelData>,
         /// The source's property capture as it stood when Export was clicked
-        /// (`None` if it had not landed yet, which the report notes).
+        /// (`None` if it had not landed yet, or the chain was processed before
+        /// it did, which the report notes).
         extras: Option<Arc<SourceExtras>>,
         options: ExportOptions,
         /// Default file name stem, which the per-LOD packaging also suffixes.
@@ -133,11 +136,12 @@ impl Dialog {
         }
     }
 
-    /// Run the dialog. **Blocks** for as long as it is on screen, which is why
-    /// this is only ever called from the worker [`App::ask`] spawns.
-    fn ask(self) -> Option<DialogAnswer> {
+    /// Run the dialog, built on `picker`. **Blocks** for as long as it is on
+    /// screen, which is why this is only ever called from the worker
+    /// [`App::ask`] spawns.
+    fn ask(self, picker: rfd::FileDialog) -> Option<DialogAnswer> {
         match self {
-            Dialog::OpenModel => rfd::FileDialog::new()
+            Dialog::OpenModel => picker
                 .add_filter(
                     review_localization::tr(keys::app_dialogs::FILTER_FBX),
                     &["fbx"],
@@ -145,7 +149,7 @@ impl Dialog {
                 .set_title(review_localization::tr(keys::app_dialogs::OPEN_MODEL))
                 .pick_files()
                 .map(DialogAnswer::OpenModel),
-            Dialog::AddAnimations => rfd::FileDialog::new()
+            Dialog::AddAnimations => picker
                 .add_filter(
                     review_localization::tr(keys::app_dialogs::FILTER_FBX),
                     &["fbx"],
@@ -153,7 +157,7 @@ impl Dialog {
                 .set_title(review_localization::tr(keys::app_dialogs::ADD_ANIMATIONS))
                 .pick_files()
                 .map(DialogAnswer::AddAnimations),
-            Dialog::ImportTextures => rfd::FileDialog::new()
+            Dialog::ImportTextures => picker
                 .add_filter(
                     review_localization::tr(keys::app_dialogs::FILTER_IMAGE),
                     &TEXTURE_EXTENSIONS,
@@ -167,7 +171,7 @@ impl Dialog {
                 extras,
                 options,
                 stem,
-            } => rfd::FileDialog::new()
+            } => picker
                 .set_title(review_localization::tr(keys::app_dialogs::EXPORT_MESH))
                 .add_filter(
                     review_localization::tr(keys::app_dialogs::FILTER_FBX),
@@ -182,7 +186,7 @@ impl Dialog {
                     extras,
                     options,
                 }),
-            Dialog::SavePreset { json } => rfd::FileDialog::new()
+            Dialog::SavePreset { json } => picker
                 .set_title(review_localization::tr(keys::app_dialogs::SAVE_PRESET))
                 .add_filter(
                     review_localization::tr(keys::app_dialogs::FILTER_PRESET),
@@ -191,7 +195,7 @@ impl Dialog {
                 .set_file_name(review_localization::tr(keys::app_dialogs::PRESET_FILE_NAME))
                 .save_file()
                 .map(|path| DialogAnswer::SavePreset { path, json }),
-            Dialog::LoadPreset => rfd::FileDialog::new()
+            Dialog::LoadPreset => picker
                 .set_title(review_localization::tr(keys::app_dialogs::LOAD_PRESET))
                 .add_filter(
                     review_localization::tr(keys::app_dialogs::FILTER_PRESET),
@@ -199,7 +203,7 @@ impl Dialog {
                 )
                 .pick_file()
                 .map(DialogAnswer::LoadPreset),
-            Dialog::SaveAuditProfile { json } => rfd::FileDialog::new()
+            Dialog::SaveAuditProfile { json } => picker
                 .set_title(review_localization::tr(
                     keys::app_dialogs::SAVE_AUDIT_PROFILE,
                 ))
@@ -212,7 +216,7 @@ impl Dialog {
                 ))
                 .save_file()
                 .map(|path| DialogAnswer::SaveAuditProfile { path, json }),
-            Dialog::LoadAuditProfile => rfd::FileDialog::new()
+            Dialog::LoadAuditProfile => picker
                 .set_title(review_localization::tr(
                     keys::app_dialogs::LOAD_AUDIT_PROFILE,
                 ))
@@ -222,7 +226,7 @@ impl Dialog {
                 )
                 .pick_file()
                 .map(DialogAnswer::LoadAuditProfile),
-            Dialog::SaveAuditReport { json, stem } => rfd::FileDialog::new()
+            Dialog::SaveAuditReport { json, stem } => picker
                 .set_title(review_localization::tr(
                     keys::app_dialogs::SAVE_AUDIT_REPORT,
                 ))
@@ -243,9 +247,18 @@ impl App {
     ///
     /// A request that arrives while another dialog is open is dropped: the OS
     /// modal used to make a second one unreachable, and two pickers fighting over
-    /// the same click is not an improvement on that.
+    /// the same click is not an improvement on that. It is dropped *out loud*:
+    /// a picker that has ended up out of sight would otherwise turn every later
+    /// Ctrl+O, Export or Load Preset into a command that does nothing at all.
     pub(crate) fn ask(&mut self, dialog: Dialog) {
         if self.dialog_open {
+            log::info!(
+                "a file dialog is already open; {} not opened",
+                dialog.thread_name()
+            );
+            self.notifications.info(
+                review_localization::tr(keys::app_notifications::DIALOG_ALREADY_OPEN).into_owned(),
+            );
             return;
         }
         // Without a proxy there is nowhere for the answer to land. `main` installs
@@ -262,11 +275,12 @@ impl App {
 
         self.dialog_open = true;
         let name = dialog.thread_name();
+        let picker = self.dialog_picker();
         let spawned = std::thread::Builder::new()
             .name(name.to_owned())
             .spawn(move || {
                 prof::thread_name(name);
-                let answer = dialog.ask();
+                let answer = dialog.ask(picker);
                 // A send failure only means the event loop has exited.
                 let _ = proxy.send_event(UserEvent::DialogDone(answer.map(Box::new)));
             });
@@ -278,6 +292,25 @@ impl App {
             self.notifications.error(
                 review_localization::tr(keys::app_notifications::DIALOG_FAILED).into_owned(),
             );
+        }
+    }
+
+    /// The picker every dialog is built on: owned by the viewer's window on
+    /// Windows, so it opens in front of that window and stays in front of it.
+    ///
+    /// An unowned picker shown from a worker thread can come up behind the
+    /// window it was asked from, where it reads as a click that did nothing.
+    /// Setting the owner only reads the window's handle, here on the main
+    /// thread; the dialog is still shown on the worker, so nothing about D9
+    /// changes. Owned, the picker is modal to the window the way a native one
+    /// is — the viewport keeps drawing and animating while it is up, but takes
+    /// no input. Not on macOS: rfd raises its panel above every window there
+    /// already, and an owner would turn the panel into a sheet, which is a
+    /// different dialog rather than a fix.
+    fn dialog_picker(&self) -> rfd::FileDialog {
+        match self.window.as_deref() {
+            Some(window) if cfg!(windows) => rfd::FileDialog::new().set_parent(window),
+            _ => rfd::FileDialog::new(),
         }
     }
 

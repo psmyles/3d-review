@@ -28,6 +28,7 @@ use crate::labels;
 use crate::state::{
     TextureAssign, TextureIntent, TexturePoolEntry, TextureSlotRef, UiState, WorkspaceMode,
 };
+use crate::theme;
 use crate::theme::size;
 use crate::widgets::{
     Tip, labeled_color_button, labeled_combo, labeled_slider_with_value, panel_grid, tip,
@@ -46,7 +47,7 @@ pub(crate) struct InspectorOutput {
     pub material_edit_active: bool,
 }
 
-pub(crate) fn body(ui: &mut egui::Ui, state: &UiState, model: &ModelData) -> InspectorOutput {
+pub(crate) fn body(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData) -> InspectorOutput {
     if state.texture_inspected() {
         return egui::ScrollArea::vertical()
             .show(ui, |ui| texture_inspector(ui, state))
@@ -405,7 +406,7 @@ fn texture_mapping_row(
 }
 
 /// Section 3 — the scene texture pool: each imported file as a thumbnail + name +
-/// remove (✕), then an "Add textures" button and the drop-to-add hint.
+/// remove mark, then an "Add textures" button and the drop-to-add hint.
 fn texture_files_section(ui: &mut egui::Ui, pool: &[TexturePoolEntry], out: &mut InspectorOutput) {
     if pool.is_empty() {
         ui.weak(keys::ui_inspector::NO_TEXTURES);
@@ -447,7 +448,7 @@ fn texture_file_row(ui: &mut egui::Ui, entry: &TexturePoolEntry, out: &mut Inspe
             ui.add(egui::Label::new(pool_name(&entry.path)).truncate());
         });
         if ui
-            .button("\u{2715}")
+            .button(theme::REMOVE_GLYPH)
             .on_hover_text(keys::ui_inspector::REMOVE_TEXTURE)
             .clicked()
         {
@@ -555,11 +556,18 @@ fn add_textures_controls(ui: &mut egui::Ui, out: &mut InspectorOutput) {
 
 /// Read-only stats for a selected node: name, type, child count, triangle count,
 /// and world position (display metadata only — invariant 1).
-fn node_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData, index: usize) {
+///
+/// `state` is mutable only for the two counts, which come from per-model caches
+/// rather than a walk over every node and triangle on each repaint.
+fn node_inspector(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData, index: usize) {
     let Some(node) = model.nodes.get(index) else {
         ui.weak(keys::ui_inspector::NODE_GONE);
         return;
     };
+    let child_count = state.node_child_count(model, index);
+    // Own triangles (this node's mesh), not the whole subtree — a quick audit
+    // figure that matches what selecting just this node would isolate.
+    let triangle_count = state.node_triangle_count(model, index);
 
     let name = if node.name.is_empty() {
         keys::ui_outliner::unnamed_node(index as f64)
@@ -575,19 +583,6 @@ fn node_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData, index: 
     } else {
         labels::node_kind(node.kind)
     };
-    let child_count = model
-        .nodes
-        .iter()
-        .filter(|child| child.parent == Some(index))
-        .count();
-    // Own triangles (this node's mesh), not the whole subtree — a quick audit
-    // figure that matches what selecting just this node would isolate.
-    let triangle_count = model
-        .triangles
-        .node
-        .iter()
-        .filter(|&&owner| owner as usize == index)
-        .count();
     let position = node.transform.w_axis.truncate();
 
     panel_grid(ui, "inspector_node", |ui| {
@@ -609,7 +604,11 @@ fn node_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData, index: 
         crate::widgets::value_row(
             ui,
             Tip::new(keys::ui_inspector::POSITION).page(Page::OutlinerInspector),
-            format!("{:.3}, {:.3}, {:.3}", position.x, position.y, position.z),
+            keys::ui_inspector::position_value(
+                format!("{:.3}", position.x),
+                format!("{:.3}", position.y),
+                format!("{:.3}", position.z),
+            ),
         );
 
         // Skinned-mesh rows: the skinning method the file declared (the viewer
@@ -687,7 +686,7 @@ fn node_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelData, index: 
                         Tip::new(keys::ui_inspector::SHARE_OF_MESH)
                             .describe(keys::ui_inspector::SHARE_OF_MESH_DESCRIPTION)
                             .page(Page::OutlinerInspector),
-                        format!("{share:.1}%"),
+                        keys::ui_inspector::share_value(format!("{share:.1}")),
                     );
                 }
             }
@@ -772,7 +771,7 @@ fn bone_selection_inspector(ui: &mut egui::Ui, state: &UiState, model: &ModelDat
                     Tip::new(keys::ui_inspector::SHARE_OF_MESH)
                         .describe(keys::ui_inspector::SHARE_OF_MESH_DESCRIPTION)
                         .page(Page::OutlinerInspector),
-                    format!("{share:.1}%"),
+                    keys::ui_inspector::share_value(format!("{share:.1}")),
                 );
             }
         }

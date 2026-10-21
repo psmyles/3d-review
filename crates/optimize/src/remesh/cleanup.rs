@@ -51,12 +51,23 @@
 //! thin shell folds back on itself — is an ordinary interior edge here, two
 //! faces like any other, and yet it is exactly where the silhouette is. The
 //! collapse knows (it was a feature vertex in the source) and says so.
+//!
+//! **An edge between two held vertices is never flipped either.** Holding the
+//! vertices still is half of keeping a crease: the other half is the edge that
+//! runs along it, and a flip replaces exactly one edge with the other diagonal
+//! of its quad. The flip's own guard refuses a pair folded past a right angle,
+//! which keeps a rim, but a crease **Keep sharp edges** asked for at thirty
+//! degrees is anywhere from there to ninety - a chamfer, a hexagonal prism's
+//! sixty, an octagon's forty-five - and a flip for valence across one of those
+//! turned a straight crease into a zig-zag.
+
+use std::collections::HashMap;
 
 use crate::cancel::{CancelToken, cancelled};
 
 use super::RemeshOutput;
 use super::geom;
-use super::topology::Topology;
+use super::topology::{Topology, edges_among};
 
 /// How far toward the neighbourhood centre a vertex moves in one pass. Half is
 /// the usual choice: the whole way overshoots and oscillates.
@@ -104,7 +115,7 @@ pub(crate) fn run(
         // Rebuilt each round: both passes change the connectivity, and this
         // mesh is the *output*, so indexing it is cheap next to the input.
         let topology = Topology::build(&output.corners, output.positions.len(), 1, cancel);
-        flip_pass(output, &topology);
+        flip_pass(output, &topology, pinned);
 
         let topology = Topology::build(&output.corners, output.positions.len(), 1, cancel);
         relax_pass(output, &topology, pinned);
@@ -120,8 +131,10 @@ fn is_held(topology: &Topology, pinned: &[bool], vertex: u32) -> bool {
 }
 
 /// Flip the shared edge of two triangles wherever it brings the four vertices
-/// closer to their target valence.
-fn flip_pass(output: &mut RemeshOutput, topology: &Topology) {
+/// closer to their target valence - except an edge whose two ends are held,
+/// which is a crease, a rim or an outline the rebuild was told to keep (see
+/// the module docs).
+fn flip_pass(output: &mut RemeshOutput, topology: &Topology, pinned: &[bool]) {
     let count = output.positions.len();
     let mut valence: Vec<i32> = vec![0; count];
     let mut scratch = Vec::new();
@@ -129,13 +142,17 @@ fn flip_pass(output: &mut RemeshOutput, topology: &Topology) {
         topology.edges_at(&output.corners, vertex, &mut scratch);
         valence[vertex as usize] = scratch.len() as i32;
     }
+    let mut live = LiveFaces::new(topology);
 
     // In vertex order, and each edge considered from its lower end, so the pass
     // is a function of the mesh rather than of a traversal.
     for vertex in 0..count as u32 {
-        topology.edges_at(&output.corners, vertex, &mut scratch);
+        edges_among(&output.corners, vertex, live.of(vertex), &mut scratch);
         for edge in &scratch {
             if edge.other < vertex || edge.uses != 2 {
+                continue;
+            }
+            if is_held(topology, pinned, vertex) && is_held(topology, pinned, edge.other) {
                 continue;
             }
             let [first, second] = edge.faces;
@@ -156,19 +173,73 @@ fn flip_pass(output: &mut RemeshOutput, topology: &Topology) {
             if after >= before {
                 continue;
             }
-            if !flip_is_safe(output, topology, &quad) {
+            if !flip_is_safe(output, &live, &quad) {
                 continue;
             }
             let [forward, backward] = quad.flipped();
             write_face(output, quad.forward, forward);
             write_face(output, quad.backward, backward);
+            live.flipped(&quad);
             valence[vertex as usize] -= 1;
             valence[edge.other as usize] -= 1;
             valence[left as usize] += 1;
             valence[right as usize] += 1;
-            // The cached edge list for this vertex is stale now; the next
-            // vertex re-reads it, and this one is done either way.
+            // `scratch` describes this vertex as it was before the flip, so it
+            // is done for this pass; every vertex after it reads its edges from
+            // `live`, which the flip has just brought up to date.
             break;
+        }
+    }
+}
+
+/// Each vertex's faces as the flip pass has left them.
+///
+/// A flip rewrites two faces, and the index the pass starts from knows nothing
+/// about it: read from there, the two vertices opposite a flipped edge each miss
+/// the face they have just joined, so the new edge between them reads as a
+/// border and the duplicate-edge guard cannot see it - a later flip could lay a
+/// second copy of it. Only the four corners of a flip change, so they get lists
+/// of their own and everything else still reads the index.
+struct LiveFaces<'a> {
+    topology: &'a Topology,
+    changed: HashMap<u32, Vec<u32>>,
+}
+
+impl<'a> LiveFaces<'a> {
+    fn new(topology: &'a Topology) -> Self {
+        Self {
+            topology,
+            changed: HashMap::new(),
+        }
+    }
+
+    /// `vertex`'s faces, ascending - the order the index keeps them in.
+    fn of(&self, vertex: u32) -> &[u32] {
+        self.changed
+            .get(&vertex)
+            .map_or_else(|| self.topology.faces_of(vertex), Vec::as_slice)
+    }
+
+    fn list(&mut self, vertex: u32) -> &mut Vec<u32> {
+        let topology = self.topology;
+        self.changed
+            .entry(vertex)
+            .or_insert_with(|| topology.faces_of(vertex).to_vec())
+    }
+
+    /// Account for `quad` having just been flipped: its two old ends each lose
+    /// one of the faces, and its two apexes each gain one.
+    fn flipped(&mut self, quad: &Quad) {
+        let (forward, backward) = (quad.forward, quad.backward);
+        // `a` keeps the forward face and `b` the backward one (see
+        // `Quad::flipped`); each apex is now in both.
+        self.list(quad.a).retain(|&face| face != backward);
+        self.list(quad.b).retain(|&face| face != forward);
+        for (apex, joined) in [(quad.forward_apex, backward), (quad.backward_apex, forward)] {
+            let faces = self.list(apex);
+            if let Err(at) = faces.binary_search(&joined) {
+                faces.insert(at, joined);
+            }
         }
     }
 }
@@ -279,11 +350,17 @@ fn apex_and_direction(output: &RemeshOutput, face: u32, a: u32, b: u32) -> Optio
 
 /// Whether flipping is legal: it must not duplicate an existing edge, and it
 /// must not turn either new face inside out.
-fn flip_is_safe(output: &RemeshOutput, topology: &Topology, quad: &Quad) -> bool {
+fn flip_is_safe(output: &RemeshOutput, live: &LiveFaces<'_>, quad: &Quad) -> bool {
     // An edge between the two opposite corners already existing would make the
-    // flip produce a second copy of it, which no surface can carry.
+    // flip produce a second copy of it, which no surface can carry. Read from
+    // the faces as they stand, since an earlier flip may be what made it.
     let mut edges = Vec::new();
-    topology.edges_at(&output.corners, quad.forward_apex, &mut edges);
+    edges_among(
+        &output.corners,
+        quad.forward_apex,
+        live.of(quad.forward_apex),
+        &mut edges,
+    );
     if edges.iter().any(|edge| edge.other == quad.backward_apex) {
         return false;
     }
@@ -385,8 +462,20 @@ fn relax_pass(output: &mut RemeshOutput, topology: &Topology, pinned: &[bool]) {
         // does not fold *more* than it already did is what keeps this pass from
         // making the mesh worse — while still letting it undo a fold the
         // collapse left, which is most of what it achieves here.
-        if fold_count(output, topology, vertex, &original, Some(candidate))
-            > fold_count(output, topology, vertex, &original, None)
+        //
+        // Judged against the mesh as this pass has *already* moved it, and the
+        // move is made before the next vertex is judged. The target above is
+        // read from where everything started, but a guard read from there too
+        // passed two neighbours that each moved safely on their own and folded
+        // the face between them together - which no check had seen.
+        if fold_count(
+            output,
+            topology,
+            vertex,
+            &moved,
+            Some(candidate),
+            &mut scratch,
+        ) > fold_count(output, topology, vertex, &moved, None, &mut scratch)
         {
             continue;
         }
@@ -398,18 +487,27 @@ fn relax_pass(output: &mut RemeshOutput, topology: &Topology, pinned: &[bool]) {
     }
 }
 
-/// How many pairs of faces around `vertex` fold back past a right angle, with
-/// the vertex either where it is (`candidate` of `None`) or moved.
+/// How many edges a move of `vertex` can reach fold back past a right angle,
+/// with the vertex either where it is (`candidate` of `None`) or moved.
 ///
-/// A fold is a disagreement between two faces sharing an edge, which is why it
-/// cannot be judged by comparing one face against its own earlier self: every
-/// face agrees with where it just was.
+/// A fold is a disagreement between the two faces sharing an edge, which is why
+/// it cannot be judged by comparing one face against its own earlier self:
+/// every face agrees with where it just was.
+///
+/// Every edge of every face around the vertex, because those are all the edges
+/// whose two faces the move can turn against each other: the edges *at* the
+/// vertex, both of whose faces are in its fan, and the edges *opposite* it,
+/// whose face across lies outside the fan but whose face on this side the move
+/// tilts all the same. Counting the first kind alone let a move fold the fan
+/// over onto its neighbours while reporting no new fold at all. Together they
+/// are what makes "does not fold more" mean the whole mesh does not.
 fn fold_count(
     output: &RemeshOutput,
     topology: &Topology,
     vertex: u32,
     positions: &[[f64; 3]],
     candidate: Option<[f64; 3]>,
+    scratch: &mut Vec<super::topology::EdgeAt>,
 ) -> usize {
     let at = |corner: u32| -> [f64; 3] {
         match candidate {
@@ -417,31 +515,39 @@ fn fold_count(
             _ => positions[corner as usize],
         }
     };
-    let faces = topology.faces_of(vertex);
-    let mut folded = 0;
-    for (index, &face) in faces.iter().enumerate() {
+    let mut reached: Vec<(u32, u32)> = Vec::new();
+    for &face in topology.faces_of(vertex) {
         let corners = face_of(output, face);
-        let normal = geom::normalized(cross_at(&at, corners));
-        for &other in &faces[index + 1..] {
-            let others = face_of(output, other);
-            // Only faces sharing an edge say anything about a fold; two faces
-            // meeting at this vertex alone may legitimately face anywhere.
-            if others.iter().filter(|c| corners.contains(c)).count() != 2 {
-                continue;
-            }
-            let against = geom::normalized(cross_at(&at, others));
-            match (normal, against) {
-                (Some(normal), Some(against)) => {
-                    if normal[0] * against[0] + normal[1] * against[1] + normal[2] * against[2]
-                        < 0.0
-                    {
-                        folded += 1;
-                    }
+        for corner in 0..3 {
+            let (a, b) = (corners[corner], corners[(corner + 1) % 3]);
+            reached.push((a.min(b), a.max(b)));
+        }
+    }
+    reached.sort_unstable();
+    reached.dedup();
+
+    let mut folded = 0;
+    for (a, b) in reached {
+        topology.edges_at(&output.corners, a, scratch);
+        // Only an edge with exactly two faces says anything about a fold: a
+        // border has one side, and a branch is a defect a move cannot mend.
+        let Some(edge) = scratch
+            .iter()
+            .find(|edge| edge.other == b && edge.uses == 2)
+        else {
+            continue;
+        };
+        let one = geom::normalized(cross_at(&at, face_of(output, edge.faces[0])));
+        let other = geom::normalized(cross_at(&at, face_of(output, edge.faces[1])));
+        match (one, other) {
+            (Some(one), Some(other)) => {
+                if one[0] * other[0] + one[1] * other[1] + one[2] * other[2] < 0.0 {
+                    folded += 1;
                 }
-                // A face with no area has no opinion, and making one is itself
-                // a fault: count it so the move is refused.
-                _ => folded += 1,
             }
+            // A face with no area has no opinion, and making one is itself a
+            // fault: count it so the move is refused.
+            _ => folded += 1,
         }
     }
     folded
@@ -600,6 +706,141 @@ mod tests {
         }
     }
 
+    /// A closed double cone over a `sides`-gon: two apexes of valence `sides`
+    /// and a ring of valence four, every face turning against its neighbours by
+    /// a few tens of degrees - a hard-surface part's creases, in miniature.
+    fn bipyramid(sides: u32) -> RemeshOutput {
+        let mut positions = vec![Vec3::new(0.0, 0.0, 0.6), Vec3::new(0.0, 0.0, -0.6)];
+        for step in 0..sides {
+            let angle = step as f32 / sides as f32 * std::f32::consts::TAU;
+            positions.push(Vec3::new(angle.cos(), angle.sin(), 0.0));
+        }
+        let mut corners = Vec::new();
+        for step in 0..sides {
+            let (here, next) = (2 + step, 2 + (step + 1) % sides);
+            corners.extend_from_slice(&[0, here, next, 1, next, here]);
+        }
+        RemeshOutput {
+            positions,
+            face_offsets: (0..=2 * sides).map(|face| face * 3).collect(),
+            corners,
+        }
+    }
+
+    fn edge_set(output: &RemeshOutput) -> std::collections::BTreeSet<(u32, u32)> {
+        let mut edges = std::collections::BTreeSet::new();
+        for face in output.corners.as_chunks::<3>().0 {
+            for at in 0..3 {
+                let (a, b) = (face[at], face[(at + 1) % 3]);
+                edges.insert((a.min(b), a.max(b)));
+            }
+        }
+        edges
+    }
+
+    /// A crease is the edge along it as much as the vertices on it.
+    ///
+    /// The apexes of an octagonal double cone carry eight edges where six would
+    /// suit them, so the valence flips want every one of those edges turned
+    /// round - and each lies along a forty-degree crease, well inside the right
+    /// angle the flip's own fold guard stops at. Held, as the collapse marks a
+    /// creased object's vertices, none of them may move.
+    #[test]
+    fn a_flip_never_turns_an_edge_between_two_held_vertices() {
+        let original = edge_set(&bipyramid(8));
+        let count = bipyramid(8).positions.len();
+
+        let mut free = bipyramid(8);
+        let topology = Topology::build(&free.corners, count, 1, None);
+        flip_pass(&mut free, &topology, &[]);
+        assert_ne!(
+            edge_set(&free),
+            original,
+            "the fixture only proves something if a free flip would fire"
+        );
+
+        let mut held = bipyramid(8);
+        let topology = Topology::build(&held.corners, count, 1, None);
+        flip_pass(&mut held, &topology, &vec![true; count]);
+        assert_eq!(edge_set(&held), original, "a creased edge was flipped away");
+    }
+
+    /// The faces the flip pass reads for a vertex are the faces it is in.
+    ///
+    /// Read from the index built before the pass, a flip's two apexes each
+    /// missed the face they had just joined - so from one of them the edge to
+    /// the far end of the old diagonal disappeared, and the duplicate-edge
+    /// guard of a later flip from that apex could not see it.
+    #[test]
+    fn the_flip_pass_reads_each_vertex_s_faces_as_they_stand() {
+        let mut output = bipyramid(8);
+        let count = output.positions.len();
+        let topology = Topology::build(&output.corners, count, 1, None);
+        let mut live = LiveFaces::new(&topology);
+        let mut scratch = Vec::new();
+        // Flip a few edges round the top apex, as the pass would.
+        for ring in [2u32, 4, 6] {
+            edges_among(&output.corners, 0, live.of(0), &mut scratch);
+            let edge = *scratch
+                .iter()
+                .find(|edge| edge.other == ring)
+                .expect("the apex reaches the ring");
+            let quad = Quad::read(&output, edge.faces[0], edge.faces[1], 0, ring)
+                .expect("an apex edge is an orientable quad");
+            let [forward, backward] = quad.flipped();
+            write_face(&mut output, quad.forward, forward);
+            write_face(&mut output, quad.backward, backward);
+            live.flipped(&quad);
+        }
+
+        let fresh = Topology::build(&output.corners, count, 1, None);
+        for vertex in 0..count as u32 {
+            assert_eq!(
+                live.of(vertex),
+                fresh.faces_of(vertex),
+                "vertex {vertex}'s faces drifted from the mesh"
+            );
+        }
+    }
+
+    /// A flip pass never lays an edge that another flip already laid. Over a
+    /// family of double cones, whose two apexes want the same chords across the
+    /// ring - a property pin rather than a reproduction: the case the stale
+    /// index could miss needs a later flip's check to run from exactly the
+    /// apex that lost sight of the edge, and none of these lands on it.
+    #[test]
+    fn a_flip_pass_never_doubles_an_edge() {
+        for sides in [5u32, 7, 8, 9, 11, 16] {
+            for rotate in [false, true] {
+                let mut output = bipyramid(sides);
+                if rotate {
+                    // The bottom cone wound from the other end of the ring, so
+                    // the duplicate check reads the other apex of each quad.
+                    for face in output.corners.as_chunks_mut::<3>().0.iter_mut() {
+                        if face[0] == 1 {
+                            face.rotate_left(1);
+                        }
+                    }
+                }
+                let topology = Topology::build(&output.corners, output.positions.len(), 1, None);
+                flip_pass(&mut output, &topology, &[]);
+
+                let mut uses: std::collections::HashMap<(u32, u32), u32> =
+                    std::collections::HashMap::new();
+                for face in output.corners.as_chunks::<3>().0 {
+                    for at in 0..3 {
+                        let (a, b) = (face[at], face[(at + 1) % 3]);
+                        *uses.entry((a.min(b), a.max(b))).or_insert(0) += 1;
+                    }
+                }
+                assert!(
+                    uses.values().all(|&count| count <= 2),
+                    "a {sides}-sided cone came out with an edge on more than two faces"
+                );
+            }
+        }
+    }
+
     /// Two faces that disagree about which way round they go are not a quad to
     /// be flipped, and rewriting them would only spread the disagreement.
     #[test]
@@ -637,7 +878,7 @@ mod tests {
                 .iter()
                 .map(|p| [p.x as f64, p.y as f64, p.z as f64])
                 .collect();
-            fold_count(&output, &topology, 0, &points, None)
+            fold_count(&output, &topology, 0, &points, None, &mut Vec::new())
         };
 
         run(&mut output, &[], 4, None);
@@ -648,7 +889,7 @@ mod tests {
             .iter()
             .map(|p| [p.x as f64, p.y as f64, p.z as f64])
             .collect();
-        let folds_after = fold_count(&output, &topology, 0, &points, None);
+        let folds_after = fold_count(&output, &topology, 0, &points, None, &mut Vec::new());
         assert!(
             folds_after <= folds_before,
             "relaxing added folds: {folds_before} -> {folds_after}"

@@ -75,6 +75,11 @@ fn a_message_and_its_attributes_become_separate_definitions() {
     assert_eq!(defs[0].id, "ui-demo-title");
     assert_eq!(defs[0].attr, None);
     assert_eq!(defs[0].vars, ["count", "name"], "sorted and deduplicated");
+    assert_eq!(
+        defs[0].vars_in_order,
+        ["name", "count"],
+        "the sentence's own order"
+    );
     assert_eq!(defs[1].attr.as_deref(), Some("tooltip"));
     assert!(defs[1].vars.is_empty());
 }
@@ -146,6 +151,34 @@ fn a_message_with_variables_is_reached_only_through_its_formatter() {
     assert!(
         !keys.contains("allow(dead_code)"),
         "nothing may silence the unused-key check: {keys}"
+    );
+}
+
+/// A message named for a Rust keyword still generates a formatter that
+/// compiles, and every formatter says which argument lands where.
+#[test]
+fn a_formatter_is_a_valid_name_and_documents_its_arguments() {
+    let locales = Locales::new();
+    locales.file(
+        "en",
+        "ui-demo",
+        "ui-demo-loop = Loop { $name } after { $count }\n\
+         ui-demo-self = Itself, { $name }\n\
+         ui-demo-greeting = Hello, { $name }, you have { $count }\n",
+    );
+    let out = locales.out();
+    generate_keys(locales.path(), &["ui-"], &out).expect("keys generate");
+    let keys = std::fs::read_to_string(out.join("keys.rs")).expect("keys.rs written");
+
+    assert!(keys.contains("pub(crate) fn r#loop<'a>("), "{keys}");
+    assert!(keys.contains("pub(crate) fn self_<'a>("), "{keys}");
+    assert!(!keys.contains("fn loop<"), "{keys}");
+    assert!(
+        keys.contains(
+            "/// Arguments are alphabetical: `count`, `name`. The sentence reads them as \
+             `{name}`, `{count}`: \"Hello, {name}, you have {count}\""
+        ),
+        "{keys}"
     );
 }
 

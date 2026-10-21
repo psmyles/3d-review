@@ -211,8 +211,9 @@ pub const TEXTURE_MAP_LABEL_W: f32 = 84.0;
 /// Width of the per-property channel dropdown (R/G/B/A, or RGB + single channels
 /// for color slots) in a Texture-mapping row; the texture dropdown fills the rest.
 pub const TEXTURE_CHANNEL_COMBO_W: f32 = 62.0;
-/// On-screen size of a pooled-texture thumbnail in the Texture files list,
-/// and the max edge its CPU downscale targets (doubled for crispness on HiDPI).
+/// On-screen size of a pooled-texture thumbnail in the Texture files list. The
+/// CPU downscale targets the power of two at or above its size in pixels (see
+/// `widgets::texture_thumbnail`), so it stays crisp on a HiDPI display.
 pub const TEXTURE_THUMB_SIZE: f32 = 40.0;
 /// Width of the remove (✕) button column in a Texture files row.
 pub const TEXTURE_REMOVE_BTN_W: f32 = 24.0;
@@ -296,11 +297,6 @@ pub const GIZMO_RESET_ICON_SIZE: f32 = 13.0;
 pub const GIZMO_RESET_INSET: f32 = 11.0;
 
 // ── Option panels ─────────────────────────────────────────────────────
-pub const PANEL_HEADER_HEIGHT: f32 = 34.0;
-pub const PANEL_HEADER_PAD_X: f32 = 16.0;
-pub const PANEL_CORNER_RADIUS: u8 = 6;
-pub const PANEL_CONTENT_MARGIN: i8 = 14;
-pub const PANEL_BODY_TOP_MARGIN: i8 = 10;
 /// Compact control-row height used by panel combos (the dropdown button is
 /// shrunk to this so combo rows stay dense — combos keep their own styling).
 /// Handed straight to egui's `interact_size.y`, and the transport's tile
@@ -340,8 +336,6 @@ pub const PANEL_SLIDER_VALUE_W: f32 = 48.0;
 /// is a `Circle` handle; we use the egui.rs demo's slim rounded-`Rect` grab
 /// instead (`HandleShape::Rect { aspect_ratio }`), set in `apply_visuals`.
 pub const SLIDER_HANDLE_ASPECT_RATIO: f32 = 0.5;
-pub const PANEL_BUTTON_HEIGHT: f32 = 32.0;
-pub const PANEL_SWATCH_SIZE: f32 = 24.0;
 pub const PANEL_SWATCH_GAP: f32 = 6.0;
 pub const PANEL_COMBO_BUTTON_PAD_Y: f32 = 2.0;
 pub const PANEL_COMBO_POPUP_MAX_H: f32 = 240.0;

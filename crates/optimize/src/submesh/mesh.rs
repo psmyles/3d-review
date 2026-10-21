@@ -223,6 +223,53 @@ impl Submesh {
         self.morph = self.morph.gather(representative);
     }
 
+    /// Append a copy of `lender`'s vertex `vertex` — with everything that rides
+    /// on it: the UV and colour channels, the crease, the source corner and every
+    /// deform row — and return its index here.
+    ///
+    /// For a vertex one material piece of an object lends another
+    /// (`ops::simplify_object`). Pieces of one node share their channel layout
+    /// and their deform tables (a skin row names the source's clusters, an extra
+    /// layer the node's own), so a lent row means here what it meant there. An
+    /// array this piece does not carry stays absent; a value the lender lacks
+    /// takes the same fallback a remap gives it.
+    pub(crate) fn append_copy_of(&mut self, lender: &Submesh, vertex: usize) -> u32 {
+        let index = self.vertices.len() as u32;
+        self.vertices
+            .push(lender.vertices.get(vertex).copied().unwrap_or_default());
+        for (set, channel) in self.uv_channels.iter_mut().enumerate() {
+            let uv = lender.uv_channels.get(set).and_then(|uvs| uvs.get(vertex));
+            channel.push(uv.copied().unwrap_or(Vec2::ZERO));
+        }
+        for (set, channel) in self.color_channels.iter_mut().enumerate() {
+            let color = lender
+                .color_channels
+                .get(set)
+                .and_then(|colors| colors.get(vertex));
+            channel.push(color.copied().unwrap_or(Vec4::ONE));
+        }
+        if !self.vertex_crease.is_empty() {
+            let crease = lender.vertex_crease.get(vertex).copied();
+            self.vertex_crease.push(crease.unwrap_or(0.0));
+        }
+        if !self.source_corner.is_empty() {
+            let corner = lender.source_corner.get(vertex).copied();
+            self.source_corner.push(corner.unwrap_or(u32::MAX));
+        }
+        fn lend<T: Clone>(rows: &mut VertexRows<T>, lender: Option<&VertexRows<T>>, vertex: usize) {
+            if !rows.is_empty() {
+                rows.push_row(lender.map_or(&[], |lender| lender.row(vertex)));
+            }
+        }
+        lend(&mut self.skin, Some(&lender.skin), vertex);
+        for (layer, rows) in self.extra_skins.iter_mut().enumerate() {
+            lend(rows, lender.extra_skins.get(layer), vertex);
+        }
+        lend(&mut self.dq_weight, Some(&lender.dq_weight), vertex);
+        lend(&mut self.morph, Some(&lender.morph), vertex);
+        index
+    }
+
     /// Give every triangle corner the value `corner[i]` (one per index), copying
     /// a vertex wherever its corners disagree. Returns the value each vertex
     /// ended up with — `None` for one no triangle references.

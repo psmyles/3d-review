@@ -10,9 +10,11 @@
 //! A run that could read its command line always writes one, even when it
 //! stops before the first model (`problem` says why), and a report left at the
 //! path by an earlier run is removed first - so a tool reading the file after a
-//! run that died part-way finds nothing rather than an earlier answer.
+//! run that died part-way finds nothing rather than an earlier answer. A
+//! command line refused outright writes none, but still removes that earlier
+//! one when the path can be read off it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
@@ -82,12 +84,19 @@ pub(crate) struct Report {
     totals: Map<String, Value>,
 }
 
+/// Take away a report an earlier run left at `path`, so nobody reads it as this
+/// run's. What every run does first - and what a refused command line does
+/// instead of running, since it writes no report of its own.
+pub(crate) fn discard_stale(path: &Path) {
+    if path.is_file() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 impl Report {
     pub(crate) fn start(path: Option<PathBuf>, command: CommandName) -> Self {
-        if let Some(path) = &path
-            && path.is_file()
-        {
-            let _ = std::fs::remove_file(path);
+        if let Some(path) = &path {
+            discard_stale(path);
         }
         Self {
             path,
@@ -187,13 +196,10 @@ impl Report {
 }
 
 /// A measured `f32` figure as the shortest number that reads back as it, rather
-/// than the seventeen digits its widening to `f64` would print.
-pub(crate) fn figure(value: f32) -> Value {
-    match value.to_string().parse::<f64>() {
-        Ok(number) if number.is_finite() => json!(number),
-        _ => Value::Null,
-    }
-}
+/// than the seventeen digits its widening to `f64` would print - the audit
+/// report's own rule, so a run report and the audit document inside it spell
+/// one figure one way.
+pub(crate) use review_audit::report::figure;
 
 /// The program that wrote a report, as every report names it.
 pub(crate) fn generator() -> String {

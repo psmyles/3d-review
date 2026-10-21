@@ -67,9 +67,10 @@ pub(crate) enum Admission {
     /// Nothing is running for this path: start a worker.
     Spawn,
     /// A worker is already reading this path. Folded into it — either because
-    /// the running decode will produce what was asked for (a second import), or
-    /// by marking it dirty so one more decode follows it (the file changed
-    /// again while it was being read).
+    /// the running decode will produce what was asked for (an import, which the
+    /// running decode then pools whatever it was started for), or by marking it
+    /// dirty so one more decode follows it (the file changed again while it was
+    /// being read).
     Coalesced,
 }
 
@@ -81,6 +82,20 @@ pub(crate) struct DecodeOutcome {
     /// Whether the file changed again while this decode was running, so one more
     /// is owed.
     pub(crate) respawn: bool,
+    /// Whether the file joins the pool: the decode was an import, or an import
+    /// of the same path was folded into it while it ran — a reload that lands
+    /// without pooling would lose that import without a word.
+    pub(crate) pool: bool,
+}
+
+/// A decode on a worker, as [`TextureSubsystem::admit_decode`] tracks it.
+#[derive(Debug, Clone, Copy, Default)]
+struct InFlight {
+    /// The file changed again after the worker started reading it.
+    dirty: bool,
+    /// An import asked for this file: whatever the decode was started for, its
+    /// result joins the pool.
+    pool: bool,
 }
 
 impl App {
@@ -129,7 +144,8 @@ impl App {
         let request = TextureDecodeRequest::Import { path };
         if self.textures.admit_decode(&request) == Admission::Coalesced {
             // Already being read — the running decode produces exactly what this
-            // import wants, and it pools the file when it lands.
+            // import wants, and it pools the file when it lands, even when it was
+            // started as a reload.
             return;
         }
         let activity = self
@@ -297,35 +313,36 @@ impl App {
                 // The pool/cache changed (an import landed, or a watched file
                 // re-decoded), so bump the undo system's texture change tag.
                 self.textures.revision = self.textures.revision.wrapping_add(1);
-                match request {
-                    TextureDecodeRequest::Import { .. } => {
-                        if !self.textures.pool.contains(&path) {
-                            self.textures.pool.push(path.clone());
-                        }
-                        self.watch_texture(&path);
-                        self.refresh_texture_pool();
+                // A reload re-uploads every slot the file is bound to.
+                let bound = matches!(request, TextureDecodeRequest::Reload { .. })
+                    && self
+                        .renderer
+                        .as_mut()
+                        .is_some_and(|renderer| renderer.reload_texture(&path, image));
+                if bound {
+                    self.refresh_materials();
+                }
+                if outcome.pool || matches!(request, TextureDecodeRequest::Import { .. }) {
+                    // An import — or one folded into a reload of the same file
+                    // while it ran, which this result answers just the same.
+                    if !self.textures.pool.contains(&path) {
+                        self.textures.pool.push(path.clone());
+                    }
+                    self.watch_texture(&path);
+                    self.refresh_texture_pool();
+                    self.redraw.requested = true;
+                    self.notifications
+                        .success(keys::app_notifications::texture_loaded(name.clone()));
+                } else {
+                    // Refresh the pool regardless so the thumbnail and the Tex
+                    // viewport pick up the re-decoded image even if the file
+                    // isn't bound to a slot.
+                    let pooled = self.textures.pool.contains(&path);
+                    self.refresh_texture_pool();
+                    if bound || pooled {
                         self.redraw.requested = true;
                         self.notifications
-                            .success(keys::app_notifications::texture_loaded(name.clone()));
-                    }
-                    TextureDecodeRequest::Reload { .. } => {
-                        let bound = self
-                            .renderer
-                            .as_mut()
-                            .is_some_and(|renderer| renderer.reload_texture(&path, image));
-                        // Refresh the pool regardless so the thumbnail and the Tex
-                        // viewport pick up the re-decoded image even if the file
-                        // isn't bound to a slot.
-                        let pooled = self.textures.pool.contains(&path);
-                        self.refresh_texture_pool();
-                        if bound {
-                            self.refresh_materials();
-                        }
-                        if bound || pooled {
-                            self.redraw.requested = true;
-                            self.notifications
-                                .info(keys::app_notifications::texture_reloaded(name.clone()));
-                        }
+                            .info(keys::app_notifications::texture_reloaded(name.clone()));
                     }
                 }
             }
@@ -503,11 +520,12 @@ pub(crate) struct TextureSubsystem {
     /// a model load, and for the same reason: a slow PSD finishing after the user
     /// has opened another file would otherwise pool itself into the new scene.
     pub(crate) generation: u64,
-    /// The paths a decode worker is currently reading, and whether the file has
-    /// changed again since that worker started. One decode per path at a time:
-    /// an editor's save emits several change events and a large PSD takes long
-    /// enough that every one of them used to start its own full decode.
-    in_flight: HashMap<PathBuf, bool>,
+    /// The paths a decode worker is currently reading, whether the file has
+    /// changed again since that worker started, and whether an import is waiting
+    /// on it. One decode per path at a time: an editor's save emits several
+    /// change events and a large PSD takes long enough that every one of them
+    /// used to start its own full decode.
+    in_flight: HashMap<PathBuf, InFlight>,
 }
 
 impl TextureSubsystem {
@@ -529,24 +547,34 @@ impl TextureSubsystem {
     /// long an editor takes to finish writing.
     pub(crate) fn admit_decode(&mut self, request: &TextureDecodeRequest) -> Admission {
         let path = request.path().to_path_buf();
+        let import = matches!(request, TextureDecodeRequest::Import { .. });
         match self.in_flight.get_mut(&path) {
-            Some(dirty) => {
-                // An import is satisfied by whatever the running decode produces;
-                // a reload means the bytes it is reading are already out of date.
-                if matches!(request, TextureDecodeRequest::Reload { .. }) {
-                    *dirty = true;
+            Some(entry) => {
+                // An import is satisfied by whatever the running decode produces,
+                // so long as the result is pooled when it lands; a reload means
+                // the bytes it is reading are already out of date.
+                if import {
+                    entry.pool = true;
+                } else {
+                    entry.dirty = true;
                 }
                 Admission::Coalesced
             }
             None => {
-                self.in_flight.insert(path, false);
+                self.in_flight.insert(
+                    path,
+                    InFlight {
+                        dirty: false,
+                        pool: import,
+                    },
+                );
                 Admission::Spawn
             }
         }
     }
 
-    /// Retire a landed decode: whether to apply it, and whether the file changed
-    /// again while it was being read.
+    /// Retire a landed decode: whether to apply it, whether the file changed
+    /// again while it was being read, and whether it joins the pool.
     ///
     /// A result from a superseded scene leaves `in_flight` alone — the entry
     /// there belongs to whatever decode the *current* scene started for that
@@ -556,12 +584,14 @@ impl TextureSubsystem {
             return DecodeOutcome {
                 apply: false,
                 respawn: false,
+                pool: false,
             };
         }
-        let respawn = self.in_flight.remove(path).unwrap_or(false);
+        let entry = self.in_flight.remove(path).unwrap_or_default();
         DecodeOutcome {
             apply: true,
-            respawn,
+            respawn: entry.dirty,
+            pool: entry.pool,
         }
     }
 
@@ -611,7 +641,8 @@ mod tests {
             outcome,
             DecodeOutcome {
                 apply: true,
-                respawn: true
+                respawn: true,
+                pool: false,
             }
         );
     }
@@ -626,7 +657,8 @@ mod tests {
             outcome,
             DecodeOutcome {
                 apply: true,
-                respawn: false
+                respawn: false,
+                pool: false,
             }
         );
         // And the path is free again.
@@ -646,6 +678,31 @@ mod tests {
         assert!(
             !outcome.respawn,
             "the running decode already produces what the second import asked for"
+        );
+        assert!(outcome.pool);
+    }
+
+    /// An import of a file a reload is already reading is folded into that
+    /// reload, so the reload's result has to pool the file: it is the only
+    /// decode the import will ever get.
+    #[test]
+    fn an_import_folded_into_a_reload_is_pooled_when_it_lands() {
+        let mut textures = TextureSubsystem::default();
+        assert_eq!(textures.admit_decode(&reload("a.png")), Admission::Spawn);
+        assert_eq!(
+            textures.admit_decode(&import("a.png")),
+            Admission::Coalesced
+        );
+
+        let outcome = textures.finish_decode(0, Path::new("a.png"));
+        assert_eq!(
+            outcome,
+            DecodeOutcome {
+                apply: true,
+                respawn: false,
+                pool: true,
+            },
+            "the import does not mark the bytes stale, but it is owed a pool entry"
         );
     }
 
@@ -671,7 +728,8 @@ mod tests {
             outcome,
             DecodeOutcome {
                 apply: false,
-                respawn: false
+                respawn: false,
+                pool: false,
             }
         );
     }

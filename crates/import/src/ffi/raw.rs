@@ -23,6 +23,18 @@
 //! `unsafe` to this file — [`super::marshal_model`] and [`super::marshal_extras`]
 //! keep `deny(unsafe_code)`, and now no raw pointer even reaches them — and it is
 //! what lets [`checked_slice`] state its preconditions honestly.
+//!
+//! ## Why the accessors live on [`Bridged`] and not on the mirrors
+//!
+//! A borrow alone does not make an accessor sound. The mirror structs are plain
+//! data with `pub(super)` fields, so any safe code in `ffi` could build one — or
+//! set a count on one — and an accessor on the mirror itself would hand
+//! `from_raw_parts` a pointer and a length nothing vouches for: undefined
+//! behaviour without an `unsafe` anywhere in sight. The accessors therefore live
+//! on [`Bridged`], which only `unsafe` code can construct and which hands its
+//! contents out read-only, so the one promise every accessor rests on — "these
+//! pointers and counts are the ones the bridge wrote" — is made once, at an
+//! `unsafe` call that says so, and cannot be broken afterwards.
 
 #![allow(
     unsafe_code,
@@ -30,6 +42,7 @@
 )]
 
 use std::ffi::CStr;
+use std::ops::Deref;
 use std::os::raw::c_char;
 use std::ptr::NonNull;
 use std::slice;
@@ -38,6 +51,58 @@ use crate::ImportError;
 
 use super::raw_extras::*;
 use super::raw_scene::*;
+
+/// A bridge struct whose pointer + count pairs are vouched for: what the C side
+/// filled (or, in a test, what the test pointed at its own arrays).
+///
+/// The contents are reachable only through [`Deref`] — read-only — so nothing
+/// safe can change a count or a pointer once the value exists, and the only way
+/// to make one is the `unsafe` [`Bridged::new`]. Every array accessor below is a
+/// method on `Bridged<_>`, and element types that carry pointers of their own
+/// (a name) are handed out as `Bridged<_>` too, by the accessor that read them.
+#[repr(transparent)]
+pub(super) struct Bridged<T>(T);
+
+impl<T> Bridged<T> {
+    /// Vouch for `value`.
+    ///
+    /// # Safety
+    ///
+    /// For as long as the returned value lives:
+    ///
+    /// * every non-null array pointer in `value` (at any depth an accessor reads)
+    ///   points at at least as many contiguous, initialized, properly aligned
+    ///   elements as the count the accessor pairs it with, in one allocation that
+    ///   nothing writes to or frees;
+    /// * every non-null name pointer is a NUL-terminated string that stays valid
+    ///   and unchanged as long.
+    ///
+    /// A null pointer is always allowed: an accessor reports it as an error
+    /// rather than reading it. An all-zero value satisfies this trivially.
+    pub(super) unsafe fn new(value: T) -> Self {
+        Self(value)
+    }
+
+    /// A raw pointer to the contents, for handing to C — the bridge's fill and
+    /// free. Using it is `unsafe` like any other raw pointer, which is what keeps
+    /// the contents unwritable from safe code.
+    pub(super) fn as_mut_ptr(&mut self) -> *mut T {
+        &raw mut self.0
+    }
+}
+
+impl<T> Deref for Bridged<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+/// The bridge's geometry scene, vouched for.
+pub(super) type BridgeScene = Bridged<ReviewImportScene>;
+/// The bridge's source-property capture, vouched for.
+pub(super) type BridgeExtras = Bridged<ReviewImportExtras>;
 
 pub(super) fn read_error_message(error: &ReviewImportError) -> String {
     // SAFETY: `error.message` is a fixed 256-byte array the bridge always writes
@@ -115,50 +180,56 @@ pub(super) unsafe fn checked_slice<'a, T>(
 // Safe accessors: one per bridge array, borrowing the struct that owns it
 // ---------------------------------------------------------------------------
 
-/// Generate a `&self -> Result<&[T], ImportError>` accessor per bridge array.
+/// Generate a `&self -> Result<&[T], ImportError>` accessor per bridge array, on
+/// [`Bridged`]`<$owner>`.
 ///
 /// Each entry is `method: Element = (pointer_field, length_field)`, with an
 /// optional `* n` for an array whose length is a multiple of its count (an edge
 /// list is two vertex indices per edge). Several arrays deliberately share one
 /// length field — the per-edge and per-face layers, and the three parallel skin
 /// influence streams — which is the bridge's own contract and the reason the
-/// length is named rather than derived.
+/// length is named rather than derived. An element type that carries pointers of
+/// its own is named as `Bridged<Mirror>`: the slice is handed out as vouched-for
+/// elements, so their name accessors are sound for the same reason.
 macro_rules! slice_accessors {
     (
         $owner:ty {
             $( $name:ident : $elem:ty = ($ptr:ident, $len:ident $( * $mul:literal )? ) ; )*
         }
     ) => {
-        impl $owner {
+        impl Bridged<$owner> {
             $(
                 #[doc = concat!(
                     "The bridge's `", stringify!($ptr), "` array, borrowed from this struct."
                 )]
                 pub(super) fn $name(&self) -> Result<&[$elem], ImportError> {
-                    let len = self.$len $( .saturating_mul($mul) )?;
-                    // SAFETY: the bridge fills `self` with `len` contiguous,
-                    // initialized, aligned values for this field, in one
-                    // allocation it owns until the scene or capture is freed.
-                    // The returned slice borrows `self`, so that free cannot
-                    // happen while it is alive.
-                    unsafe { checked_slice(self.$ptr, len, stringify!($ptr)) }
+                    let len = self.0.$len $( .saturating_mul($mul) )?;
+                    // SAFETY: `Bridged::new`'s contract is that this non-null
+                    // pointer addresses `len` contiguous, initialized, aligned
+                    // values in one allocation that stays put for as long as
+                    // `self` lives — what the bridge fills, and frees only when
+                    // the scene or capture is. The returned slice borrows `self`.
+                    // A `Bridged<E>` element is `repr(transparent)` over `E`, so
+                    // the cast changes the type and not the layout.
+                    unsafe { checked_slice(self.0.$ptr.cast::<$elem>().cast_const(), len, stringify!($ptr)) }
                 }
             )*
         }
     };
 }
 
-/// Generate a `&self -> Option<String>` accessor per bridge name pointer.
+/// Generate a `&self -> Option<String>` accessor per bridge name pointer, on
+/// [`Bridged`]`<$owner>`.
 macro_rules! name_accessors {
     ( $( $owner:ty => $field:ident ; )* ) => {
         $(
-            impl $owner {
+            impl Bridged<$owner> {
                 #[doc = concat!("The bridge's `", stringify!($field), "` string, if it wrote one.")]
                 pub(super) fn $field(&self) -> Option<String> {
-                    // SAFETY: the bridge writes either null or a NUL-terminated
-                    // string it owns until the scene or capture is freed, and
-                    // `&self` is a borrow of the struct holding it.
-                    unsafe { read_optional_c_string(self.$field) }
+                    // SAFETY: `Bridged::new`'s contract: the field is null or a
+                    // NUL-terminated string that stays valid as long as `self`,
+                    // which this call borrows.
+                    unsafe { read_optional_c_string(self.0.$field) }
                 }
             }
         )*
@@ -172,8 +243,8 @@ slice_accessors!(ReviewImportScene {
     tri_to_face: u32 = (tri_to_face, tri_to_face_count);
     tri_material: u32 = (tri_material, tri_material_count);
     tri_node: u32 = (tri_node, tri_node_count);
-    nodes: ReviewImportNode = (nodes, node_count);
-    materials: ReviewImportMaterial = (materials, material_count);
+    nodes: Bridged<ReviewImportNode> = (nodes, node_count);
+    materials: Bridged<ReviewImportMaterial> = (materials, material_count);
     uvs: f32 = (uvs, uv_value_count);
     uv_set_names: *mut c_char = (uv_set_names, uv_set_name_count);
     corner_source_vertex: u32 = (corner_source_vertex, corner_source_vertex_count);
@@ -182,13 +253,13 @@ slice_accessors!(ReviewImportScene {
     skin_bones: u32 = (skin_bones, skin_influence_count);
     skin_weights: f32 = (skin_weights, skin_influence_count);
     skin_influence_cluster: u32 = (skin_influence_cluster, skin_influence_count);
-    skin_clusters: ReviewImportSkinCluster = (skin_clusters, skin_cluster_count);
+    skin_clusters: Bridged<ReviewImportSkinCluster> = (skin_clusters, skin_cluster_count);
     skin_deformers: ReviewImportSkinDeformer = (skin_deformers, skin_deformer_count);
-    morph_channels: ReviewImportMorphChannel = (morph_channels, morph_channel_count);
+    morph_channels: Bridged<ReviewImportMorphChannel> = (morph_channels, morph_channel_count);
     morph_keyframes: ReviewImportMorphKeyframe = (morph_keyframes, morph_keyframe_count);
-    morph_shapes: ReviewImportMorphShape = (morph_shapes, morph_shape_count);
+    morph_shapes: Bridged<ReviewImportMorphShape> = (morph_shapes, morph_shape_count);
     morph_entries: ReviewImportMorphEntry = (morph_entries, morph_entry_count);
-    anim_stacks: ReviewImportAnimStack = (anim_stacks, anim_stack_count);
+    anim_stacks: Bridged<ReviewImportAnimStack> = (anim_stacks, anim_stack_count);
     anim_node_tracks: ReviewImportNodeTrack = (anim_node_tracks, anim_node_track_count);
     anim_vec3_keys: ReviewImportVec3Key = (anim_vec3_keys, anim_vec3_key_count);
     anim_quat_keys: ReviewImportQuatKey = (anim_quat_keys, anim_quat_key_count);
@@ -205,7 +276,7 @@ name_accessors! {
     ReviewImportAnimStack => name;
 }
 
-impl ReviewImportScene {
+impl Bridged<ReviewImportScene> {
     /// One entry of the `uv_set_names` pointer table.
     ///
     /// The table itself is an array of `char*`, so its elements are pointers
@@ -213,9 +284,9 @@ impl ReviewImportScene {
     /// strings directly.
     pub(super) fn uv_set_name(&self, index: usize) -> Option<String> {
         let names = self.uv_set_names().ok()?;
-        // SAFETY: the entry is a pointer the bridge wrote into the table above,
-        // pointing at a string it owns for the life of the scene; `&self`
-        // borrows the scene.
+        // SAFETY: `Bridged::new`'s contract covers the table's entries: each is
+        // null or a string the bridge owns for the life of the scene, and
+        // `&self` borrows the scene.
         unsafe { read_optional_c_string(*names.get(index)?) }
     }
 }
@@ -269,7 +340,7 @@ slice_accessors!(ReviewImportExtras {
     anim_keys: XAnimKey = (anim_keys, anim_key_count);
 });
 
-impl ReviewImportExtras {
+impl Bridged<ReviewImportExtras> {
     /// The capture's string pool as bytes.
     ///
     /// The pool is one `char*` block that every captured name indexes into by
@@ -277,10 +348,10 @@ impl ReviewImportExtras {
     /// reads it as bytes, which is the only one of these that has to change the
     /// pointer's type.
     pub(super) fn strings(&self) -> Result<&[u8], ImportError> {
-        // SAFETY: the bridge allocates `string_count` bytes here and owns them
-        // until the capture is freed; `u8` has looser alignment than `c_char`
-        // and identical size, and the slice borrows `self`.
-        unsafe { checked_slice(self.strings.cast::<u8>(), self.string_count, "strings") }
+        // SAFETY: `Bridged::new`'s contract: `string_count` bytes the bridge
+        // owns until the capture is freed; `u8` has looser alignment than
+        // `c_char` and identical size, and the slice borrows `self`.
+        unsafe { checked_slice(self.0.strings.cast::<u8>(), self.0.string_count, "strings") }
     }
 }
 
@@ -324,14 +395,20 @@ mod tests {
     fn an_accessor_on_a_null_array_names_the_field() {
         // SAFETY: `ReviewImportScene` is all raw pointers and integers, for which
         // the all-zero bit pattern is valid — the same value `load_fbx` hands the
-        // bridge.
-        let mut scene: ReviewImportScene = unsafe { std::mem::zeroed() };
+        // bridge — and an all-zero scene points at nothing, so vouching for it
+        // promises nothing.
+        let empty = unsafe { Bridged::new(std::mem::zeroed::<ReviewImportScene>()) };
         assert!(
-            scene.vertices().unwrap().is_empty(),
+            empty.vertices().unwrap().is_empty(),
             "a zero count is the empty slice, not a null-pointer error"
         );
 
+        // SAFETY: as above.
+        let mut scene: ReviewImportScene = unsafe { std::mem::zeroed() };
         scene.vertex_count = 4;
+        // SAFETY: the only array pointer is null, which an accessor refuses to
+        // read; `Bridged::new` allows that.
+        let scene = unsafe { Bridged::new(scene) };
         assert!(
             matches!(
                 scene.vertices(),
@@ -348,11 +425,14 @@ mod tests {
     fn the_edge_accessors_agree_on_one_count() {
         let edges = [0u32, 1, 1, 2, 2, 0];
         let smoothing = [1u8, 0, 1];
-        // SAFETY: as above; the pointers below outlive the borrows taken from it.
+        // SAFETY: as above.
         let mut extras: ReviewImportExtras = unsafe { std::mem::zeroed() };
         extras.edge_count = 3;
         extras.edges = edges.as_ptr().cast_mut();
         extras.edge_smoothing = smoothing.as_ptr().cast_mut();
+        // SAFETY: `edges` holds `2 * edge_count` and `smoothing` `edge_count`
+        // values, both outliving the wrapper; every other pointer is null.
+        let extras = unsafe { Bridged::new(extras) };
 
         assert_eq!(extras.edges().unwrap().len(), 6, "two indices per edge");
         assert_eq!(extras.edge_smoothing().unwrap().len(), 3, "one per edge");

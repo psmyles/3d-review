@@ -43,6 +43,24 @@ pub struct RebindReport {
     pub dropped: usize,
 }
 
+/// What [`OptStack::enforce_rules`] had to remove from a stack that broke the
+/// rules the chrome keeps. All zero for any stack the chrome built.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StackRepairs {
+    /// Generate LODs operations beyond the one a stack may carry.
+    pub lods_removed: usize,
+    /// Per-object settings that held another kind of operation than the one
+    /// they named, or repeated an object or an operation already overridden.
+    pub overrides_dropped: usize,
+}
+
+impl StackRepairs {
+    /// Whether anything was repaired at all.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// A whole optimization setup: the ordered operations, any per-object
 /// deviations from them, and the settings the export step will use.
 ///
@@ -171,8 +189,6 @@ impl OptStack {
         &mut self.overrides[last]
     }
 
-    /// Drop override entries that no longer say anything, so an empty entry left
-    /// behind by unchecking every box doesn't persist into a preset.
     /// Clamp every numeric setting into the range the inspector offers
     /// ([`limits`]) and cap the LOD chain at [`limits::MAX_LOD_LEVELS`], the
     /// per-object overrides included.
@@ -191,9 +207,79 @@ impl OptStack {
         }
     }
 
+    /// Drop override entries that no longer say anything, so an empty entry left
+    /// behind by unchecking every box doesn't persist into a preset.
     pub fn prune_overrides(&mut self) {
         self.overrides
             .retain(|entry| entry.exclude || !entry.ops.is_empty());
+    }
+
+    /// Bring a stack that came from outside the chrome back within the rules the
+    /// chrome keeps, reporting what had to go. For a preset, which anyone can
+    /// edit by hand ([`crate::preset::from_json`]); every rule here is one the
+    /// UI enforces as the stack is built, so a stack it built passes unchanged.
+    ///
+    /// * **One LOD operation.** A second has no meaning (it would fan out an
+    ///   already fanned-out chain), so the pipeline never runs it — but kept, it
+    ///   sits in the list looking like it does something. The first *enabled*
+    ///   one is kept (failing that, the first), the rest are removed.
+    /// * **An override overrides settings, not the operation.** One holding a
+    ///   different kind of operation from the one its id names would run that
+    ///   kind on its object in place of the one in the list; it is dropped
+    ///   (the pipeline ignores one regardless, `process::resolve_op`).
+    /// * **One override per object, one entry per operation in it.** Lookups
+    ///   take the first, so a second is invisible in the UI yet still saved
+    ///   into the next preset. The first is kept.
+    pub fn enforce_rules(&mut self) -> StackRepairs {
+        let mut repairs = StackRepairs::default();
+
+        let lods: Vec<usize> = (0..self.ops.len())
+            .filter(|&at| matches!(self.ops[at].kind, OpKind::SimplifyLod(_)))
+            .collect();
+        if lods.len() > 1 {
+            let kept = lods
+                .iter()
+                .copied()
+                .find(|&at| self.ops[at].enabled)
+                .unwrap_or(lods[0]);
+            let removed: Vec<u64> = lods
+                .iter()
+                .filter(|&&at| at != kept)
+                .map(|&at| self.ops[at].id)
+                .collect();
+            repairs.lods_removed = removed.len();
+            for id in removed {
+                self.remove_op(id);
+            }
+        }
+
+        let mut seen_nodes: Vec<usize> = Vec::with_capacity(self.overrides.len());
+        let ops = &self.ops;
+        self.overrides.retain_mut(|entry| {
+            if seen_nodes.contains(&entry.node) {
+                repairs.overrides_dropped += 1;
+                return false;
+            }
+            seen_nodes.push(entry.node);
+            let mut seen_ops: Vec<u64> = Vec::with_capacity(entry.ops.len());
+            entry.ops.retain(|override_op| {
+                let matches = ops.iter().any(|op| {
+                    op.id == override_op.id
+                        && std::mem::discriminant(&op.kind)
+                            == std::mem::discriminant(&override_op.kind)
+                });
+                let keep = matches && !seen_ops.contains(&override_op.id);
+                if keep {
+                    seen_ops.push(override_op.id);
+                } else {
+                    repairs.overrides_dropped += 1;
+                }
+                keep
+            });
+            true
+        });
+        self.prune_overrides();
+        repairs
     }
 
     /// Drop every per-object override. Called when the model is replaced: an
@@ -232,41 +318,95 @@ impl OptStack {
     ///   say;
     /// * no match, or several — dropped, since applying it would exclude or
     ///   re-parameterize an object the user never chose.
+    ///
+    /// Two overrides can land on one node: a preset from a model with two
+    /// objects of one name, loaded against a model with one. Only one may stay
+    /// — a lookup sees the first, so the other would be invisible in the UI and
+    /// still saved into the next preset. The one that kept its own index wins,
+    /// since its index *and* its name agree; otherwise the first. The others are
+    /// counted as dropped.
     pub fn rebind_to_model(&mut self, nodes: &[SceneNode]) -> RebindReport {
-        let mut report = RebindReport::default();
-        self.overrides.retain_mut(|entry| {
-            if entry.name.is_empty() {
-                // Legacy preset: position is the only identity it carries.
-                if entry.node < nodes.len() {
-                    report.by_position += 1;
-                    return true;
+        /// How an override found its node: where, and how sure that is.
+        enum Found {
+            Kept,
+            Rebound(usize),
+            ByPosition,
+        }
+        let found: Vec<Option<Found>> = self
+            .overrides
+            .iter()
+            .map(|entry| {
+                if entry.name.is_empty() {
+                    // Legacy preset: position is the only identity it carries.
+                    return (entry.node < nodes.len()).then_some(Found::ByPosition);
                 }
+                if nodes
+                    .get(entry.node)
+                    .is_some_and(|node| node.name == entry.name)
+                {
+                    return Some(Found::Kept);
+                }
+                let mut matches = nodes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, node)| node.name == entry.name);
+                match (matches.next(), matches.next()) {
+                    (Some((index, _)), None) => Some(Found::Rebound(index)),
+                    // Nothing named that, or several things are — either way
+                    // this model gives no answer to which object was meant.
+                    _ => None,
+                }
+            })
+            .collect();
+        let targets: Vec<Option<usize>> = found
+            .iter()
+            .zip(&self.overrides)
+            .map(|(found, entry)| match found {
+                Some(Found::Rebound(index)) => Some(*index),
+                Some(Found::Kept | Found::ByPosition) => Some(entry.node),
+                None => None,
+            })
+            .collect();
+        // Per target node, the override that keeps it.
+        let mut owner: Vec<(usize, usize)> = Vec::new();
+        for (at, target) in targets.iter().enumerate() {
+            let Some(node) = *target else {
+                continue;
+            };
+            match owner.iter_mut().find(|(claimed, _)| *claimed == node) {
+                Some((_, holder)) => {
+                    if matches!(found[at], Some(Found::Kept))
+                        && !matches!(found[*holder], Some(Found::Kept))
+                    {
+                        *holder = at;
+                    }
+                }
+                None => owner.push((node, at)),
+            }
+        }
+
+        let mut report = RebindReport::default();
+        let mut at = 0;
+        self.overrides.retain_mut(|entry| {
+            let this = at;
+            at += 1;
+            let Some(node) = targets[this] else {
+                report.dropped += 1;
+                return false;
+            };
+            if !owner.contains(&(node, this)) {
                 report.dropped += 1;
                 return false;
             }
-            if nodes
-                .get(entry.node)
-                .is_some_and(|node| node.name == entry.name)
-            {
-                return true;
-            }
-            let mut matches = nodes
-                .iter()
-                .enumerate()
-                .filter(|(_, node)| node.name == entry.name);
-            match (matches.next(), matches.next()) {
-                (Some((index, _)), None) => {
+            match found[this] {
+                Some(Found::Rebound(index)) => {
                     entry.node = index;
                     report.rebound += 1;
-                    true
                 }
-                // Nothing named that, or several things are — either way this
-                // model gives no answer to which object was meant.
-                _ => {
-                    report.dropped += 1;
-                    false
-                }
+                Some(Found::ByPosition) => report.by_position += 1,
+                _ => {}
             }
+            true
         });
         report
     }
@@ -839,5 +979,129 @@ mod tests {
         );
         assert_eq!(stack.overrides.len(), 1);
         assert_eq!(stack.overrides[0].node, 1);
+    }
+
+    /// Two same-named objects in the preset's model, one in this one: both
+    /// overrides would land on the one leaf, and the second would be invisible
+    /// yet saved again. The one whose index still names it stays.
+    #[test]
+    fn two_overrides_never_land_on_one_object() {
+        let mut stack = OptStack::default();
+        stack.node_override_mut(1).exclude = true;
+        stack.node_override_mut(2).exclude = true;
+        stack.stamp_node_names(&nodes(&["root", "leaf", "leaf"]));
+
+        let report = stack.rebind_to_model(&nodes(&["root", "trunk", "leaf"]));
+        assert_eq!(stack.overrides.len(), 1, "{:?}", stack.overrides);
+        assert_eq!(stack.overrides[0].node, 2);
+        assert_eq!(
+            report,
+            RebindReport {
+                rebound: 0,
+                by_position: 0,
+                dropped: 1
+            },
+            "the kept one stayed put; the other is reported dropped"
+        );
+    }
+
+    /// Both overrides move: the first to claim the object keeps it.
+    #[test]
+    fn of_two_rebound_overrides_the_first_keeps_the_object() {
+        let mut stack = OptStack::default();
+        stack.node_override_mut(1).exclude = true;
+        stack.node_override_mut(2).ops.push(OpInstance {
+            id: 1,
+            enabled: true,
+            kind: OpKind::VertexCache,
+        });
+        stack.stamp_node_names(&nodes(&["root", "leaf", "leaf"]));
+
+        let report = stack.rebind_to_model(&nodes(&["leaf"]));
+        assert_eq!(stack.overrides.len(), 1);
+        assert_eq!(stack.overrides[0].node, 0);
+        assert!(stack.overrides[0].exclude, "the first one won");
+        assert_eq!(report.rebound, 1);
+        assert_eq!(report.dropped, 1);
+    }
+
+    /// A stack the chrome built breaks no rule, so enforcing them changes
+    /// nothing.
+    #[test]
+    fn enforcing_the_rules_leaves_a_well_formed_stack_alone() {
+        let mut stack = OptStack::default();
+        let weld = stack.push_op(OpKind::Weld(WeldParams::default()));
+        stack.push_op(OpKind::SimplifyLod(LodParams::default()));
+        stack.node_override_mut(0).ops.push(OpInstance {
+            id: weld,
+            enabled: true,
+            kind: OpKind::Weld(WeldParams {
+                compare_normals: false,
+                ..WeldParams::default()
+            }),
+        });
+        stack.node_override_mut(3).exclude = true;
+        let before = stack.clone();
+
+        assert!(stack.enforce_rules().is_empty());
+        assert_eq!(stack, before);
+    }
+
+    /// What only a hand-edited file can carry: a second LOD operation, an
+    /// override running another operation in a slot, and a repeated object or
+    /// operation.
+    #[test]
+    fn enforcing_the_rules_removes_what_the_chrome_would_refuse() {
+        let mut stack = OptStack::default();
+        let cache = stack.push_op(OpKind::VertexCache);
+        let first_lod = stack.push_op(OpKind::SimplifyLod(LodParams::default()));
+        let second_lod = stack.push_op(OpKind::SimplifyLod(LodParams::default()));
+        stack.op_mut(first_lod).expect("pushed").enabled = false;
+        // A Weld in the vertex-cache reorder's slot.
+        stack.overrides.push(NodeOverride {
+            node: 0,
+            name: String::new(),
+            exclude: false,
+            ops: vec![
+                OpInstance {
+                    id: cache,
+                    enabled: true,
+                    kind: OpKind::Weld(WeldParams::default()),
+                },
+                OpInstance {
+                    id: second_lod,
+                    enabled: true,
+                    kind: OpKind::SimplifyLod(LodParams::default()),
+                },
+                OpInstance {
+                    id: second_lod,
+                    enabled: true,
+                    kind: OpKind::SimplifyLod(LodParams::default()),
+                },
+            ],
+        });
+        // The same object twice.
+        stack.overrides.push(NodeOverride {
+            node: 0,
+            exclude: true,
+            ..NodeOverride::default()
+        });
+
+        let repairs = stack.enforce_rules();
+        assert_eq!(repairs.lods_removed, 1);
+        assert_eq!(
+            repairs.overrides_dropped, 3,
+            "the mismatched Weld, the repeated LOD entry and the repeated object"
+        );
+        let lods: Vec<&OpInstance> = stack
+            .ops
+            .iter()
+            .filter(|op| matches!(op.kind, OpKind::SimplifyLod(_)))
+            .collect();
+        assert_eq!(lods.len(), 1);
+        assert_eq!(lods[0].id, second_lod, "the enabled one is the one kept");
+        assert_eq!(stack.overrides.len(), 1);
+        assert_eq!(stack.overrides[0].ops.len(), 1);
+        assert_eq!(stack.overrides[0].ops[0].id, second_lod);
     }
 }

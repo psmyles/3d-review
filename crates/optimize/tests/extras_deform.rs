@@ -27,8 +27,11 @@ fn cluster_key(model: &ModelData, cluster: &review_model::SkinCluster) -> (Strin
 
 /// The character's skin comes back with the same clusters — matched by bone and
 /// mesh — the same authored matrices, and the same rest pose, through a
-/// passthrough and a halving LOD alike.
+/// passthrough and a halving LOD alike. No skinned fixture is left in the
+/// repository; the writer probe's skin is checked by
+/// `dual_quaternion_weights_skin_layers_and_blend_shapes_survive` below.
 #[test]
+#[ignore = "needs a skinned fixture; SK_Player_01.fbx was removed in a9c6db3"]
 fn skin_survives_with_its_authored_cluster_matrices() {
     let Some((model, extras)) = fixture("SK_Player_01.fbx") else {
         return;
@@ -135,8 +138,10 @@ fn skin_survives_with_its_authored_cluster_matrices() {
     }
 }
 
-/// Authored bind poses come back node for node.
+/// Authored bind poses come back node for node. No fixture left in the
+/// repository carries one.
 #[test]
+#[ignore = "needs a fixture with bind poses; AN_ZombiedogLocomotion.fbx was removed in a9c6db3"]
 fn bind_poses_survive() {
     let Some((model, extras)) = fixture("AN_ZombiedogLocomotion.fbx") else {
         return;

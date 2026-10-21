@@ -10,6 +10,8 @@ ui-inspector-material-gone = Material no longer exists.
 ui-inspector-node-heading = Node - { $name }
 ui-inspector-type = Type
 ui-inspector-position = Position
+# A node's world position, one coordinate per variable, each already rounded.
+ui-inspector-position-value = { $x }, { $y }, { $z }
 ui-inspector-children = Children
 ui-inspector-triangles = Triangles
 ui-inspector-mesh-part = Mesh part
@@ -32,6 +34,8 @@ ui-inspector-influenced-verts = Influenced verts
     .description = How many points this bone moves at all.
 ui-inspector-share-of-mesh = Share of mesh
     .description = What portion of the whole model this bone has some pull on.
+# The share of mesh as a percentage; $share is already rounded.
+ui-inspector-share-value = { $share }%
 
 ## Material
 

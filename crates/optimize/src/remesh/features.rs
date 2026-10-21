@@ -24,7 +24,9 @@
 //!
 //! Non-manifold edges are always features, whatever the settings say. The
 //! surface branches there and no rebuild can describe it, so the least wrong
-//! thing is to keep a vertex exactly where it was.
+//! thing is to keep a vertex exactly where it was. So is a vertex where two
+//! fans meet at a point and share no edge, for the same reason: it is a feature
+//! on no chain, and a corner.
 //!
 //! ## Why a fold is not just a sharp crease
 //!
@@ -112,6 +114,8 @@ pub(crate) struct Features {
     /// Per vertex: the chain it lies on, or `u32::MAX`. A vertex where two
     /// chains meet takes the lower-numbered one; it is a junction, and
     /// [`super::seeds`] pins junctions regardless of which chain claims them.
+    /// Asking whether a vertex is on a *given* chain is [`Self::lies_on`],
+    /// which a junction answers for every chain through it.
     pub(crate) polyline_of: Vec<u32>,
     /// Per vertex: lies where chains meet or end, so a seed must sit exactly
     /// here or the corner is lost.
@@ -152,6 +156,24 @@ impl Features {
     /// the very edge that must *not* be free to cross.
     pub(crate) fn is_feature_edge(&self, a: u32, b: u32) -> bool {
         self.partners_of(a).binary_search(&b).is_ok()
+    }
+
+    /// Whether `vertex` lies on chain `chain`.
+    ///
+    /// [`Self::polyline_of`] names one chain per vertex, which is the whole
+    /// answer everywhere but at a meeting of three or more: a cube's corner
+    /// carries three creases, and only the lowest-numbered is recorded. Such a
+    /// vertex is always an *end* of every chain through it, because the walk
+    /// that builds them stops at any vertex that is not simply passing through,
+    /// so the other chains are found by their ends. (A corner `mark_corners`
+    /// found in the middle of a chain has two partners and so one chain.)
+    pub(crate) fn lies_on(&self, vertex: u32, chain: u32) -> bool {
+        if self.polyline_of.get(vertex as usize) == Some(&chain) {
+            return true;
+        }
+        self.polylines.get(chain as usize).is_some_and(|line| {
+            line.vertices.first() == Some(&vertex) || line.vertices.last() == Some(&vertex)
+        })
     }
 }
 
@@ -239,6 +261,20 @@ pub(crate) fn build(
         }
     }
 
+    // A vertex where the surface meets itself at a point - two fans sharing one
+    // vertex and no edge, a bow tie - has no branching edge to make it a
+    // feature, and so was collapsed like any other: merged into a neighbour on
+    // one side, it dragged that fan's tip across to the other. It is held the
+    // way the topology promises, as a feature on no chain and a corner of its
+    // own, so it is seeded where it is, survives every collapse into it and
+    // never merges with another feature.
+    for vertex in 0..count {
+        if surface.topology.nonmanifold[vertex] && !features.on_feature[vertex] {
+            features.on_feature[vertex] = true;
+            features.junction[vertex] = true;
+        }
+    }
+
     // Walked as **edges**, not vertices.
     //
     // A chain is a maximal path of feature edges, and the vertices along it are
@@ -253,7 +289,7 @@ pub(crate) fn build(
     for start in 0..count as u32 {
         while features.partners_of(start).len() != 2 && has_unused(&features, &used, start) {
             let line = walk(&features, &mut used, start);
-            push_line(&mut features, surface, line, false, borders, crease_cosine);
+            push_line(&mut features, surface, line, false, borders);
         }
     }
     if cancelled(cancel) {
@@ -270,7 +306,7 @@ pub(crate) fn build(
             if closed {
                 line.pop();
             }
-            push_line(&mut features, surface, line, closed, borders, crease_cosine);
+            push_line(&mut features, surface, line, closed, borders);
         }
     }
 
@@ -500,7 +536,6 @@ fn push_line(
     vertices: Vec<u32>,
     closed: bool,
     borders: bool,
-    crease_cosine: Option<f32>,
 ) {
     if vertices.len() < 2 {
         return;
@@ -509,7 +544,7 @@ fn push_line(
     // together because a border that turns a corner is still one curve, but the
     // vertex budget has to know which of them the output's own border comes
     // from.
-    let kind = chain_kind(surface, &vertices, borders, crease_cosine);
+    let kind = chain_kind(surface, &vertices, borders);
     features.polylines.push(Polyline {
         vertices,
         closed,
@@ -517,13 +552,10 @@ fn push_line(
     });
 }
 
-/// Whether the first edge of a chain is an open border.
-fn chain_kind(
-    surface: Surface<'_>,
-    vertices: &[u32],
-    borders: bool,
-    crease_cosine: Option<f32>,
-) -> FeatureKind {
+/// What a chain is, read from its first edge: an open border, a fold, or a
+/// crease. Which crease angle made it a feature does not matter here - a chain
+/// that is not a border or a fold is a crease whatever the threshold was.
+fn chain_kind(surface: Surface<'_>, vertices: &[u32], borders: bool) -> FeatureKind {
     let mut scratch = Vec::new();
     surface
         .topology
@@ -538,7 +570,6 @@ fn chain_kind(
             FeatureKind::Crease
         };
     }
-    let _ = crease_cosine;
     // A chain that turns back on itself is a rim; one that merely bends sharply
     // is a crease. Read from the first edge, as the whole chain is.
     match dihedral_cosine(surface, *edge) {
@@ -872,6 +903,61 @@ mod tests {
             features.on_feature[0] && features.on_feature[1],
             "the branch itself is kept even with borders and creases off"
         );
+    }
+
+    /// Two fans sharing one vertex and no edge - a bow tie - make that vertex a
+    /// held corner, though no edge there branches.
+    ///
+    /// It was the one non-manifold vertex nothing protected: an edge with three
+    /// faces is a feature, but a point where two pieces of surface meet has no
+    /// such edge, so it was collapsed into a neighbour on one side like any
+    /// vertex, dragging the other side's tip with it.
+    #[test]
+    fn a_vertex_where_two_fans_touch_is_a_held_corner() {
+        // Two triangles in different planes, meeting at vertex 0 alone.
+        let positions = vec![
+            0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.5, 0.0, -1.0, 0.5,
+        ];
+        let indices = vec![0, 1, 2, 0, 3, 4];
+
+        let features = features_of(&positions, &indices, false, None);
+
+        assert!(features.on_feature[0] && features.junction[0]);
+        assert_eq!(features.polyline_of[0], u32::MAX, "it is on no chain");
+        assert!(
+            (1..5).all(|vertex| !features.on_feature[vertex]),
+            "and nothing else is held, with borders and creases off"
+        );
+    }
+
+    /// And a held corner on no chain is seeded where it is, or nothing would
+    /// put a region's survivor there.
+    #[test]
+    fn a_corner_on_no_chain_is_seeded() {
+        let positions = vec![
+            0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.5, 0.0, -1.0, 0.5,
+        ];
+        let indices = vec![0, 1, 2, 0, 3, 4];
+        let topology = Topology::build(&indices, 5, 1, None);
+        let sizes = vec![1.0f32; 5];
+        let areas = size_field::dual_areas(&positions, &indices, &topology, 1);
+        let surface = Surface {
+            positions: &positions,
+            indices: &indices,
+            topology: &topology,
+            sizes: &sizes,
+            areas: &areas,
+        };
+        let features = build(surface, false, None, None);
+
+        let seeds = crate::remesh::seeds::place(surface, &features, 4, None);
+
+        let slot = seeds
+            .vertices
+            .iter()
+            .position(|&vertex| vertex == 0)
+            .expect("the shared vertex is a seed");
+        assert!(seeds.pinned[slot], "and one the relaxation may not move");
     }
 
     #[test]

@@ -15,8 +15,6 @@ pub const DIMENSION_LABEL: f32 = 12.0;
 pub const GIZMO_LABEL: f32 = 11.0;
 pub const GIZMO_LABEL_NEG: f32 = 10.0;
 pub const MODE_SEGMENT: f32 = 12.0;
-/// Section-heading font in the Inspector side panel.
-pub const PANEL_LABEL: f32 = 14.0;
 /// egui `TextStyle::Heading` size — used by native window title bars and the
 /// Inspector's `ui.heading` section headings. Trimmed from egui's stock 18 so
 /// the option-window title bars are a touch shorter.

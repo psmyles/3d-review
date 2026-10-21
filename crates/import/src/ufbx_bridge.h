@@ -26,9 +26,10 @@ typedef struct review_import_face {
 typedef struct review_import_material {
     char *name;
     /* Import defaults seeding the editable material table. Base color
-       and emissive are stored in *linear* space (unlike review_import_vertex::color,
-       which is sRGB-encoded for the vertex-color shader path). Smoothness is
-       glossiness (1 - roughness) in [0,1]; metallic in [0,1]. */
+       and emissive are stored in *linear* space, as the material's PBR figures
+       are read (review_import_vertex::vertex_color, by contrast, is carried
+       exactly as the file authored it). Smoothness is glossiness
+       (1 - roughness) in [0,1]; metallic in [0,1]. */
     float base_color[3];
     float smoothness;
     float metallic;
@@ -140,9 +141,12 @@ typedef struct review_import_morph_shape {
 } review_import_morph_shape;
 
 /* One sparse blend-shape offset: `shape` moves logical vertex `logical_vertex`
-   by `position` (and its normal by `normal`), both already rotated into the
-   baked world orientation of the owning mesh node. Unsorted; the Rust side
-   builds the per-logical-vertex CSR. */
+   by `position` (and its normal by `normal`), both already taken into the baked
+   world space of the owning mesh node: the position offset through the node's
+   linear map, the normal delta through its normal matrix with the scale divided
+   out (`review_import_normal_delta_matrix`), so it adds to the baked unit normal
+   at the file's own strength whatever unit the file was authored in. Unsorted;
+   the Rust side builds the per-logical-vertex CSR. */
 typedef struct review_import_morph_entry {
     uint32_t logical_vertex;
     uint32_t shape;

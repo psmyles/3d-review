@@ -148,6 +148,16 @@ impl Bvh {
         Self { nodes, tris }
     }
 
+    /// Whether the tree indexes no triangle at all. Every query has to ask this
+    /// before it descends: an empty tree is a single [`Node::EMPTY`], whose zero
+    /// `count` reads as an *internal* node with children `0` and `1` — and its
+    /// zero-size root box at the origin passes the slab test for any ray through
+    /// the origin (a refit one, inside out, passes it for every ray), after
+    /// which the traversal indexes a node that does not exist.
+    fn is_empty(&self) -> bool {
+        self.tris.is_empty()
+    }
+
     /// Whether the mesh occludes the segment from `origin` to `target`: true when
     /// any triangle is crossed strictly between the endpoints (excluding the thin
     /// `SEGMENT_SLACK` margins). Sub-linear in the triangle count; reads
@@ -170,6 +180,10 @@ impl Bvh {
     /// Shared any-hit traversal behind both occlusion queries: whether any
     /// triangle is crossed strictly within `t ∈ (t_min, t_max)` along `dir`.
     fn any_hit(&self, model: &ModelData, origin: Vec3, dir: Vec3, t_min: f32, t_max: f32) -> bool {
+        // An empty tree's root reads as an internal node (see `is_empty`).
+        if self.is_empty() {
+            return false;
+        }
         let inv_dir = dir.recip();
 
         let mut stack = [0u32; MAX_STACK];
@@ -235,6 +249,9 @@ impl Bvh {
         bounds: Option<&[(Vec3, Vec3)]>,
         positions: impl Fn(u32) -> [Vec3; 3],
     ) -> Option<Hit> {
+        if self.is_empty() {
+            return None;
+        }
         let inv_dir = dir.recip();
         let mut best: Option<Hit> = None;
         let mut far = t_max;
@@ -339,7 +356,7 @@ impl Bvh {
     ) -> Option<ClosestPoint> {
         // NaN spelled out rather than left to a negated comparison: a NaN range
         // would otherwise square to NaN and reject every box silently.
-        if self.tris.is_empty() || max_distance.is_nan() || max_distance < 0.0 {
+        if self.is_empty() || max_distance.is_nan() || max_distance < 0.0 {
             return None;
         }
         let mut best: Option<ClosestPoint> = None;
@@ -870,20 +887,43 @@ pub fn closest_point_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> (Vec3, V
     (a + ab * v + ac * w, Vec3::new(1.0 - v - w, v, w))
 }
 
+/// How near parallel to a triangle a ray may run before [`ray_triangle_t`]
+/// counts it as missing, as a fraction of `|edge1| |edge2| |dir|` — the most the
+/// determinant can be for those lengths. What is left of it is the sine between
+/// the two edges times the cosine between the ray and the normal, a pure angle,
+/// so the test means the same on a millimetre bolt as on a kilometre of terrain.
+/// Near `f32`'s epsilon, below which the determinant is rounding and not
+/// geometry.
+const PARALLEL_FRACTION: f32 = 1.0e-7;
+
 /// Möller–Trumbore ray/triangle intersection. Returns the hit parameter `t`
 /// along `dir` (so the world hit is `origin + t * dir`), or `None` when the ray
 /// misses or runs parallel to the triangle. Hits from either side count — the
 /// model's facing is irrelevant to whether it blocks the line of sight.
 ///
+/// The parallel test is relative (`PARALLEL_FRACTION`). It used to compare
+/// the determinant — twice the triangle's area times `|dir|` and the cosine —
+/// with a fixed `1e-8`, which made every triangle under 5e-9 m² (legs of a tenth
+/// of a millimetre) unhittable by a unit ray: a small dense mesh was transparent
+/// to picks, label occlusion and the AO bake, and a ray pushed into an up-scaled
+/// node's rest space lost even more.
+///
 /// Public because the skeleton overlay's bone pick tests the same maths against
 /// octahedra it builds itself, which are geometry no BVH indexes.
 pub fn ray_triangle_t(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
-    const EPS: f32 = 1.0e-8;
     let edge1 = b - a;
     let edge2 = c - a;
     let pvec = dir.cross(edge2);
     let det = edge1.dot(pvec);
-    if det.abs() < EPS {
+    // Squared on both sides, so the test costs no square root. A degenerate
+    // triangle has a zero scale and a zero determinant and so reads as parallel
+    // too. NaN is spelled out: `<=` is false for it, so it would slip through.
+    let threshold = PARALLEL_FRACTION
+        * PARALLEL_FRACTION
+        * edge1.length_squared()
+        * edge2.length_squared()
+        * dir.length_squared();
+    if det.is_nan() || det * det <= threshold {
         return None; // ray parallel to the triangle plane
     }
     let inv_det = 1.0 / det;
@@ -1324,6 +1364,128 @@ mod tests {
         let model = ModelData::default();
         let bvh = Bvh::build(&model);
         assert!(!bvh.segment_occluded(&model, Vec3::ZERO, Vec3::new(1.0, 1.0, 1.0)));
+    }
+
+    /// An empty tree is one zero-count node, which every traversal used to read
+    /// as an internal node and descend into a child that does not exist — on
+    /// any ray through the origin, where its zero-size root box sits, and on
+    /// every ray once that box was refit inside out. The segment test above
+    /// passed only because its start slack trims the origin off.
+    #[test]
+    fn an_empty_tree_answers_every_query_through_the_origin() {
+        let model = ModelData::default();
+        let bvh = Bvh::build(&model);
+        // Diagonal, so every slab is crossed at a finite `t`, and through the
+        // origin at `t = sqrt(3)`.
+        let origin = Vec3::splat(-1.0);
+        let dir = Vec3::ONE.normalize();
+
+        assert!(!bvh.ray_occluded(&model, origin, dir, f32::INFINITY));
+        assert!(!bvh.ray_occluded(&model, Vec3::ZERO, dir, f32::INFINITY));
+        assert!(!bvh.segment_occluded(&model, origin, Vec3::ONE));
+        assert!(
+            bvh.closest_hit(&model, origin, dir, 0.0, f32::INFINITY)
+                .is_none()
+        );
+        let refit = bvh.refit(|triangle| triangle_positions(&model, triangle));
+        assert!(
+            bvh.closest_hit_with(origin, dir, 0.0, f32::INFINITY, Some(&refit), |triangle| {
+                triangle_positions(&model, triangle)
+            })
+            .is_none()
+        );
+        assert!(
+            bvh.closest_point(&model, Vec3::ZERO, f32::INFINITY)
+                .is_none()
+        );
+
+        // And the per-part scene over the same model.
+        let scene = SceneBvh::build(&model);
+        assert!(
+            scene
+                .pick(&model, origin, dir, 0.0, f32::INFINITY, |_| true)
+                .is_none()
+        );
+        assert!(!scene.segment_occluded(&model, origin, Vec3::ONE, &[]));
+    }
+
+    /// A model of one right triangle in the z = 0 plane with legs `leg` long,
+    /// its right angle at the origin.
+    fn single_triangle(leg: f32) -> ModelData {
+        let corner = |position: Vec3| Vertex {
+            position,
+            ..Vertex::default()
+        };
+        ModelData {
+            vertices: vec![
+                corner(Vec3::ZERO),
+                corner(Vec3::X * leg),
+                corner(Vec3::Y * leg),
+            ],
+            indices: vec![0, 1, 2],
+            ..ModelData::default()
+        }
+    }
+
+    /// The parallel test used to be an absolute `1e-8` on a determinant that is
+    /// twice the area for a unit ray, so a triangle with legs of a hundredth of
+    /// a millimetre could never be hit. A ray straight down onto it is as far
+    /// from parallel as a ray gets.
+    #[test]
+    fn a_sub_millimetre_triangle_is_hit_head_on() {
+        for leg in [1.0e-5_f32, 1.0e-4, 1.0e-3, 1.0, 1.0e3] {
+            let model = single_triangle(leg);
+            let [a, b, c] = triangle_positions(&model, 0);
+            // A quarter of the way along each leg, from a leg's length above.
+            let origin = Vec3::new(leg * 0.25, leg * 0.25, leg);
+            let t = ray_triangle_t(origin, Vec3::NEG_Z, a, b, c)
+                .unwrap_or_else(|| panic!("a {leg} m triangle must be hit head on"));
+            assert!((t - leg).abs() <= leg * 1.0e-5, "leg {leg}: t = {t}");
+
+            // Through the hierarchy too: the pick, and the AO bake's ray.
+            let bvh = Bvh::build(&model);
+            let hit = bvh
+                .closest_hit(&model, origin, Vec3::NEG_Z, 0.0, f32::INFINITY)
+                .unwrap_or_else(|| panic!("the {leg} m triangle is pickable"));
+            assert_eq!(hit.triangle, 0);
+            assert!(bvh.ray_occluded(&model, origin, Vec3::NEG_Z, f32::INFINITY));
+
+            // Whatever the size, a ray in the triangle's own plane still misses.
+            let grazing = Vec3::new(-leg, leg * 0.25, 0.0);
+            assert_eq!(ray_triangle_t(grazing, Vec3::X, a, b, c), None, "leg {leg}");
+        }
+    }
+
+    /// The test is on an angle, not a length: scaling the ray's direction, as a
+    /// rigid pick does when it pushes the ray into a scaled node's rest space,
+    /// moves `t` by the inverse factor and nothing else.
+    #[test]
+    fn the_parallel_test_does_not_care_how_long_the_direction_is() {
+        let model = single_triangle(1.0e-3);
+        let [a, b, c] = triangle_positions(&model, 0);
+        let origin = Vec3::new(2.5e-4, 2.5e-4, 1.0e-3);
+        for length in [1.0e-4_f32, 1.0e-2, 1.0, 1.0e2] {
+            let t = ray_triangle_t(origin, Vec3::NEG_Z * length, a, b, c)
+                .unwrap_or_else(|| panic!("direction of length {length} must hit"));
+            assert!(
+                (t * length - 1.0e-3).abs() <= 1.0e-8,
+                "length {length}: t = {t}"
+            );
+        }
+    }
+
+    /// A triangle with no area has nothing to hit, and must not turn into a NaN
+    /// that some comparison downstream happens to accept.
+    #[test]
+    fn a_degenerate_triangle_is_never_hit() {
+        let collinear = [Vec3::ZERO, Vec3::X, Vec3::X * 2.0];
+        let point = [Vec3::ZERO; 3];
+        for [a, b, c] in [collinear, point] {
+            assert_eq!(
+                ray_triangle_t(Vec3::new(0.5, 0.0, 1.0), Vec3::NEG_Z, a, b, c),
+                None
+            );
+        }
     }
 
     /// A two-part model: node 0's triangle straddles the origin (blocking a

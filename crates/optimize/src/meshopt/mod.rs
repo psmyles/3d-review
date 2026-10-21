@@ -95,6 +95,13 @@ pub const POSITION_COMPONENTS: usize = 3;
 /// Byte stride of a packed position stream (`float3`, tightly packed).
 pub const POSITION_STRIDE: usize = POSITION_COMPONENTS * size_of::<f32>();
 
+/// The largest vertex, in bytes, meshoptimizer's byte-comparing remap and its
+/// fetch analysis take: both `assert(vertex_size > 0 && vertex_size <= 256)`
+/// (`indexgenerator.cpp`, `indexanalyzer.cpp`), and an assert aborts the
+/// process. The wrappers refuse anything larger; a caller with a wider key
+/// folds it first (`ops`' merge key does).
+pub const MAX_VERTEX_SIZE: usize = 256;
+
 /// GPU vertex-cache model used for the ACMR/ATVR figures reported in the Opt
 /// stats overlay. 16 entries with 32-wide warps is meshoptimizer's own
 /// "modern GPU" default, and using one fixed model keeps the numbers
@@ -213,6 +220,19 @@ fn check_stream(stream: &[f32], vertex_count: usize, components: usize) -> Resul
     Ok(())
 }
 
+/// Validate a per-vertex byte size against the `1..=`[`MAX_VERTEX_SIZE`] range
+/// meshoptimizer asserts on.
+#[cfg_attr(not(has_meshopt), allow(dead_code))] // read only by the gated wrappers
+fn check_vertex_size(size: usize) -> Result<(), OptError> {
+    if size == 0 || size > MAX_VERTEX_SIZE {
+        return Err(OptError::InvalidParameter {
+            name: "vertex size",
+            value: size as f32,
+        });
+    }
+    Ok(())
+}
+
 /// Check a returned index count against the destination capacity, and that it
 /// describes whole triangles.
 #[cfg_attr(not(has_meshopt), allow(dead_code))] // read only by the gated wrappers
@@ -295,6 +315,43 @@ mod tests {
     #[test]
     fn check_stream_accepts_an_exact_finite_stream() {
         assert!(check_stream(&[0.0; 6], 2, 3).is_ok());
+    }
+
+    /// meshoptimizer asserts `vertex_size <= 256`, and an assert aborts the
+    /// process: the wrapper is where a wider vertex has to be refused.
+    #[test]
+    fn check_vertex_size_refuses_what_meshoptimizer_asserts_on() {
+        for size in [0, MAX_VERTEX_SIZE + 1, 4096] {
+            assert!(
+                matches!(
+                    check_vertex_size(size),
+                    Err(OptError::InvalidParameter {
+                        name: "vertex size",
+                        ..
+                    })
+                ),
+                "{size} bytes"
+            );
+        }
+        assert!(check_vertex_size(1).is_ok());
+        assert!(check_vertex_size(MAX_VERTEX_SIZE).is_ok());
+    }
+
+    #[cfg(has_meshopt)]
+    #[test]
+    fn the_remap_and_the_analysis_refuse_an_oversized_vertex() {
+        let indices = [0u32, 1, 2];
+        let stride = MAX_VERTEX_SIZE + 4;
+        assert!(matches!(
+            generate_vertex_remap(&indices, &vec![0u8; 3 * stride], 3, stride),
+            Err(OptError::InvalidParameter { .. })
+        ));
+        let positions = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        assert!(matches!(
+            analyze(&indices, &positions, 3, MAX_VERTEX_SIZE + 1),
+            Err(OptError::InvalidParameter { .. })
+        ));
+        assert!(analyze(&indices, &positions, 3, 64).is_ok());
     }
 
     #[test]

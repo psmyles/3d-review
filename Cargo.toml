@@ -100,6 +100,8 @@ image = { version = "0.25", default-features = false, features = [
     "tiff",
     "jpeg",
     "pnm",
+    "bmp",
+    "gif",
 ] }
 # Intel's ISPC Texture Compressor (prebuilt kernels): BC7 for the UV checker in
 # `render`'s build script, BC6H for the offline IBL bake. Build-time only - no part

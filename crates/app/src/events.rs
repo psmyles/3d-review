@@ -28,12 +28,13 @@ pub(crate) enum UserEvent {
     /// would otherwise make every variant of this enum that large.
     OptProcessed(Box<opt::OptProcessed>),
     /// A background Opt run reached a new step, or moved within one (posted by
-    /// the optimize thread, already throttled there - see `opt.rs`). Rewrites
-    /// the optimizing card's stage line in place.
+    /// the optimize thread, which sends only a line that has changed and
+    /// deliberately no time throttle - see `opt/process.rs`). Rewrites the
+    /// optimizing card's stage line in place.
     OptProgressed(opt::OptProgressed),
     /// A background Opt run produced a mesh part way through (posted by the
-    /// optimize thread, already throttled there). Drawn in place of the
-    /// finished level until that run lands. Boxed: it carries a whole model.
+    /// optimize thread, throttled there to a few a second). Drawn in place of
+    /// the finished level until that run lands. Boxed: it carries a whole model.
     OptPreviewed(Box<opt::OptPreviewed>),
     /// A background audit run finished (posted by the audit thread). Boxed: the
     /// report carries every finding's element list.
@@ -44,8 +45,9 @@ pub(crate) enum UserEvent {
     /// the import thread). Boxed because it carries the parsed models.
     FilesParsed(Box<loading::FilesParsed>),
     /// A background model import reached a new stage, or moved within one
-    /// (posted by the import thread, already throttled there — see `loading.rs`).
-    /// Rewrites the loading card's stage line in place.
+    /// (posted by the import thread, already throttled there — see
+    /// `loading/parse.rs` — or by the measuring thread once per stage, see
+    /// `loading/measure.rs`). Rewrites the loading card's stage line in place.
     ModelLoadProgress(loading::ModelLoadProgress),
     /// One of the measurements the import deferred until after the model was on
     /// screen has landed (posted by the same thread, which keeps measuring once

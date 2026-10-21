@@ -39,12 +39,51 @@ impl SceneGpu {
 
     /// The bindings a draw that samples nothing needs: only the deform tables its
     /// vertex shader declares — `vs_main` for the selection fill, `vs_line` /
-    /// `vs_wire` for the lines, which add their pulled buffers on top. Binding a
-    /// texture here would be a validation error, not a harmless extra.
+    /// `vs_wire` for the lines, which add their pulled buffers on top.
     pub(super) fn line_bindings(&self) -> Bindings {
         let mut bindings = Bindings::new();
         self.bind_deform(&mut bindings);
         bindings
+    }
+
+    /// The bindings a draw through the `gtao_gbuffer` program needs for one material
+    /// range: the deform tables, plus what its alpha clip samples (`material_alpha` in
+    /// `review.glsl`) — the opacity slot and the material sampler.
+    ///
+    /// All seven of the material's slots go in, through the one call the material
+    /// table offers, although the program declares only the opacity one. That is
+    /// harmless rather than a validation error: sokol checks and gathers bindings by
+    /// walking the *shader's* declared slots (`_sg_validate_apply_bindings`,
+    /// `sg_apply_bindings`), so a slot it does not declare is never read. Leaving a
+    /// declared slot empty is what it rejects.
+    pub(super) fn clip_bindings(&self, material: &MaterialEntry) -> Bindings {
+        let mut bindings = self.line_bindings();
+        material.bind_textures(&mut bindings);
+        bindings.sampler(generated::SMP_MATERIAL_SAMPLER, self.materials.sampler());
+        bindings
+    }
+
+    /// Draw `ranges` of `indices` over `vertices` through whichever `gtao_gbuffer`
+    /// pipeline the caller has applied (with its scene uniforms): the G-buffer itself,
+    /// or the line pass's depth prepass. One draw per material range, each with that
+    /// range's material bound, so the alpha clip cuts exactly what the shaded mesh's
+    /// own draw of that range cut.
+    pub(super) fn draw_clipped_ranges(
+        &self,
+        frame: &mut Frame<'_>,
+        vertices: &VertexBuffer,
+        indices: &IndexBuffer,
+        ranges: &[MaterialDrawRange],
+    ) {
+        for range in ranges {
+            let material = self.materials.entry(range.material);
+            let mut bindings = self.clip_bindings(material);
+            bindings.mesh_vertices(vertices);
+            bindings.mesh_indices(indices);
+            frame.apply_bindings(&bindings);
+            frame.apply_uniforms(generated::UB_MATERIAL, material.uniform());
+            frame.draw(range.first_index as usize, range.index_count as usize);
+        }
     }
 
     /// Fill the four deform slots: the dummies first, then whatever real tables the
@@ -106,16 +145,29 @@ impl SceneGpu {
     /// ghost is drawn in its bind pose (its uniform's deform flag is off), so the
     /// tables are never read — they only have to be bound, because `vs_main`
     /// declares them.
+    ///
+    /// It draws the ghost slot's visibility list while one is in effect
+    /// (`SceneGpu::sync_ghost` keeps it), so a part hidden in the Outliner is gone
+    /// from the ghost as it is from the solid mesh and the wireframe ghost. An active
+    /// filter with no list means every part is hidden: nothing to draw.
     pub(super) fn draw_xray_ghost(&self, frame: &mut Frame<'_>, uniforms: &SceneUniforms) {
-        if let Some(mesh) = &self.idle.mesh {
+        let Some(mesh) = &self.idle.mesh else {
+            return;
+        };
+        let indices = if self.idle.visible_active {
+            self.idle.visible_index.as_ref()
+        } else {
+            Some(&mesh.indices)
+        };
+        if let Some(indices) = indices {
             let mut bindings = self.line_bindings();
             bindings.mesh_vertices(&mesh.vertices);
-            bindings.mesh_indices(&mesh.indices);
+            bindings.mesh_indices(indices);
             frame.apply_pipeline(&self.scene.selection);
             frame.apply_bindings(&bindings);
             frame.apply_uniforms(generated::UB_SCENE_VS, uniforms);
             frame.apply_uniforms(generated::UB_SCENE_FS, uniforms);
-            frame.draw(0, mesh.indices.count());
+            frame.draw(0, indices.count());
         }
     }
 
@@ -151,8 +203,9 @@ impl SceneGpu {
 
     /// Redraw the mesh into the line pass's single-sample depth, writing no colour:
     /// what the lines test against when the scene pass was multisampled, since its
-    /// depth cannot be read back. The same draw list, culling and depth bias as the
-    /// shaded mesh, so a line is hidden exactly where it would have been in that pass.
+    /// depth cannot be read back. The same draw list, culling, depth bias and alpha
+    /// clip as the shaded mesh, so a line is hidden exactly where it would have been
+    /// in that pass — and shows through an alpha-cut hole at 2×+ as it does at 1×.
     /// Costs a second run of the mesh's vertices and a depth-only fill, against the
     /// per-sample blending the lines no longer pay.
     pub(super) fn draw_depth_prepass(
@@ -170,16 +223,10 @@ impl SceneGpu {
         } else {
             &self.lines.depth_prepass
         };
-        let mut bindings = self.line_bindings();
-        bindings.mesh_vertices(&mesh.vertices);
-        bindings.mesh_indices(indices);
         frame.apply_pipeline(pipeline);
-        frame.apply_bindings(&bindings);
         frame.apply_uniforms(generated::UB_SCENE_VS, uniforms);
         frame.apply_uniforms(generated::UB_SCENE_FS, uniforms);
-        for range in ranges {
-            frame.draw(range.first_index as usize, range.index_count as usize);
-        }
+        self.draw_clipped_ranges(frame, &mesh.vertices, indices, ranges);
     }
 
     /// Draw the model wireframe: the retained edge list (`wireframe_edge_indices`)

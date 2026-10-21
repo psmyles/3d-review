@@ -151,7 +151,8 @@ enum Message<R, P> {
 pub(crate) const CHUNK: usize = 65_536;
 
 /// Threads to use when nothing has budgeted them. The per-object budget
-/// (`solve_nodes`) is the real source; this is for a lone call.
+/// (`remesh::nodes::ThreadBudget`, re-read at every stage) is the real source;
+/// this is for a lone call.
 pub(crate) fn default_threads() -> usize {
     std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
 }

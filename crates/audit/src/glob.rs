@@ -113,6 +113,44 @@ impl Glob {
         }
         self.tokens[t..].iter().all(|token| *token == Token::AnyRun)
     }
+
+    /// The part of `text` the pattern's `*` stands for, or `None` when `text`
+    /// does not match: `Crate_01` for `UCX_*` against `UCX_Crate_01`, and the
+    /// same for `UC[XP]_*` or `UC?_*`.
+    ///
+    /// Everything before the first `*` and after the last is one character per
+    /// token (a literal, a `?`, a class), so a match fixes exactly how many
+    /// characters each end took and what is left between them is the run. A
+    /// pattern with no `*` at all stands for nothing beyond itself.
+    pub fn star_span<'a>(&self, text: &'a str) -> Option<&'a str> {
+        if !self.matches(text) {
+            return None;
+        }
+        let head = self
+            .tokens
+            .iter()
+            .position(|token| *token == Token::AnyRun)
+            .unwrap_or(self.tokens.len());
+        let tail = self
+            .tokens
+            .iter()
+            .rev()
+            .position(|token| *token == Token::AnyRun)
+            .unwrap_or(0);
+        let start = text
+            .char_indices()
+            .nth(head)
+            .map_or(text.len(), |(at, _)| at);
+        let end = match tail {
+            0 => text.len(),
+            tail => text
+                .char_indices()
+                .rev()
+                .nth(tail - 1)
+                .map_or(start, |(at, _)| at),
+        };
+        Some(text.get(start..end.max(start)).unwrap_or(""))
+    }
 }
 
 fn token_matches(token: &Token, c: char) -> bool {
@@ -182,6 +220,26 @@ mod tests {
         assert!(matches("[!0-9]*", "Body"));
         assert!(!matches("[!0-9]*", "9Body"));
         assert!(matches("[]x]", "]"));
+    }
+
+    #[test]
+    fn the_star_span_is_what_the_wildcard_matched() {
+        let span = |pattern: &str, text: &'static str| Glob::new(pattern).unwrap().star_span(text);
+        assert_eq!(span("UCX_*", "UCX_Crate_01"), Some("Crate_01"));
+        // Every single-character token before the `*` takes one character.
+        assert_eq!(span("UC[XP]_*", "UCX_Crate"), Some("Crate"));
+        assert_eq!(span("UC?_*", "UCP_Crate"), Some("Crate"));
+        // A fixed tail is taken off the end the same way.
+        assert_eq!(span("*_[Cc]ol", "Crate_col"), Some("Crate"));
+        assert_eq!(span("UCX_*_?", "UCX_Barrel_7"), Some("Barrel"));
+        assert_eq!(
+            span("Ä?_*", "Äx_Kiste"),
+            Some("Kiste"),
+            "characters, not bytes"
+        );
+        assert_eq!(span("UCX_*", "UCX_"), Some(""));
+        assert_eq!(span("UCX_Crate", "UCX_Crate"), Some(""));
+        assert_eq!(span("UC[XP]_*", "UCB_Crate"), None);
     }
 
     #[test]

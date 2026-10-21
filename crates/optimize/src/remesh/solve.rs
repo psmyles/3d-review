@@ -20,6 +20,10 @@
 //! engines this replaces took no cancel hook at all, so an edit mid-rebuild had
 //! to wait out the object already in the solver.
 //!
+//! Each stage also asks how many threads it may use as it starts
+//! ([`ThreadBudget::now`]) rather than being told once, so an object still
+//! running when the others have finished spreads into the cores they left.
+//!
 //! ## The target edge length
 //!
 //! The requested face count becomes a uniform spacing by area: a triangle of
@@ -32,6 +36,7 @@
 use crate::OptError;
 use crate::cancel::{CancelToken, cancelled};
 
+use super::nodes::ThreadBudget;
 use super::proxy::Proxy;
 use super::surface::Surface;
 use super::topology::Topology;
@@ -66,7 +71,7 @@ pub(crate) fn rebuild(
     proxy: &Proxy,
     faces: u32,
     params: &RemeshParams,
-    threads: usize,
+    budget: &ThreadBudget,
     cancel: Option<&CancelToken>,
     mut after_pass: impl FnMut(RemeshOutput) -> bool,
 ) -> Result<(RemeshOutput, Report), OptError> {
@@ -76,13 +81,14 @@ pub(crate) fn rebuild(
         return Err(OptError::EmptyMesh);
     }
 
-    let topology = Topology::build(&proxy.indices, vertices, threads, cancel);
+    let topology = Topology::build(&proxy.indices, vertices, budget.now(), cancel);
     if cancelled(cancel) {
         return Err(OptError::Cancelled);
     }
 
-    let normals = size_field::vertex_normals(&proxy.positions, &proxy.indices, &topology, threads);
-    let areas = size_field::dual_areas(&proxy.positions, &proxy.indices, &topology, threads);
+    let normals =
+        size_field::vertex_normals(&proxy.positions, &proxy.indices, &topology, budget.now());
+    let areas = size_field::dual_areas(&proxy.positions, &proxy.indices, &topology, budget.now());
     // The whole rebuild produces triangles; quads are pairs of them, made at the
     // very end. So a quad budget is twice as many triangles to begin with - see
     // [`triangle_target`], which is where the leftovers are accounted for too.
@@ -104,7 +110,7 @@ pub(crate) fn rebuild(
         },
         params.adaptive_strength.clamp(0.0, 1.0),
         target_edge,
-        threads,
+        budget.now(),
         cancel,
     );
     let sizes: Vec<f32> = match field {
@@ -138,7 +144,7 @@ pub(crate) fn rebuild(
     if seeds.is_empty() {
         return Err(OptError::EmptyMesh);
     }
-    let mut partition = partition::build(surface, &features, &seeds, threads, cancel);
+    let mut partition = partition::build(surface, &features, &seeds, budget.now(), cancel);
     if cancelled(cancel) {
         return Err(OptError::Cancelled);
     }
@@ -149,7 +155,7 @@ pub(crate) fn rebuild(
         &features,
         &mut seeds,
         &mut partition,
-        threads,
+        budget,
         cancel,
         |seeds, partition, _| {
             let carry_on = after_pass(preview::build(
@@ -166,7 +172,7 @@ pub(crate) fn rebuild(
         return Err(OptError::Cancelled);
     }
 
-    let quadrics = collapse::build_quadrics(surface, threads);
+    let quadrics = collapse::build_quadrics(surface, budget.now());
     let state = collapse::run(surface, &features, &seeds, &partition, &quadrics, cancel);
     if cancelled(cancel) {
         return Err(OptError::Cancelled);
@@ -195,7 +201,7 @@ pub(crate) fn rebuild(
     // the one consumer whose output is four-sided.
     let quads = match normals {
         Some(normals) => {
-            let field = cross_field::build(surface, &normals, &features, threads, cancel);
+            let field = cross_field::build(surface, &normals, &features, budget.now(), cancel);
             if cancelled(cancel) {
                 return Err(OptError::Cancelled);
             }
@@ -320,13 +326,17 @@ mod tests {
         }
     }
 
+    fn one() -> ThreadBudget {
+        ThreadBudget::fixed(1)
+    }
+
     #[test]
     fn a_sphere_rebuilds_to_about_the_face_count_asked_for() {
         let proxy = sphere(24, 32);
 
         for asked in [200u32, 600, 1500] {
-            let (output, _) =
-                rebuild(&proxy, asked, &params(), 1, None, |_| true).expect("a sphere rebuilds");
+            let (output, _) = rebuild(&proxy, asked, &params(), &one(), None, |_| true)
+                .expect("a sphere rebuilds");
             let produced = output.face_count() as f64;
             let miss = (produced - asked as f64).abs() / asked as f64;
             assert!(
@@ -342,9 +352,16 @@ mod tests {
         let proxy = sphere(20, 28);
 
         let run = |threads: usize| {
-            rebuild(&proxy, 500, &params(), threads, None, |_| true)
-                .expect("a sphere rebuilds")
-                .0
+            rebuild(
+                &proxy,
+                500,
+                &params(),
+                &ThreadBudget::fixed(threads),
+                None,
+                |_| true,
+            )
+            .expect("a sphere rebuilds")
+            .0
         };
 
         let one = run(1);
@@ -358,11 +375,18 @@ mod tests {
         let proxy = sphere(18, 24);
 
         let mut previews = 0;
-        let (output, _) = rebuild(&proxy, 400, &params(), 1, None, |preview: RemeshOutput| {
-            assert!(preview.validate().is_ok(), "a preview is a valid soup");
-            previews += 1;
-            true
-        })
+        let (output, _) = rebuild(
+            &proxy,
+            400,
+            &params(),
+            &one(),
+            None,
+            |preview: RemeshOutput| {
+                assert!(preview.validate().is_ok(), "a preview is a valid soup");
+                previews += 1;
+                true
+            },
+        )
         .expect("a sphere rebuilds");
 
         assert!(previews > 0, "the relaxation reports as it settles");
@@ -373,7 +397,7 @@ mod tests {
     fn refusing_a_preview_cancels_the_run() {
         let proxy = sphere(18, 24);
 
-        let result = rebuild(&proxy, 400, &params(), 1, None, |_| false);
+        let result = rebuild(&proxy, 400, &params(), &one(), None, |_| false);
 
         assert!(matches!(result, Err(OptError::Cancelled)));
     }
@@ -386,7 +410,7 @@ mod tests {
         let proxy = sphere(16, 20);
         let token = CancelToken::new(Arc::new(AtomicU64::new(9)), 1);
 
-        let result = rebuild(&proxy, 300, &params(), 1, Some(&token), |_| true);
+        let result = rebuild(&proxy, 300, &params(), &one(), Some(&token), |_| true);
 
         assert!(matches!(result, Err(OptError::Cancelled)));
     }
@@ -396,9 +420,70 @@ mod tests {
         let proxy = proxy_of(Vec::new(), Vec::new());
 
         assert!(matches!(
-            rebuild(&proxy, 100, &params(), 1, None, |_| true),
+            rebuild(&proxy, 100, &params(), &one(), None, |_| true),
             Err(OptError::EmptyMesh)
         ));
+    }
+
+    /// An open box lands on its budget, creased or not.
+    ///
+    /// With **Keep sharp edges** on, the box's rim is cut into four open border
+    /// chains where the vertical creases meet it, and each corner of the rim is
+    /// an end of two of them. The border count in the vertex budget used to be
+    /// taken per station, so each of those corners was counted twice and the
+    /// budget came out a few vertices too generous: 160 faces for 150 asked.
+    #[test]
+    fn an_open_creased_box_lands_on_its_budget() {
+        // A box of side 1, each face `n` x `n`, top face left off.
+        let n = 16i64;
+        let mut slot = std::collections::HashMap::new();
+        let mut positions = Vec::new();
+        let mut indices = Vec::new();
+        let mut at = |p: [i64; 3]| -> u32 {
+            *slot.entry(p).or_insert_with(|| {
+                positions.extend(p.map(|v| v as f32 / n as f32));
+                (positions.len() / 3 - 1) as u32
+            })
+        };
+        for (axis, value) in [(0usize, 0i64), (0, n), (1, 0), (2, 0), (2, n)] {
+            let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
+            for i in 0..n {
+                for j in 0..n {
+                    let c = |di: i64, dj: i64| {
+                        let mut p = [0i64; 3];
+                        p[axis] = value;
+                        p[u] = i + di;
+                        p[v] = j + dj;
+                        p
+                    };
+                    let q = [c(0, 0), c(1, 0), c(1, 1), c(0, 1)].map(&mut at);
+                    if value == 0 {
+                        indices.extend_from_slice(&[q[0], q[2], q[1], q[0], q[3], q[2]]);
+                    } else {
+                        indices.extend_from_slice(&[q[0], q[1], q[2], q[0], q[2], q[3]]);
+                    }
+                }
+            }
+        }
+        let proxy = proxy_of(positions, indices);
+        for sharp in [false, true] {
+            for asked in [150u32, 400, 1000] {
+                let params = RemeshParams {
+                    sharp_edges: sharp,
+                    crease_angle: 30.0,
+                    ..params()
+                };
+                let (output, _) =
+                    rebuild(&proxy, asked, &params, &one(), None, |_| true).expect("rebuilds");
+                let produced = output.face_count() as f64;
+                let miss = (produced - asked as f64).abs() / asked as f64;
+                assert!(
+                    miss < 0.05,
+                    "sharp {sharp}: asked {asked}, produced {produced}: {:.1}% out",
+                    miss * 100.0
+                );
+            }
+        }
     }
 
     #[test]

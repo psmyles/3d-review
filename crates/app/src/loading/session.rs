@@ -102,9 +102,12 @@ impl App {
             Plan::TakeOver { rig } => {
                 // Every file of the session the rig takes over is opened again with
                 // it, so each binds to the rig from its own file — tracks the
-                // stand-in had no bone for included.
+                // stand-in had no bone for included. Copied, not taken: until the
+                // re-parse lands the stand-in is still the session on screen, and
+                // if it fails it stays so, with its attached files still indexed
+                // by these paths.
                 let mut paths: Vec<PathBuf> = take(rig).map(|(path, _)| path).into_iter().collect();
-                paths.extend(std::mem::take(&mut self.scene_files));
+                paths.extend(self.scene_files.iter().cloned());
                 paths.extend(
                     (0..shapes.len()).filter_map(|index| take(index).map(|(path, _)| path)),
                 );
@@ -112,6 +115,8 @@ impl App {
                     "{} takes over from the skeleton standing in",
                     paths[0].display()
                 );
+                // Supersedes parses only: the stand-in goes on being measured,
+                // since it is what stays on screen should the re-parse fail.
                 self.supersede_loads();
                 self.start_request_now(LoadRequest {
                     paths,
@@ -125,11 +130,13 @@ impl App {
                 left_out,
             } => {
                 let (rig_path, StagedImport { model, extras }) = take(rig)?;
-                // A drop that turned out to replace the session supersedes what
-                // the old one still had in flight; for an open it already has.
-                let generation = self.supersede_loads();
+                let repairs = extras.warnings().to_vec();
                 let model = Arc::new(model);
-                self.apply_new_model(&rig_path, Arc::clone(&model), started.elapsed());
+                // Replacing the model is what supersedes the old one's measuring,
+                // here rather than when the request was made.
+                let generation =
+                    self.apply_new_model(&rig_path, Arc::clone(&model), started.elapsed());
+                self.report_repairs(&rig_path, &repairs);
                 let attached = self.attach_parsed(&model, attach.into_iter().filter_map(&mut take));
                 // After its animation files, so the model is the newest entry in
                 // Open Recent: reopening it from a fresh start opens the model, not
@@ -158,7 +165,7 @@ impl App {
                     .collect();
                 self.report_left_out(left_out);
                 (!attached.is_empty()).then(|| MeasureJob {
-                    generation: self.model_load_generation(),
+                    generation: self.measure_generation(),
                     activity,
                     model,
                     new_model: None,
@@ -170,8 +177,9 @@ impl App {
     }
 
     /// Show `model` as the session's model, and re-point every piece of
-    /// dependent state (framing, stats, materials, undo) at it.
-    fn apply_new_model(&mut self, path: &Path, model: Arc<ModelData>, elapsed: Duration) {
+    /// dependent state (framing, stats, materials, undo) at it. Returns the
+    /// generation it is measured under.
+    fn apply_new_model(&mut self, path: &Path, model: Arc<ModelData>, elapsed: Duration) -> u64 {
         // Loading into the empty viewport (first load, or after Ctrl+N) shows
         // the model already framed — a fly-in from the home view would only
         // delay it. Replacing an already-loaded model keeps the animated
@@ -207,17 +215,7 @@ impl App {
         };
         self.ui.materials_snapshot = materials_snapshot;
         self.ui.material_revision = material_revision;
-        self.reset_ui_for_new_model(&model);
-        self.scene_model = model;
-        self.scene_files = vec![path.to_path_buf()];
-        // The capture describing this model arrives on its own event a moment
-        // later; the previous model's must not stand in for it.
-        self.scene_extras = None;
-        self.scene_revision = self.next_model_revision();
-        // Any Opt result (and every per-object override) describes the previous
-        // model, so drop both before the new one is drawn.
-        self.reset_opt_for_new_model();
-        self.reset_audit_for_new_model();
+        let generation = self.replace_scene_model(model, vec![path.to_path_buf()]);
         let label = file_label(path);
         self.set_window_title(Some(&label));
         self.notifications.success(keys::app_notifications::loaded(
@@ -227,6 +225,7 @@ impl App {
         // A gate run starts measuring from here — the first present with the
         // model actually on screen (`gate.rs`); no-op otherwise.
         self.gate_model_ready(path);
+        generation
     }
 
     /// Attach each of `files` to `model`, the session's model, and say so.
@@ -237,10 +236,20 @@ impl App {
         files: impl Iterator<Item = (PathBuf, StagedImport)>,
     ) -> Vec<(usize, Arc<AttachedAnimation>)> {
         let mut attached = Vec::new();
+        // What the notice names when one file was attached. Kept from the loop
+        // rather than looked up again by file index, which assumes `scene_files`
+        // lines up with the attached list one for one.
+        let mut last_label = String::new();
         for (path, staged) in files {
             // The file's own source capture is never used: only the model's is
-            // exported. Dropping it here frees the C side.
-            let StagedImport { model: source, .. } = staged;
+            // exported. Dropping it here frees the C side - after saying what the
+            // import had to leave out of the file's clips.
+            let StagedImport {
+                model: source,
+                extras,
+            } = staged;
+            self.report_repairs(&path, extras.warnings());
+            drop(extras);
             let animation = Arc::new(AttachedAnimation::new(model, source, file_stem(&path)));
             let matched = animation.node_map.iter().flatten().count();
             let report = &animation.report;
@@ -262,6 +271,7 @@ impl App {
             self.ui.attach_animation(Arc::clone(&animation));
             self.scene_files.push(path.clone());
             self.remember_recent_file(&path);
+            last_label = file_label(&path);
             attached.push((self.ui.attached_animations.len(), animation));
         }
         let clips: usize = attached
@@ -270,13 +280,9 @@ impl App {
             .sum();
         match attached.as_slice() {
             [] => {}
-            [(file, _)] => {
-                let path = &self.scene_files[*file];
+            [_] => {
                 self.notifications
-                    .success(keys::app_notifications::attached(
-                        clips as f64,
-                        file_label(path),
-                    ));
+                    .success(keys::app_notifications::attached(clips as f64, last_label));
             }
             several => self
                 .notifications
@@ -307,6 +313,29 @@ impl App {
         self.notifications.report(
             NoticeKind::Warning,
             keys::app_notifications::attached_mismatch(file_label(path), model_label),
+            lines,
+        );
+    }
+
+    /// One card saying what the import had to leave out of `path` to load it at
+    /// all: a malformed animation key, blend shape or skin binding is dropped on
+    /// its own rather than failing the file (`review_import`'s funnel repair). The
+    /// lines are the import's own diagnostics, passed through as a message variable
+    /// like any other error detail.
+    fn report_repairs(&mut self, path: &Path, repairs: &[String]) {
+        if repairs.is_empty() {
+            return;
+        }
+        for line in repairs {
+            log::warn!("{}: {line}", path.display());
+        }
+        let lines = repairs
+            .iter()
+            .map(|line| keys::app_notifications::import_repair_line(line.clone()))
+            .collect();
+        self.notifications.report(
+            NoticeKind::Warning,
+            keys::app_notifications::loaded_with_repairs(file_label(path)),
             lines,
         );
     }

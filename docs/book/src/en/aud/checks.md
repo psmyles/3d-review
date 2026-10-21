@@ -27,8 +27,9 @@ profile's engine.
 
 ## UVs
 
-- **Missing UVs**: parts without UVs, or with different UV sets from the
-  others.
+- **Missing UVs**: parts without UVs, parts with no UVs in a set the other
+  parts fill (sets are matched by their place in the list, not by name, as
+  engines read them), and parts with their sets in a different order.
 - **UVs outside 0-1**, **Overlapping UVs** and **Flipped UVs**.
 - **Missing lightmap UVs**, **Overlapping lightmap UVs**, **Lightmap
   padding** and **Lightmap UVs outside 0-1**: the lightmap UV set is checked at

@@ -15,12 +15,12 @@
 //!
 //! ## The token
 //!
-//! A verbatim twin of `review_import`'s `CancelToken`, and deliberately so: the
-//! shape is proven and the two behave identically, so `app` reasons about a run
-//! exactly as it reasons about a load. It is a *copy* rather than a shared type
-//! because `optimize` depends on `review_model` alone — it must not grow a
-//! dependency on the FBX reader to borrow fifteen lines (invariant 10's reason,
-//! applied one crate over).
+//! The same [`CancelToken`] `review_import` takes — one type, defined in
+//! `review_model` and re-exported here — so `app` reasons about a run exactly
+//! as it reasons about a load. It lives in `review_model` because that is the
+//! one crate both depend on: `optimize` must not grow a dependency on the FBX
+//! reader to borrow fifteen lines (invariant 10's reason, applied one crate
+//! over), and a copy in each would be two things to keep in step.
 //!
 //! The counter is the caller's own request generation, and the token is live
 //! while it still reads the value it was made with. Cancellation is therefore a

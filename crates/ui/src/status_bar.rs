@@ -21,7 +21,8 @@ use crate::theme::{color, font, size};
 use crate::transport;
 use crate::widgets::{
     Tip, bar_group_rect, bar_group_rect_centered, bar_group_scope, compact_combo,
-    icon_toggle_button, option_toggle, segment_button, tip, toolbar_group_shell, view_toggle,
+    icon_toggle_button, option_toggle, segment_button, tip, tip_when_disabled, toolbar_group_shell,
+    view_toggle,
 };
 use review_model::ModelData;
 use review_render::ViewportBackground;
@@ -377,7 +378,9 @@ fn draw_opt_group(ui: &mut egui::Ui, state: &mut UiState, bar_rect: egui::Rect, 
                 if response.clicked() {
                     state.opt.side = state.opt.side.swapped();
                 }
-                tip(
+                // Why the swap is greyed out. Shown only while it is: an
+                // enabled button already explains itself above.
+                tip_when_disabled(
                     response,
                     Tip::new(keys::ui_status_bar::NOTHING_PROCESSED)
                         .describe(keys::ui_status_bar::NOTHING_PROCESSED_DESCRIPTION)
@@ -388,8 +391,8 @@ fn draw_opt_group(ui: &mut egui::Ui, state: &mut UiState, bar_rect: egui::Rect, 
     });
 }
 
-/// `"Source"` for level 0, `"LOD 1"` and up for the rest — matching the names the
-/// processed meshes and the export carry.
+/// `"LOD 0 (full)"` for level 0, `"LOD 1"` and up for the rest — matching the
+/// names the processed meshes and the export carry.
 fn lod_label(level: usize) -> String {
     if level == 0 {
         review_localization::tr(keys::ui_status_bar::LOD_FULL).into_owned()

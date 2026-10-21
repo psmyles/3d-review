@@ -2,7 +2,7 @@
 //!
 //! Per invariant 2 this crate holds plain values + displayed stats and emits
 //! [`UiOutput`] *intents*; it never owns or mutates renderer/model internals.
-//! [`sync_debug_state`] funnels the committed panel values into the
+//! [`sync_debug_state`] funnels the panel values into the
 //! [`SceneDebugOptions`] the renderer reads.
 //!
 //! ## Layout
@@ -377,8 +377,9 @@ pub struct UiState {
     /// back to it when this is empty.
     pub selected_nodes: Vec<usize>,
     /// Anchor row for Shift-click range selection: the last plainly-clicked or
-    /// Primary-clicked row. `None` until a row is clicked. Shared by both sets,
-    /// because only one of them is ever live.
+    /// Primary-clicked row (or part picked in the viewport). A Shift-click range
+    /// sweeps from it and leaves it where it is. `None` until a row is clicked.
+    /// Shared by both sets, because only one of them is ever live.
     pub row_anchor: Option<usize>,
     /// Whether the loaded model carries any bone node. Gates the skeleton toolbar
     /// button (hidden entirely for an unrigged model). Set by `app` on load.
@@ -753,14 +754,13 @@ impl UiState {
     /// [`UiState::set_mesh_group_stats`]; both are dropped together by
     /// [`BoundsCaches::reset`] on load, since a new model can reproduce either
     /// key (the same node index selected again, the same one hidden again) while
-    /// meaning something entirely different. Until the table arrives the columns
-    /// sum an empty one and read as zero, which is what the card already renders
-    /// as "not measured yet". Nothing here may build it: the walk is O(corners)
-    /// with a hash per vertex (invariant 6).
-    pub(crate) fn scoped_stats(&mut self, model: &ModelData) -> ScopedStats {
-        let Some(groups) = self.caches.mesh_groups.as_deref() else {
-            return ScopedStats::default();
-        };
+    /// meaning something entirely different. Until the table arrives there is
+    /// nothing to sum, so this returns `None` and the card leaves both columns
+    /// blank — "not measured yet" — rather than summing an empty table into a
+    /// zero no scope ever measured (invariant 5). Nothing here may build it: the
+    /// walk is O(corners) with a hash per vertex (invariant 6).
+    pub(crate) fn scoped_stats(&mut self, model: &ModelData) -> Option<ScopedStats> {
+        let groups = self.caches.mesh_groups.as_deref()?;
 
         let key = (
             self.selection,
@@ -804,7 +804,7 @@ impl UiState {
             });
             self.caches.scoped_stats_key = key;
         }
-        self.caches.scoped_stats.unwrap_or_default()
+        self.caches.scoped_stats
     }
 
     /// Take the model's measured per-draw-group table — the walk behind both the
@@ -848,10 +848,39 @@ impl UiState {
         };
         self.caches.bone_influence_key = key;
     }
+
+    /// How many triangles `node` carries itself — its own mesh, not its subtree —
+    /// for the Inspector's Triangles row.
+    ///
+    /// Reading that off the triangle tags is an O(triangles) walk, which an
+    /// Inspector repaint must not repeat (invariant 6): 2.8M tags per orbit frame
+    /// on a large scene. So the first ask counts every node in that one pass, and
+    /// each node inspected after it reads [`BoundsCaches::node_triangles`] until
+    /// a model load resets the set.
+    pub(crate) fn node_triangle_count(&mut self, model: &ModelData, node: usize) -> usize {
+        if self.caches.node_triangles.len() != model.nodes.len() {
+            let mut counts = vec![0; model.nodes.len()];
+            for &owner in &model.triangles.node {
+                if let Some(count) = counts.get_mut(owner as usize) {
+                    *count += 1;
+                }
+            }
+            self.caches.node_triangles = counts;
+        }
+        self.caches.node_triangles.get(node).copied().unwrap_or(0)
+    }
+
+    /// How many children `node` has, from the Outliner's per-model scene-tree
+    /// adjacency ([`OutlinerState::ensure_tree`]) rather than a walk over every
+    /// node per repaint.
+    pub(crate) fn node_child_count(&mut self, model: &ModelData, node: usize) -> usize {
+        self.outliner.ensure_tree(model);
+        self.outliner.children.get(node).map_or(0, Vec::len)
+    }
 }
 
-/// Copy the committed panel values into the [`SceneDebugOptions`] the renderer
-/// reads. Called once per frame before the overlay is drawn.
+/// Copy the panel values into the [`SceneDebugOptions`] the renderer reads.
+/// Called once per frame before the overlay is drawn.
 pub(crate) fn sync_debug_state(state: &mut UiState) {
     state.debug.shading_mode = state.shading_mode;
     state.debug.show_grid = state.show_grid;

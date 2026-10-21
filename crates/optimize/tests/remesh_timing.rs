@@ -24,11 +24,15 @@ fn how_long_a_rebuild_takes() {
     let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     println!("cores: {cores}");
 
+    // The last two are many objects of very different sizes, which is where the
+    // threads an object is given have to follow the ones still running.
     for name in [
         "stylized_palm_plant_04.fbx",
         "cpg_pedestal_pebbles.fbx",
         "lucy.fbx",
         "xyzrgb_dragon.fbx",
+        "crystal_cluster_02.fbx",
+        "stylized_tree_branch_01.fbx",
     ] {
         let Some(model) = fixture(name) else {
             continue;

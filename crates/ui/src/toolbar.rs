@@ -27,8 +27,9 @@ use crate::widgets::{
 };
 
 /// Background frame shared by the toolbar (and matched by the status bar). Zero
-/// inner margin: content is placed by px-converted rect math below, so no raw
-/// pixel literals leak into the frame.
+/// inner margin: the bar's groups are placed by rect math below, from the
+/// theme's size tokens (egui points, used raw), so the frame adds no spacing of
+/// its own for that math to work around.
 pub(crate) fn toolbar_frame() -> egui::Frame {
     egui::Frame::NONE
         .fill(color::CHROME_BG)

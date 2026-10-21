@@ -14,7 +14,7 @@
 //! trait spread across four crates.
 
 use review_localization::{Key, tr};
-use review_optimize::{ExportNote, OpKind, OptError, OptWarning, RebindReport};
+use review_optimize::{ExportNote, OpKind, OptError, OptWarning, RebindReport, StackRepairs};
 
 use crate::keys::labels_opt as k;
 
@@ -121,6 +121,9 @@ pub fn explain_opt_warning(warning: &OptWarning) -> String {
         OptWarning::ShrinkwrapVoxelFailed { object, detail } => {
             k::warning_shrinkwrap_voxel_failed(object.clone(), detail.clone())
         }
+        OptWarning::ShrinkwrapFailed { object, detail } => {
+            k::warning_shrinkwrap_failed(object.clone(), detail.clone())
+        }
         OptWarning::ShrinkwrapResolutionLowered {
             object,
             requested,
@@ -224,9 +227,42 @@ pub fn rebind_notes(report: RebindReport) -> Vec<String> {
     notes
 }
 
+/// What loading a preset had to repair, one line per kind of repair, shown the
+/// way [`rebind_notes`] is. Empty for any preset the viewer saved itself.
+pub fn repair_notes(repairs: StackRepairs) -> Vec<String> {
+    let mut notes = Vec::new();
+    if repairs.lods_removed > 0 {
+        notes.push(k::preset_lods_removed(repairs.lods_removed as f64));
+    }
+    if repairs.overrides_dropped > 0 {
+        notes.push(k::preset_overrides_repaired(
+            repairs.overrides_dropped as f64,
+        ));
+    }
+    notes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A repaired preset says what was left out, one line per kind of repair, and
+    /// a clean one says nothing.
+    #[test]
+    fn a_repaired_preset_says_what_was_left_out() {
+        assert!(repair_notes(StackRepairs::default()).is_empty());
+        let notes = repair_notes(StackRepairs {
+            lods_removed: 1,
+            overrides_dropped: 3,
+        });
+        assert_eq!(notes.len(), 2);
+        assert!(notes.iter().all(|note| !note.is_empty()));
+        assert!(
+            notes[1].contains('3'),
+            "the count is in the line: {}",
+            notes[1]
+        );
+    }
 
     /// Every operation has a name and a description in the catalog.
     #[test]

@@ -57,9 +57,9 @@ pub(crate) struct PropData {
     pub(crate) blob: Vec<u8>,
 }
 
-/// The owned Rust side of a scene payload. Every buffer the bridge borrows lives
-/// here, so the whole thing must outlive the `review_export_fbx` call — which
-/// it does, since [`write_scene`] takes it by reference.
+/// One skin cluster of an exported mesh: the bone it binds, its authored
+/// `Transform` / `TransformLink` (in the file's units) and the vertices it
+/// weights.
 #[cfg_attr(test, derive(Default))]
 pub(crate) struct ClusterData {
     pub(crate) bone: i32,
@@ -165,6 +165,9 @@ pub(crate) struct SelectionSetData {
     pub(crate) nodes: Vec<SelectionNodeData>,
 }
 
+/// The owned Rust side of a scene payload. Every buffer the bridge borrows lives
+/// here, so the whole thing must outlive the `review_export_fbx` call — which
+/// it does, since [`write_scene`] takes it by reference.
 pub(crate) struct SceneData {
     /// The unit every coordinate below is expressed in, and the factor the file
     /// declares so a reader recovers it.
@@ -284,6 +287,9 @@ pub(crate) struct MaterialData {
     pub(crate) shader: u32,
     pub(crate) shading_model: CString,
     pub(crate) props: PropRange,
+    /// A material from the capture: `props` is everything it declared, even
+    /// when that is nothing, and the viewer's figures below are never written.
+    pub(crate) authored: bool,
     pub(crate) base_color: [f64; 3],
     pub(crate) emissive: [f64; 3],
     pub(crate) shininess_exponent: f64,
@@ -346,8 +352,6 @@ pub(crate) struct MeshData {
     pub(crate) edge_sources: Vec<u32>,
     /// Per exported blend channel, the model's channel index.
     pub(crate) channel_sources: Vec<u32>,
-    pub(crate) source_node: Option<usize>,
-    pub(crate) level: usize,
     pub(crate) skins: Vec<SkinExportData>,
     pub(crate) blend_channels: Vec<BlendChannelData>,
     /// Per face, empty when the source carried no such layer.

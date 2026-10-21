@@ -18,7 +18,13 @@ mod common;
 use common::{fixture, run};
 
 /// Every fixture this suite loads.
-const FIXTURES: [&str; 2] = ["SM_Ammo_Crate_01a.fbx", "monkey.fbx"];
+///
+/// The crystal cluster is the kitbash: crystals pushed into one another, a
+/// tenth of its triangles passing through another part as authored. It stands
+/// in for an ammo crate of planks, brackets and nails that was removed with the
+/// other proprietary models in a9c6db3 - the same property, a pile of closed
+/// parts with no one surface to walk.
+const FIXTURES: [&str; 2] = ["crystal_cluster_02.fbx", "monkey.fbx"];
 
 fn wrap_stack(params: ShrinkwrapParams) -> OptStack {
     let mut stack = OptStack::default();
@@ -91,13 +97,18 @@ fn every_fixture_the_suite_loads_exists() {
 
 #[test]
 fn a_kitbashed_prop_comes_back_as_closed_shells() {
-    let Some(model) = fixture("SM_Ammo_Crate_01a.fbx") else {
+    let Some(model) = fixture("crystal_cluster_02.fbx") else {
         return;
     };
     let result = run(
         &model,
         &wrap_stack(ShrinkwrapParams {
             resolution: 64,
+            // Every part kept: a crystal standing clear of the cluster is a
+            // shell of its own, and dropping it as a satellite would move the
+            // bounds this checks for a reason that has nothing to do with
+            // closing the shell.
+            keep_largest_shell: false,
             ..ShrinkwrapParams::default()
         }),
     );
@@ -107,7 +118,7 @@ fn a_kitbashed_prop_comes_back_as_closed_shells() {
         level.model.stats.triangle_count > 0,
         "the wrap produced geometry"
     );
-    assert_closed_per_node(&level.model, "wrapped ammo crate");
+    assert_closed_per_node(&level.model, "wrapped crystal cluster");
     assert!(
         level.model.faces.is_empty(),
         "a wrap emits triangles and publishes no face table"
@@ -222,13 +233,13 @@ fn assert_balanced_per_node(model: &ModelData, label: &str) {
 
 #[test]
 fn a_voxel_wrap_of_a_kitbash_is_balanced_near_its_target_and_where_the_object_is() {
-    let Some(model) = fixture("SM_Ammo_Crate_01a.fbx") else {
+    let Some(model) = fixture("crystal_cluster_02.fbx") else {
         return;
     };
     let result = run(&model, &wrap_stack(voxel(96)));
     let level = result.lod(0).expect("the stack produced a level");
     assert!(level.model.stats.triangle_count > 0);
-    assert_balanced_per_node(&level.model, "voxel-wrapped ammo crate");
+    assert_balanced_per_node(&level.model, "voxel-wrapped crystal cluster");
     assert!(level.model.faces.is_empty(), "a wrap emits triangles");
 
     // The default target is the object's own triangle count, per object; the

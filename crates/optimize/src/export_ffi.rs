@@ -69,6 +69,8 @@ pub struct RvoExportMaterial {
     pub shader: u32,
     pub shading_model: *const c_char,
     pub props: RvoExportPropRange,
+    /// Non-zero for a material from the source-property capture.
+    pub authored: i32,
     pub base_color: [f64; 3],
     pub emissive: [f64; 3],
     pub shininess_exponent: f64,
@@ -284,8 +286,9 @@ pub struct RvoExportMesh {
 
 #[repr(C)]
 pub struct RvoExportScene {
-    /// Centimeters per scene unit (FBX `UnitScaleFactor`). See
-    /// [`crate::export::UNIT_SCALE_CM`].
+    /// Centimeters per scene unit (FBX `UnitScaleFactor`): the source file's
+    /// own unit, which every coordinate in the payload is already expressed
+    /// in. See `export::unit::UnitScale`.
     pub unit_scale_cm: f64,
     pub props: *const RvoExportProp,
     pub prop_count: usize,

@@ -44,8 +44,28 @@ pub fn load(spec: &InputSpec) -> Result<Vec<Subject>> {
         || spec.path.display().to_string(),
         |name| name.to_string_lossy().into_owned(),
     );
-    let model = review_import::load_model(&spec.path)
+    // Loaded as the viewer and `review-cli` load it - the model, its GPU-vertex
+    // count, then the source-property capture - because a stack run reads the
+    // capture too: extra colour sets and vertex creases are part of the weld
+    // key, and the polygons ride the run as its carry. Without it the counts
+    // printed here could differ from the ones those two report for the same
+    // file and stack. A capture that cannot be marshaled costs the model
+    // nothing, as it costs them nothing.
+    //
+    // This and the `@lods` stack below repeat `review-cli`'s `load.rs` and
+    // `set_lods` in miniature: that crate is a binary, so there is no shared
+    // home for them without a new library crate.
+    let staged = review_import::load_model_staged(&spec.path, &|_| {})
         .with_context(|| format!("loading {}", spec.path.display()))?;
+    let mut model = staged.model;
+    model.stats.gpu_vertex_count = model.count_gpu_vertices();
+    let extras = match staged.extras.marshal(&model) {
+        Ok(extras) => extras,
+        Err(error) => {
+            println!("  warning: {file}: source properties dropped: {error}");
+            None
+        }
+    };
 
     let Some(stack_spec) = &spec.stack else {
         return Ok(split_by_lod_suffix(&file, Arc::new(model), spec.level));
@@ -78,7 +98,7 @@ pub fn load(spec: &InputSpec) -> Result<Vec<Subject>> {
         stack: &stack,
         render_vertex_size: review_render::scene_vertex_size(),
         hidden_nodes: &[],
-        extras: None,
+        extras: extras.as_ref(),
     })
     .with_context(|| format!("processing {file}"))?;
     println!(

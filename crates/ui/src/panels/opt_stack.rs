@@ -12,7 +12,8 @@
 //! edge to edge, which is what makes a list of rows read as one list.
 //!
 //! Every mutation goes through [`UiState::opt`]'s `edit_stack`, which bumps the
-//! revision `app` watches to schedule a reprocess.
+//! revision `app` watches to schedule a reprocess, and drops a selection on any
+//! row the edit took away.
 
 use review_optimize::{AoTarget, OpKind};
 use review_render::{ActiveMaterial, VertexColorMode};
@@ -265,10 +266,9 @@ fn operation_rows(ui: &mut egui::Ui, state: &mut UiState) {
         });
     }
     if let Some(id) = removed {
+        // The edit itself lets go of a selection on a row this removes — the
+        // operation, or the Export settings row once the last one goes.
         state.opt.edit_stack(|stack| stack.remove_op(id));
-        if state.opt.selected == Some(StackItem::Op(id)) {
-            state.opt.selected = None;
-        }
     }
     if let Some(id) = selected {
         state.select_stack_item(StackItem::Op(id));

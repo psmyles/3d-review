@@ -5,6 +5,7 @@
 //! it into text through the catalog, and a later verdict is a pure function
 //! over these fields.
 
+use review_model::extras::CoordinateAxis;
 use serde::{Deserialize, Serialize};
 
 use crate::rule::{RuleId, Severity};
@@ -50,6 +51,22 @@ pub enum Axis {
     NegativeZ,
 }
 
+impl Axis {
+    /// The axis a file's coordinate system names, or `None` when it names none
+    /// ufbx could read.
+    pub fn from_coordinate(axis: CoordinateAxis) -> Option<Self> {
+        Some(match axis {
+            CoordinateAxis::PositiveX => Axis::PositiveX,
+            CoordinateAxis::NegativeX => Axis::NegativeX,
+            CoordinateAxis::PositiveY => Axis::PositiveY,
+            CoordinateAxis::NegativeY => Axis::NegativeY,
+            CoordinateAxis::PositiveZ => Axis::PositiveZ,
+            CoordinateAxis::NegativeZ => Axis::NegativeZ,
+            CoordinateAxis::Unknown | CoordinateAxis::Unnamed(_) => return None,
+        })
+    }
+}
+
 /// A measured figure, with its unit carried in the variant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "unit", content = "value")]
@@ -61,6 +78,9 @@ pub enum Measured {
     Degrees(f64),
     PerSquareMeter(f64),
     PxPerMeter(f64),
+    /// A distance in pixels of the raster a check samples (a lightmap's
+    /// padding).
+    Pixels(f64),
     /// Square pixels (an on-screen area).
     SquarePixels(f64),
     /// A screen size: the object's bounding-sphere diameter over the screen
@@ -384,6 +404,20 @@ mod tests {
         assert!(set.contains(2) && set.contains(8) && set.contains(20));
         assert!(!set.contains(0) && !set.contains(4) && !set.contains(19));
         assert_eq!(set.iter().collect::<Vec<_>>(), vec![1, 2, 3, 7, 8, 20]);
+    }
+
+    /// A file's up axis is written the way a profile's target is, so a report
+    /// never names one axis two ways.
+    #[test]
+    fn a_files_axis_reads_as_the_profiles_axis() {
+        let axis = Axis::from_coordinate(CoordinateAxis::PositiveY);
+        assert_eq!(serde_json::to_value(axis).unwrap(), "positive_y");
+        assert_eq!(
+            serde_json::to_value(Axis::from_coordinate(CoordinateAxis::NegativeZ)).unwrap(),
+            "negative_z"
+        );
+        assert_eq!(Axis::from_coordinate(CoordinateAxis::Unknown), None);
+        assert_eq!(Axis::from_coordinate(CoordinateAxis::Unnamed(9)), None);
     }
 
     #[test]

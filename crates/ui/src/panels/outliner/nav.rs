@@ -188,7 +188,10 @@ pub(super) fn resolve_nav(
 ///   follows the set's last member, or clears when the set empties.
 /// * Shift-click — take every row between the anchor and this one, in the order
 ///   the rows are currently drawn, so the range matches what the user sees
-///   rather than the model's internal node ordering.
+///   rather than the model's internal node ordering. The anchor stays where it
+///   was, so a second Shift-click re-sweeps from the same row rather than from
+///   the end of the last range. With no anchor among the drawn rows it is a
+///   plain click that selects this row alone, and anchors there.
 ///
 /// Mesh and bone rows behave identically, over their own sets: a bone click
 /// builds [`UiState::selected_bones`] (what the skeleton highlight and the
@@ -214,14 +217,17 @@ pub(super) fn apply_row_click(
 
     // Shift takes a range here rather than adding one row (which is what it does
     // in the viewport, where there is no row order to sweep along).
-    if mode.add
-        && !mode.toggle
-        && let Some(range) = row_range(rows, state.row_anchor, node, bone)
-    {
+    if mode.add && !mode.toggle {
+        let anchor = state.row_anchor;
+        // `select_only` anchors on the row it selects. That is the fallback's
+        // plain click exactly; a range instead keeps the anchor it swept from.
         state.select_only(node, set_kind);
-        *state.selection_set_for(set_kind) = range;
-        // The clicked row is the primary regardless of which way the range ran.
-        state.selection = Selection::Node(node);
+        if let Some(range) = row_range(rows, anchor, node, bone) {
+            *state.selection_set_for(set_kind) = range;
+            // The clicked row is the primary regardless of which way the range ran.
+            state.selection = Selection::Node(node);
+            state.row_anchor = anchor;
+        }
         return;
     }
 
@@ -251,9 +257,9 @@ pub(super) fn row_refs(model: &ModelData, rows: &[TreeRow]) -> Vec<RowRef> {
 }
 
 /// The nodes of the same kind between the anchor row and `node`, in drawn order
-/// and inclusive of both ends. `None` when there is no anchor, or it has scrolled
-/// out of the filtered rows — in which case the caller falls back to a plain
-/// click rather than doing nothing.
+/// and inclusive of both ends. `None` when there is no anchor, or it has been
+/// filtered or folded out of the drawn rows — in which case the caller falls back
+/// to a plain click, selecting `node` alone, rather than doing nothing.
 fn row_range(
     rows: &[RowRef],
     anchor: Option<usize>,
@@ -647,6 +653,45 @@ mod tests {
         assert_eq!(state.selected_bones, vec![2, 3, 4]);
         // The clicked row is the primary regardless of which way the range ran.
         assert_eq!(state.selection, Selection::Node(2));
+    }
+
+    /// The anchor is the row the range sweeps *from*, and a Shift-click must not
+    /// move it: click 1, Shift-click 4, Shift-click 2 takes 1-2, not 2-4.
+    #[test]
+    fn a_second_shift_click_re_sweeps_from_the_same_anchor() {
+        let mut state = UiState::default();
+        let rows = mesh_rows();
+        apply_row_click(&mut state, 1, NodeKind::Mesh, mods(false, false), &rows);
+        apply_row_click(&mut state, 4, NodeKind::Mesh, mods(false, true), &rows);
+        assert_eq!(state.row_anchor, Some(1), "the range left the anchor alone");
+        apply_row_click(&mut state, 2, NodeKind::Mesh, mods(false, true), &rows);
+        assert_eq!(state.selected_nodes, vec![1, 2]);
+        assert_eq!(state.selection, Selection::Node(2));
+        assert_eq!(state.row_anchor, Some(1));
+    }
+
+    /// With the anchor folded or filtered out of the drawn rows, a Shift-click is
+    /// a plain click: this row alone, not this row added to what was selected.
+    #[test]
+    fn shift_click_with_the_anchor_off_the_list_selects_the_row_alone() {
+        let mut state = UiState::default();
+        let all = mesh_rows();
+        apply_row_click(&mut state, 0, NodeKind::Mesh, mods(false, false), &all);
+        apply_row_click(&mut state, 1, NodeKind::Mesh, mods(true, false), &all);
+        assert_eq!(state.row_anchor, Some(1));
+
+        // Row 1 (the anchor) is no longer drawn.
+        let without_anchor: Vec<RowRef> = all.into_iter().filter(|row| row.node != 1).collect();
+        apply_row_click(
+            &mut state,
+            3,
+            NodeKind::Mesh,
+            mods(false, true),
+            &without_anchor,
+        );
+        assert_eq!(state.selected_nodes, vec![3]);
+        assert_eq!(state.selection, Selection::Node(3));
+        assert_eq!(state.row_anchor, Some(3), "and it anchors there");
     }
 
     #[test]

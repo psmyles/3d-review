@@ -23,6 +23,10 @@ use review_model::{
 
 use crate::ImportError;
 
+use super::raw::BridgeScene;
+#[cfg(test)]
+use super::raw::Bridged;
+#[cfg(test)]
 use super::raw_scene::*;
 
 /// The bridge's flat geometry arrays, marshaled into owned Rust buffers.
@@ -35,9 +39,7 @@ pub(super) struct MarshaledGeometry {
 
 /// Marshal the bridge's flat geometry arrays (vertices / indices / original
 /// faces / per-triangle metadata) into owned Rust buffers.
-pub(super) fn marshal_geometry(
-    scene: &ReviewImportScene,
-) -> Result<MarshaledGeometry, ImportError> {
+pub(super) fn marshal_geometry(scene: &BridgeScene) -> Result<MarshaledGeometry, ImportError> {
     let vertices = scene
         .vertices()?
         .iter()
@@ -85,8 +87,21 @@ pub(super) fn node_kind_from_code(code: u32) -> NodeKind {
     }
 }
 
+/// The bridge's `(x, y, z, w)` rotation as a unit quaternion — or the identity
+/// for one that has no direction to normalize (all zero, or not a number), which
+/// `Quat::normalize` would turn into NaN and every pose built on it with it.
+fn unit_rotation(xyzw: [f32; 4]) -> Quat {
+    let rotation = Quat::from_array(xyzw);
+    let length_squared = rotation.length_squared();
+    if length_squared.is_finite() && length_squared > 1e-20 {
+        rotation.normalize()
+    } else {
+        Quat::IDENTITY
+    }
+}
+
 /// Marshal the bridge's scene-graph node table for the Outliner.
-pub(super) fn marshal_nodes(scene: &ReviewImportScene) -> Result<Vec<SceneNode>, ImportError> {
+pub(super) fn marshal_nodes(scene: &BridgeScene) -> Result<Vec<SceneNode>, ImportError> {
     Ok(scene
         .nodes()?
         .iter()
@@ -100,7 +115,7 @@ pub(super) fn marshal_nodes(scene: &ReviewImportScene) -> Result<Vec<SceneNode>,
                 transform: Mat4::from_cols_array(&node.transform),
                 rest_local: LocalTransform {
                     translation: Vec3::from_array(node.local_translation),
-                    rotation: Quat::from_array(node.local_rotation).normalize(),
+                    rotation: unit_rotation(node.local_rotation),
                     scale: Vec3::from_array(node.local_scale),
                 },
                 kind,
@@ -127,7 +142,7 @@ pub(super) fn skinning_method_from_code(code: u32) -> SkinningMethod {
 
 /// The per-corner logical-vertex map, marshaled for every model (skinned or
 /// not) since blend shapes need it as well as skin weights.
-pub(super) fn marshal_corner_map(scene: &ReviewImportScene) -> Result<Vec<u32>, ImportError> {
+pub(super) fn marshal_corner_map(scene: &BridgeScene) -> Result<Vec<u32>, ImportError> {
     Ok(scene.corner_source_vertex()?.to_vec())
 }
 
@@ -135,7 +150,7 @@ pub(super) fn marshal_corner_map(scene: &ReviewImportScene) -> Result<Vec<u32>, 
 /// an unskinned scene (the bridge allocates nothing and reports zero
 /// influences), so the common non-skeletal model carries no skin payload at
 /// all.
-pub(super) fn marshal_skin(scene: &ReviewImportScene) -> Result<Option<SkinData>, ImportError> {
+pub(super) fn marshal_skin(scene: &BridgeScene) -> Result<Option<SkinData>, ImportError> {
     if scene.skin_influence_count == 0 {
         return Ok(None);
     }
@@ -174,7 +189,7 @@ pub(super) fn marshal_skin(scene: &ReviewImportScene) -> Result<Option<SkinData>
 /// sorted into the per-logical-vertex CSR the shader and the CPU reference
 /// walk. `None` when no mesh carries a channel.
 pub(super) fn marshal_morph(
-    scene: &ReviewImportScene,
+    scene: &BridgeScene,
     logical_count: usize,
 ) -> Result<Option<MorphData>, ImportError> {
     if scene.morph_channel_count == 0 {
@@ -256,9 +271,7 @@ pub(super) fn marshal_morph(
 }
 
 /// Marshal the bridge's baked animation stacks into clips.
-pub(super) fn marshal_animations(
-    scene: &ReviewImportScene,
-) -> Result<Vec<AnimationClip>, ImportError> {
+pub(super) fn marshal_animations(scene: &BridgeScene) -> Result<Vec<AnimationClip>, ImportError> {
     if scene.anim_stack_count == 0 {
         return Ok(Vec::new());
     }
@@ -361,7 +374,7 @@ pub(super) fn marshal_animations(
 /// Marshal the bridge's material table into the editable table's import
 /// defaults.
 pub(super) fn marshal_materials(
-    scene: &ReviewImportScene,
+    scene: &BridgeScene,
 ) -> Result<Vec<MaterialImportDefaults>, ImportError> {
     Ok(scene
         .materials()?
@@ -376,11 +389,13 @@ pub(super) fn marshal_materials(
         .collect())
 }
 
+/// The model the bridge's scene describes, and a sentence for each piece of it
+/// the funnel had to leave out to load it at all (see [`crate::repair`]).
 pub(super) fn model_from_bridge_scene(
     path: &Path,
-    scene: &ReviewImportScene,
+    scene: &BridgeScene,
     progress: crate::ProgressSink<'_>,
-) -> Result<ModelData, ImportError> {
+) -> Result<(ModelData, Vec<String>), ImportError> {
     progress(crate::ImportProgress::stage(crate::ImportStage::Building));
     let MarshaledGeometry {
         vertices,
@@ -483,13 +498,20 @@ pub(super) fn model_from_bridge_scene(
         )
         .map_err(ImportError::LoadFailed)?;
 
+    // A value the *file* got wrong — an animation key, a blend-shape offset or
+    // weight, a stack range or a bind matrix that is not a number — costs that
+    // piece, not the model: it is taken out here, on its own, and said so. The
+    // bridge copies them as authored, and the guard below would otherwise
+    // refuse the whole file for one of them.
+    let warnings = crate::repair::repair_deform(&mut model);
+
     // Same funnel guard for everything the deform path reads: the corner map
     // must cover exactly the render mesh, the skin / morph CSR rows must be
     // monotonic and terminate at their entry counts, every influence must
     // name a real node with a finite non-negative weight (and a cluster
     // binding that same bone), and every clip must animate real nodes /
     // channels with ordered finite keys. A drifted bridge fill is caught
-    // here, once.
+    // here, once — the repair above touches values, never this structure.
     model.validate_deform().map_err(ImportError::LoadFailed)?;
 
     // Bounds describe what is on screen. A skinned or morphed model rests in
@@ -508,9 +530,11 @@ pub(super) fn model_from_bridge_scene(
     // The FBX may carry UVs but no tangent layer (common for Maya exports); the
     // bridge then leaves a zero tangent per vertex. Synthesize a real tangent
     // basis from the UVs + normals so normal maps shade correctly — done once
-    // here at the single import funnel (invariant 7).
+    // here at the single import funnel (invariant 7). Per vertex, not per file:
+    // a scene whose meshes disagree about carrying a tangent layer keeps every
+    // authored tangent and fills in only the meshes that had none.
     if model.has_degenerate_tangents() {
-        model.generate_tangents();
+        model.generate_missing_tangents();
     }
     // The renderer groups triangles into one draw per distinct material slot;
     // report that count so Draws is the real draw-call count.
@@ -520,13 +544,13 @@ pub(super) fn model_from_bridge_scene(
     // large import, and it is a *displayed number*, not something the viewport
     // draws with; the caller measures it once the model is up.
 
-    Ok(model)
+    Ok((model, warnings))
 }
 
 /// Builds the per-channel UV table for multi-set models. Single-set models
 /// (and meshes the bridge left without a `uvs` allocation) return an empty
 /// vec, in which case the renderer falls back to [`Vertex::uv`].
-pub(super) fn build_uv_channels(scene: &ReviewImportScene) -> Result<Vec<Vec<Vec2>>, ImportError> {
+pub(super) fn build_uv_channels(scene: &BridgeScene) -> Result<Vec<Vec<Vec2>>, ImportError> {
     let channel_count = scene.uv_set_count as usize;
     if channel_count <= 1 || scene.uvs.is_null() {
         return Ok(Vec::new());
@@ -583,6 +607,19 @@ mod tests {
         unsafe { std::mem::zeroed() }
     }
 
+    /// Vouch for a fixture scene, the way `load_fbx` vouches for the bridge's.
+    ///
+    /// # Safety
+    ///
+    /// `Bridged::new`'s: every non-null array in `scene` points at a Rust array
+    /// at least as long as its count that outlives the returned value. Every
+    /// fixture below points at arrays local to its test (or leaves a pointer
+    /// null, which an accessor refuses to read) and marshals while they live.
+    unsafe fn bridged(scene: ReviewImportScene) -> BridgeScene {
+        // SAFETY: forwarded to this function's caller.
+        unsafe { Bridged::new(scene) }
+    }
+
     /// A zeroed bridge scene with just the UV fields set — the shape
     /// `build_uv_channels` consumes.
     fn uv_scene(uv_set_count: u32, vertex_count: usize, uvs: &[f32]) -> ReviewImportScene {
@@ -598,7 +635,8 @@ mod tests {
     fn build_uv_channels_reads_channel_major_values() {
         // 2 channels × 2 vertices × (u, v): channel-major layout.
         let uvs = [0.0, 0.1, 0.2, 0.3, 1.0, 1.1, 1.2, 1.3];
-        let scene = uv_scene(2, 2, &uvs);
+        // SAFETY: `uvs` outlives `scene` and is exactly `uv_value_count` long.
+        let scene = unsafe { bridged(uv_scene(2, 2, &uvs)) };
         let channels = build_uv_channels(&scene).expect("valid UV table");
         assert_eq!(channels.len(), 2);
         assert_eq!(channels[0], vec![Vec2::new(0.0, 0.1), Vec2::new(0.2, 0.3)]);
@@ -609,7 +647,8 @@ mod tests {
     fn build_uv_channels_rejects_a_short_buffer() {
         // 2 channels × 2 vertices needs 8 values; give 6.
         let uvs = [0.0; 6];
-        let scene = uv_scene(2, 2, &uvs);
+        // SAFETY: `uvs` outlives `scene` and is exactly `uv_value_count` long.
+        let scene = unsafe { bridged(uv_scene(2, 2, &uvs)) };
         assert!(matches!(
             build_uv_channels(&scene),
             Err(ImportError::LoadFailed(_))
@@ -655,7 +694,8 @@ mod tests {
 
     #[test]
     fn marshal_skin_is_none_for_an_unskinned_scene() {
-        let scene = zeroed_scene();
+        // SAFETY: an all-zero scene points at nothing.
+        let scene = unsafe { bridged(zeroed_scene()) };
         assert!(
             marshal_skin(&scene)
                 .expect("no skin is not an error")
@@ -666,14 +706,18 @@ mod tests {
     #[test]
     fn marshal_skin_copies_the_csr_table() {
         let clusters = [identity_cluster(1), identity_cluster(2)];
-        let scene = skin_scene(
-            &[0, 0, 1],
-            &[0, 2, 3],
-            &[1, 2, 2],
-            &[0.75, 0.25, 1.0],
-            &[0, 1, 1],
-            &clusters,
-        );
+        // SAFETY: every array is a constant or `clusters`, all outliving
+        // `scene`, and each count is its array's length.
+        let scene = unsafe {
+            bridged(skin_scene(
+                &[0, 0, 1],
+                &[0, 2, 3],
+                &[1, 2, 2],
+                &[0.75, 0.25, 1.0],
+                &[0, 1, 1],
+                &clusters,
+            ))
+        };
         let corner_map = marshal_corner_map(&scene).expect("valid corner map");
         let skin = marshal_skin(&scene)
             .expect("valid skin")
@@ -697,12 +741,17 @@ mod tests {
         let clusters = [identity_cluster(1)];
         let mut scene = skin_scene(&[0], &[0, 1], &[1], &[1.0], &[0], &clusters);
         scene.skin_bones = std::ptr::null_mut();
+        // SAFETY: the arrays are constants or `clusters`, outliving the scene;
+        // the one null pointer is never read.
+        let scene = unsafe { bridged(scene) };
         assert!(matches!(
             marshal_skin(&scene),
             Err(ImportError::LoadFailed(message)) if message.contains("skin_bones")
         ));
         let mut scene = skin_scene(&[0], &[0, 1], &[1], &[1.0], &[0], &clusters);
         scene.skin_influence_cluster = std::ptr::null_mut();
+        // SAFETY: as above.
+        let scene = unsafe { bridged(scene) };
         assert!(matches!(
             marshal_skin(&scene),
             Err(ImportError::LoadFailed(message)) if message.contains("skin_influence_cluster")
@@ -753,15 +802,21 @@ mod tests {
             normal: [0.0; 3],
         };
         let entries = [entry(2, 0, 2.0), entry(0, 1, 0.5), entry(2, 1, 2.5)];
-        let mut scene = zeroed_scene();
-        scene.morph_channels = channels.as_ptr() as *mut ReviewImportMorphChannel;
-        scene.morph_channel_count = channels.len();
-        scene.morph_keyframes = keyframes.as_ptr() as *mut ReviewImportMorphKeyframe;
-        scene.morph_keyframe_count = keyframes.len();
-        scene.morph_shapes = shapes.as_ptr() as *mut ReviewImportMorphShape;
-        scene.morph_shape_count = shapes.len();
-        scene.morph_entries = entries.as_ptr() as *mut ReviewImportMorphEntry;
-        scene.morph_entry_count = entries.len();
+        let scene_with = |entries: &[ReviewImportMorphEntry]| {
+            let mut scene = zeroed_scene();
+            scene.morph_channels = channels.as_ptr() as *mut ReviewImportMorphChannel;
+            scene.morph_channel_count = channels.len();
+            scene.morph_keyframes = keyframes.as_ptr() as *mut ReviewImportMorphKeyframe;
+            scene.morph_keyframe_count = keyframes.len();
+            scene.morph_shapes = shapes.as_ptr() as *mut ReviewImportMorphShape;
+            scene.morph_shape_count = shapes.len();
+            scene.morph_entries = entries.as_ptr() as *mut ReviewImportMorphEntry;
+            scene.morph_entry_count = entries.len();
+            scene
+        };
+        // SAFETY: every array is local to this test and outlives the scene, each
+        // count its array's length; the null names are never read.
+        let scene = unsafe { bridged(scene_with(&entries)) };
 
         let morph = marshal_morph(&scene, 3)
             .expect("valid morph")
@@ -778,8 +833,8 @@ mod tests {
 
         // An entry past the logical range is a bridge drift, not a panic.
         let bad = [entry(7, 0, 1.0)];
-        scene.morph_entries = bad.as_ptr() as *mut ReviewImportMorphEntry;
-        scene.morph_entry_count = bad.len();
+        // SAFETY: as above.
+        let scene = unsafe { bridged(scene_with(&bad)) };
         assert!(matches!(
             marshal_morph(&scene, 3),
             Err(ImportError::LoadFailed(message)) if message.contains("source vertex 7 of 3")
@@ -829,19 +884,25 @@ mod tests {
             morph_track_first: 0,
             morph_track_count: 1,
         }];
-        let mut scene = zeroed_scene();
-        scene.anim_stacks = stacks.as_ptr() as *mut ReviewImportAnimStack;
-        scene.anim_stack_count = stacks.len();
-        scene.anim_node_tracks = tracks.as_ptr() as *mut ReviewImportNodeTrack;
-        scene.anim_node_track_count = tracks.len();
-        scene.anim_vec3_keys = vec3_keys.as_ptr() as *mut ReviewImportVec3Key;
-        scene.anim_vec3_key_count = vec3_keys.len();
-        scene.anim_quat_keys = quat_keys.as_ptr() as *mut ReviewImportQuatKey;
-        scene.anim_quat_key_count = quat_keys.len();
-        scene.anim_morph_tracks = morph_tracks.as_ptr() as *mut ReviewImportMorphTrack;
-        scene.anim_morph_track_count = morph_tracks.len();
-        scene.anim_scalar_keys = scalar_keys.as_ptr() as *mut ReviewImportScalarKey;
-        scene.anim_scalar_key_count = scalar_keys.len();
+        let scene_with = |tracks: &[ReviewImportNodeTrack]| {
+            let mut scene = zeroed_scene();
+            scene.anim_stacks = stacks.as_ptr() as *mut ReviewImportAnimStack;
+            scene.anim_stack_count = stacks.len();
+            scene.anim_node_tracks = tracks.as_ptr() as *mut ReviewImportNodeTrack;
+            scene.anim_node_track_count = tracks.len();
+            scene.anim_vec3_keys = vec3_keys.as_ptr() as *mut ReviewImportVec3Key;
+            scene.anim_vec3_key_count = vec3_keys.len();
+            scene.anim_quat_keys = quat_keys.as_ptr() as *mut ReviewImportQuatKey;
+            scene.anim_quat_key_count = quat_keys.len();
+            scene.anim_morph_tracks = morph_tracks.as_ptr() as *mut ReviewImportMorphTrack;
+            scene.anim_morph_track_count = morph_tracks.len();
+            scene.anim_scalar_keys = scalar_keys.as_ptr() as *mut ReviewImportScalarKey;
+            scene.anim_scalar_key_count = scalar_keys.len();
+            scene
+        };
+        // SAFETY: every array is local to this test and outlives the scene, each
+        // count its array's length; the null stack name is never read.
+        let scene = unsafe { bridged(scene_with(&tracks)) };
 
         let clips = marshal_animations(&scene).expect("valid animation");
         assert_eq!(clips.len(), 1);
@@ -865,14 +926,17 @@ mod tests {
             translation_count: 5,
             ..tracks[0]
         }];
-        scene.anim_node_tracks = bad.as_ptr() as *mut ReviewImportNodeTrack;
+        // SAFETY: as above; the over-long *range* is inside the track, which
+        // `marshal_animations` bounds-checks against the key table itself.
+        let scene = unsafe { bridged(scene_with(&bad)) };
         assert!(matches!(
             marshal_animations(&scene),
             Err(ImportError::LoadFailed(message)) if message.contains("vec3 key range")
         ));
 
         // No stacks at all is simply no clips.
-        let empty = zeroed_scene();
+        // SAFETY: an all-zero scene points at nothing.
+        let empty = unsafe { bridged(zeroed_scene()) };
         assert!(marshal_animations(&empty).expect("no animation").is_empty());
     }
 
@@ -916,7 +980,9 @@ mod tests {
     #[test]
     fn an_index_addressing_no_vertex_fails_the_load() {
         let vertices = blank_vertices(3);
-        let scene = geometry_scene(&vertices, &[0, 1, 3]);
+        // SAFETY: `vertices` and the index constant outlive the scene, each
+        // exactly its count long.
+        let scene = unsafe { bridged(geometry_scene(&vertices, &[0, 1, 3])) };
         assert!(matches!(
             model_from_bridge_scene(Path::new("mesh.fbx"), &scene, &|_| {}),
             Err(ImportError::LoadFailed(message))
@@ -927,9 +993,11 @@ mod tests {
     #[test]
     fn indices_within_the_vertex_buffer_load() {
         let vertices = blank_vertices(3);
-        let scene = geometry_scene(&vertices, &[0, 1, 2]);
-        let model = model_from_bridge_scene(Path::new("mesh.fbx"), &scene, &|_| {})
+        // SAFETY: as above.
+        let scene = unsafe { bridged(geometry_scene(&vertices, &[0, 1, 2])) };
+        let (model, warnings) = model_from_bridge_scene(Path::new("mesh.fbx"), &scene, &|_| {})
             .expect("a whole triangle");
+        assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(model.indices, vec![0, 1, 2]);
         assert_eq!(model.name, "mesh");
     }
@@ -939,7 +1007,10 @@ mod tests {
         // Malicious/corrupt counts whose product wraps `usize` must be a clean
         // error, not a wrapped guard followed by an index panic.
         let uvs = [0.0; 4];
-        let scene = uv_scene(2, usize::MAX / 2 + 1, &uvs);
+        // SAFETY: `uvs` outlives the scene and is exactly `uv_value_count` long;
+        // the vertex count is huge but no vertex array is set, and the UV
+        // marshal refuses the product before reading.
+        let scene = unsafe { bridged(uv_scene(2, usize::MAX / 2 + 1, &uvs)) };
         assert!(matches!(
             build_uv_channels(&scene),
             Err(ImportError::LoadFailed(_))

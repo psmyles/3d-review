@@ -495,6 +495,45 @@ mod tests {
         assert_eq!(stack.undo[0].material_revision, 0);
     }
 
+    /// Replacing the model clears the Opt stack's per-object overrides, which is
+    /// a stack edit. The rebaseline has to come after it: taken before, the
+    /// next frame records the clear as a step, and Ctrl+Z puts the outgoing
+    /// model's node-index overrides onto the new one.
+    #[test]
+    fn a_new_model_leaves_nothing_to_undo() {
+        let mut app = crate::App::default();
+        app.observe_edit_state();
+        let before = app.ui.opt.stack_revision;
+        app.reset_to_start_state();
+        assert_ne!(
+            app.ui.opt.stack_revision, before,
+            "the reset is expected to touch the stack, or this test proves nothing"
+        );
+        app.observe_edit_state();
+        assert!(app.undo.undo.is_empty(), "a load is not an edit");
+        let revision = app.ui.opt.stack_revision;
+        app.undo();
+        assert_eq!(
+            app.ui.opt.stack_revision, revision,
+            "Ctrl+Z restores nothing"
+        );
+    }
+
+    /// The audit profile restored at launch is where the session starts. With
+    /// the baseline taken before it, Ctrl+Z on the start screen put the default
+    /// profile back — and the settled-profile save then wrote it over the saved
+    /// one. `main` rebaselines after the restore, as this does.
+    #[test]
+    fn a_restored_profile_cannot_be_undone() {
+        let mut app = crate::App::default();
+        let restored = review_audit::AuditProfile::builtin(review_audit::Engine::Unreal);
+        app.ui.aud.set_profile(Arc::new(restored.clone()));
+        app.reset_undo_history();
+        app.undo();
+        assert_eq!(*app.ui.aud.profile, restored);
+        assert!(app.undo.undo.is_empty() && app.undo.redo.is_empty());
+    }
+
     #[test]
     fn a_drag_that_nets_no_change_records_nothing() {
         let mut stack = UndoStack::new();

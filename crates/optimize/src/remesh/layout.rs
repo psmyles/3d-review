@@ -40,9 +40,9 @@ use super::RemeshOutput;
 /// Each face is rotated to lead with its lowest-positioned corner (see
 /// [`lead_corner`] for the quad exception), the faces are sorted by the
 /// resulting corner sequence, and the vertices are renumbered in order of first
-/// use. Winding is preserved throughout — a rotation is not a reversal — so the
-/// orientation guard in [`super::project`] still sees each face wound the way
-/// the rebuild wound it.
+/// use. Winding is preserved throughout — a rotation is not a reversal — and
+/// the projection keeps whatever winding it is handed, so each face is drawn
+/// facing the way the rebuild wound it.
 pub(super) fn canonicalize(output: &mut RemeshOutput) {
     let face_count = output.face_count();
     if face_count == 0 {
@@ -122,6 +122,12 @@ fn lead_corner(output: &RemeshOutput, corners: &[u32]) -> Option<usize> {
     (0..corners.len()).min_by_key(|&corner| key(corner))
 }
 
+/// A position's exact bits, as a sort key.
+///
+/// Not [`super::weld::position_key`], which reads `-0.0` as `+0.0`: that is
+/// right for deciding two corners are one point and wrong for ordering them,
+/// where every distinct bit pattern has to sort apart or a tie falls back to the
+/// order the rebuild emitted its faces in - the very thing this module removes.
 fn position_key(position: Vec3) -> [u32; 3] {
     [
         position.x.to_bits(),

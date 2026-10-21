@@ -153,6 +153,16 @@ pub(crate) fn tip(response: egui::Response, tip: Tip) -> egui::Response {
     response.on_hover_ui(|ui| tip.show(ui))
 }
 
+/// Attach a [`Tip`] that shows only while the widget is **disabled** — the place
+/// to say why a control cannot be used yet.
+///
+/// egui shows an `on_hover_ui` tooltip only while its widget is enabled, so a
+/// reason attached with [`tip`] never appears when it is needed, and appears
+/// stacked under the control's own tooltip once it is not.
+pub(crate) fn tip_when_disabled(response: egui::Response, tip: Tip) -> egui::Response {
+    response.on_disabled_hover_ui(|ui| tip.show(ui))
+}
+
 /// A title-and-paragraph tooltip body, for a widget whose response is handed
 /// straight to egui's `on_hover_ui` rather than through [`tip`].
 ///

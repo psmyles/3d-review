@@ -129,8 +129,18 @@ pub(crate) fn face_normal_lines(
     vertices
 }
 
-/// One line per vertex, from the vertex along its normal. `length_scale` is
-/// relative to the model's largest extent; `color` is baked in.
+/// One line per distinct vertex normal, from the vertex along its normal.
+/// `length_scale` is relative to the model's largest extent; `color` is baked in.
+///
+/// Distinct, not one per render vertex: import splits every face corner into its
+/// own vertex, so a smooth vertex shared by four quads is four render vertices
+/// with one normal between them, and drawing each gave four coincident lines —
+/// four times the buffer, and a translucent colour drawn four times over. Where the
+/// model maps its corners back to the source vertices (`corner_to_logical`), a
+/// corner repeating a line already drawn for its vertex — the same normal, bit for
+/// bit, on the same deform lane — is skipped; a hard edge's differing normals each
+/// keep their own line. Each line still rides the lane of the corner it was taken
+/// from. An Opt-processed level has no such map, and has been welded already.
 pub(crate) fn vertex_normal_lines(
     model: &ModelData,
     lanes: &[[u32; 4]],
@@ -139,7 +149,8 @@ pub(crate) fn vertex_normal_lines(
     hidden_nodes: &[u32],
 ) -> Vec<SceneVertex> {
     let normal_length = debug_normal_length(model, length_scale);
-    let mut vertices = Vec::with_capacity(model.vertices.len() * 2);
+    let mut seen = SeenNormals::new(model);
+    let mut vertices = Vec::with_capacity(seen.line_estimate() * 2);
 
     // A vertex carries no node of its own, so derive a visible-vertex mask from
     // the triangles: a vertex is drawn if any non-hidden triangle references it.
@@ -156,6 +167,9 @@ pub(crate) fn vertex_normal_lines(
         if vertex.normal.length_squared() <= f32::EPSILON {
             continue;
         }
+        if !seen.first(model, lanes, index) {
+            continue;
+        }
 
         let start = vertex.position;
         let end = start + vertex.normal.normalize() * normal_length;
@@ -169,6 +183,84 @@ pub(crate) fn vertex_normal_lines(
     }
 
     vertices
+}
+
+/// Which vertex-normal lines have been drawn, per source vertex (see
+/// [`vertex_normal_lines`]).
+///
+/// Each source vertex heads a short chain of the corners whose lines were drawn
+/// for it — one for a smooth vertex, one per distinct normal at a hard one — so a
+/// test is a walk of a few entries with nothing hashed, and the whole record is a
+/// `u32` per source vertex plus two per line drawn.
+struct SeenNormals<'a> {
+    /// The corner → source vertex map, or `None` when the model has none to
+    /// deduplicate by (every corner then draws).
+    source_of: Option<&'a [u32]>,
+    /// Per source vertex, its newest drawn line's slot in `drawn` (`u32::MAX`
+    /// while it has none).
+    head: Vec<u32>,
+    /// Per drawn line, the corner it came from and the next slot on its source
+    /// vertex's chain.
+    drawn: Vec<(u32, u32)>,
+    /// Render vertices in the model, for the size estimate without a map.
+    corners: usize,
+}
+
+impl<'a> SeenNormals<'a> {
+    fn new(model: &'a ModelData) -> Self {
+        let source_of = (model.corner_to_logical.len() == model.vertices.len())
+            .then_some(model.corner_to_logical.as_slice());
+        let sources = source_of
+            .and_then(|map| map.iter().max())
+            .map_or(0, |&last| last as usize + 1);
+        Self {
+            source_of,
+            head: vec![u32::MAX; sources],
+            drawn: Vec::new(),
+            corners: model.vertices.len(),
+        }
+    }
+
+    /// Lines the model can be expected to need: about one per source vertex
+    /// with a map, one per render vertex without.
+    fn line_estimate(&self) -> usize {
+        match self.source_of {
+            Some(_) => self.head.len(),
+            None => self.corners,
+        }
+    }
+
+    /// Whether corner `index` draws a line no earlier corner of its source vertex
+    /// already drew — a different normal, or the same one on a different deform
+    /// lane — recording it if so. Always true without a map.
+    fn first(&mut self, model: &ModelData, lanes: &[[u32; 4]], index: usize) -> bool {
+        let Some(source_of) = self.source_of else {
+            return true;
+        };
+        let Some(head) = source_of
+            .get(index)
+            .and_then(|&source| self.head.get_mut(source as usize))
+        else {
+            return true;
+        };
+        let line = |corner: usize| {
+            (
+                model.vertices[corner].normal.to_array().map(f32::to_bits),
+                corner_deform(lanes, corner),
+            )
+        };
+        let wanted = line(index);
+        let mut slot = *head;
+        while let Some(&(corner, next)) = self.drawn.get(slot as usize) {
+            if line(corner as usize) == wanted {
+                return false;
+            }
+            slot = next;
+        }
+        self.drawn.push((index as u32, *head));
+        *head = (self.drawn.len() - 1) as u32;
+        true
+    }
 }
 
 #[cfg(test)]
@@ -236,5 +328,78 @@ mod tests {
         // 0 is hidden (only face 2's three corners remain).
         assert_eq!(vertex_normal_lines(&model, &[], 0.1, color, &[]).len(), 18);
         assert_eq!(vertex_normal_lines(&model, &[], 0.1, color, &[0]).len(), 6);
+    }
+
+    /// Two quads side by side, corner-split as import lays them out (eight render
+    /// vertices over six source vertices), with `left` and `right` as each quad's
+    /// normal and each corner's deform lane naming its source vertex.
+    fn split_quads(left: Vec3, right: Vec3) -> (ModelData, Vec<[u32; 4]>) {
+        let positions = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(1.0, 0.0, 1.0),
+            Vec3::new(2.0, 0.0, 1.0),
+        ];
+        let corner_to_logical = vec![0u32, 1, 4, 3, 1, 2, 5, 4];
+        let vertices = corner_to_logical
+            .iter()
+            .enumerate()
+            .map(|(corner, &source)| Vertex {
+                position: positions[source as usize],
+                normal: if corner < 4 { left } else { right },
+                uv: Vec2::ZERO,
+                tangent: Vec4::new(1.0, 0.0, 0.0, 1.0),
+                vertex_color: Vec4::ONE,
+            })
+            .collect();
+        let lanes = corner_to_logical
+            .iter()
+            .map(|&source| [source, 1, 0, 0])
+            .collect();
+        let model = ModelData {
+            vertices,
+            indices: vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7],
+            corner_to_logical,
+            ..Default::default()
+        };
+        (model, lanes)
+    }
+
+    /// A smooth vertex is one line however many faces split it into corners, and
+    /// each line still rides its source corner's deform lane.
+    #[test]
+    fn a_smooth_vertex_draws_one_normal_line() {
+        let (model, lanes) = split_quads(Vec3::Y, Vec3::Y);
+        let lines = vertex_normal_lines(&model, &lanes, 0.1, [1.0; 4], &[]);
+        // Six source vertices, not eight corners.
+        assert_eq!(lines.len(), 6 * 2);
+        let mut sources: Vec<u32> = lines.iter().map(|vertex| vertex.deform[0]).collect();
+        sources.sort_unstable();
+        sources.dedup();
+        assert_eq!(sources, [0, 1, 2, 3, 4, 5]);
+        for pair in lines.chunks(2) {
+            assert_eq!(pair[0].deform, pair[1].deform);
+        }
+    }
+
+    /// A hard edge keeps both of its normals: the two shared vertices draw one line
+    /// per face, since those are genuinely different directions.
+    #[test]
+    fn a_hard_edge_keeps_each_normal() {
+        let (model, lanes) = split_quads(Vec3::Y, Vec3::X);
+        let lines = vertex_normal_lines(&model, &lanes, 0.1, [1.0; 4], &[]);
+        assert_eq!(lines.len(), 8 * 2);
+
+        // Without a corner map (an Opt level) every vertex draws.
+        let welded = ModelData {
+            corner_to_logical: Vec::new(),
+            ..split_quads(Vec3::Y, Vec3::Y).0
+        };
+        assert_eq!(
+            vertex_normal_lines(&welded, &[], 0.1, [1.0; 4], &[]).len(),
+            8 * 2
+        );
     }
 }

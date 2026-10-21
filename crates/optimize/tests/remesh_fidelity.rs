@@ -1198,6 +1198,189 @@ fn how_far_a_rebuild_moves_the_surface() {
     report("stylized_palm_plant_04.fbx", 0.25, 4);
 }
 
+/// The share of one object's interior edges, welded by position, whose two
+/// faces turn back on each other past a right angle.
+///
+/// The figure the relaxation's guard is stated in: a fold is a disagreement
+/// between the two faces sharing an edge, and a pass that claims it cannot make
+/// the mesh worse is a claim that this does not go up.
+fn fold_share(model: &ModelData, node: u32) -> f32 {
+    let mut slot: std::collections::HashMap<[u32; 3], u32> = std::collections::HashMap::new();
+    let mut normals: std::collections::HashMap<(u32, u32), Vec<glam::Vec3>> =
+        std::collections::HashMap::new();
+    for (triangle, corners) in model.indices.as_chunks::<3>().0.iter().enumerate() {
+        if model.triangles.node.get(triangle).copied() != Some(node) {
+            continue;
+        }
+        let points = corners.map(|corner| model.vertices[corner as usize].position);
+        let normal = (points[1] - points[0]).cross(points[2] - points[0]);
+        let welded = points.map(|point| {
+            let key = [point.x.to_bits(), point.y.to_bits(), point.z.to_bits()];
+            let next = slot.len() as u32;
+            *slot.entry(key).or_insert(next)
+        });
+        for corner in 0..3 {
+            let (a, b) = (welded[corner], welded[(corner + 1) % 3]);
+            if a == b {
+                continue;
+            }
+            let key = if a < b { (a, b) } else { (b, a) };
+            normals.entry(key).or_default().push(normal);
+        }
+    }
+    let mut interior = 0usize;
+    let mut folded = 0usize;
+    for pair in normals.values() {
+        if pair.len() != 2 {
+            continue;
+        }
+        interior += 1;
+        // A face with no area has no opinion, which the relaxation counts as a
+        // fold, and so does this.
+        match (pair[0].try_normalize(), pair[1].try_normalize()) {
+            (Some(one), Some(other)) if one.dot(other) >= 0.0 => {}
+            _ => folded += 1,
+        }
+    }
+    folded as f32 / interior.max(1) as f32
+}
+
+/// One configuration of [`how_each_setting_holds_up`].
+struct Setting {
+    name: &'static str,
+    ratio: f32,
+    smoothing: u32,
+    sharp: bool,
+    borders: bool,
+}
+
+/// What every setting a user can reach does to the shape, the face count, the
+/// folds and the creases, over the fixtures each one is about.
+///
+/// The figure to watch moves with the setting: the plant's area and rims for
+/// the organic defaults, the folds for the relaxation, the face count for
+/// anything that changes what may merge, the crease length for **Keep sharp
+/// edges**, and the outline with **Align to boundaries** off.
+#[test]
+#[ignore = "a measurement, not a check"]
+fn how_each_setting_holds_up() {
+    let settings = [
+        ("stylized_palm_plant_04.fbx", 0.25, 0, false, true),
+        ("stylized_palm_plant_04.fbx", 0.25, 2, false, true),
+        ("stylized_palm_plant_04.fbx", 0.25, 4, false, true),
+        ("stylized_palm_plant_04.fbx", 0.25, 2, false, false),
+        ("stylized_palm_plant_04.fbx", 0.25, 2, true, true),
+        ("cpg_pedestal_pebbles.fbx", 0.25, 2, false, true),
+        ("cpg_pedestal_pebbles.fbx", 0.25, 2, true, true),
+        ("SM_column04.fbx", 0.5, 2, false, true),
+        ("SM_column04.fbx", 0.5, 2, true, true),
+        ("SM_column04.fbx", 0.25, 2, true, true),
+        ("rock_pillar_03.fbx", 0.6, 2, true, true),
+        ("crystal_cluster_02.fbx", 0.25, 2, true, true),
+        ("crystal_cluster_02.fbx", 0.5, 2, true, true),
+        ("SM_Blade.fbx", 0.25, 2, true, true),
+        ("monkey.fbx", 0.5, 2, false, false),
+        ("driftwood_05.fbx", 0.25, 2, false, false),
+    ]
+    .map(|(name, ratio, smoothing, sharp, borders)| Setting {
+        name,
+        ratio,
+        smoothing,
+        sharp,
+        borders,
+    });
+    println!(
+        "\n{:<28} {:>5} {:>2} {:>5} {:>7}  {:>7} {:>7} {:>6}  {:>6} {:>6} {:>7} {:>7}  {:>6} {:>6}",
+        "fixture",
+        "ratio",
+        "s",
+        "sharp",
+        "borders",
+        "asked",
+        "tris",
+        "miss",
+        "area",
+        "rim",
+        "folds",
+        "cross",
+        "crease",
+        "secs"
+    );
+    for setting in &settings {
+        let Some(model) = fixture(setting.name) else {
+            continue;
+        };
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::Remesh(RemeshParams {
+            topology: RemeshTopology::Triangles,
+            density: RemeshDensity::Ratio,
+            ratio: setting.ratio,
+            smooth_iterations: setting.smoothing,
+            sharp_edges: setting.sharp,
+            crease_angle: 30.0,
+            align_to_boundaries: setting.borders,
+            adaptive_strength: 0.5,
+            ..RemeshParams::default()
+        }));
+        let started = std::time::Instant::now();
+        let Ok(result) = process(ProcessInput {
+            model: &model,
+            stack: &stack,
+            render_vertex_size: VERTEX_SIZE,
+            hidden_nodes: &[],
+            extras: None,
+        }) else {
+            println!("{}: the run failed", setting.name);
+            continue;
+        };
+        let seconds = started.elapsed().as_secs_f64();
+        let Some(level) = result.lod(0) else {
+            continue;
+        };
+        let source_bvh = SceneBvh::build(&model);
+        let level_bvh = SceneBvh::build(&level.model);
+        let mut least_area = 1.0f32;
+        let mut worst_rim = 0.0f32;
+        let mut worst_folds = 0.0f32;
+        let (mut source_crease, mut rebuilt_crease) = (0.0f32, 0.0f32);
+        for node in 0..model.nodes.len() as u32 {
+            let Some(measured) = two_sided(&model, &source_bvh, &level.model, &level_bvh, node)
+            else {
+                continue;
+            };
+            least_area = least_area.min(measured.area_ratio);
+            worst_rim = worst_rim.max(measured.rim_to_out.p99);
+            worst_folds = worst_folds.max(fold_share(&level.model, node));
+            source_crease += crease_length(&model, node, 30.0).0;
+            rebuilt_crease += crease_length(&level.model, node, 30.0).0;
+        }
+        let source_triangles = model.indices.len() / 3;
+        let asked = (source_triangles as f64 * f64::from(setting.ratio)).round();
+        let triangles = level.model.indices.len() / 3;
+        println!(
+            "{:<28} {:>5.2} {:>2} {:>5} {:>7}  {:>7} {:>7} {:>+5.1}%  {:>5.1}% {:>5.2}h {:>6.2}% \
+             {:>6.2}%  {:>5.0}% {:>6.2}",
+            setting.name,
+            setting.ratio,
+            setting.smoothing,
+            setting.sharp,
+            setting.borders,
+            asked,
+            triangles,
+            100.0 * (triangles as f64 - asked) / asked.max(1.0),
+            least_area * 100.0,
+            worst_rim,
+            worst_folds * 100.0,
+            worst_self_crossing(&level.model) * 100.0,
+            100.0 * rebuilt_crease / source_crease.max(f32::MIN_POSITIVE),
+            seconds
+        );
+        for warning in result.warnings.iter().take(3) {
+            println!("    {warning}");
+        }
+    }
+}
+
 /// How sharply the source's own surfaces fold.
 ///
 /// This decides whether a "fold" feature can see the rims at all. A leaf or a

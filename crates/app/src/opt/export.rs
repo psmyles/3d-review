@@ -34,6 +34,14 @@ impl App {
             );
             return;
         };
+        // The capture the chain was processed with, and none if it was processed
+        // before the capture landed (the rerun that fixes that may still be on
+        // its way): the chain and the capture have to describe the same run.
+        let with_capture = self
+            .opt
+            .as_ref()
+            .is_some_and(OptSubsystem::processed_with_capture);
+        let extras = self.scene_extras.clone().filter(|_| with_capture);
 
         // A sensible default file name: the model's own, which is also the stem
         // the per-LOD packaging appends its suffixes to.
@@ -45,7 +53,7 @@ impl App {
         self.ask(Dialog::ExportOpt {
             result,
             source: Arc::clone(&self.scene_model),
-            extras: self.scene_extras.clone(),
+            extras,
             options: self.ui.opt.stack.export,
             stem,
         });

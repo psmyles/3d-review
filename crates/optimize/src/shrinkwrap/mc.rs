@@ -29,7 +29,11 @@ use std::collections::HashMap;
 
 use glam::{IVec3, Vec3};
 
-use super::grid::{Field, GridDesc};
+use crate::cancel::{CancelToken, cancelled};
+use crate::remesh::union_find::UnionFind;
+use crate::remesh::weld;
+
+use super::grid::{BLOCK, Field, GridDesc};
 
 /// The eight cell corners as `(x, y, z)` offsets, corner `i` being bit 0, 1 and
 /// 2 of `i` — so corner 0 is the low corner and corner 7 the high one, and the
@@ -78,13 +82,16 @@ impl Surface {
     }
 }
 
-/// Extract the zero crossing of `field`.
+/// Extract the zero crossing of `field`, or `None` when the run was cancelled.
 ///
 /// Only cells whose eight corners all carry a sampled value are visited. That is
-/// not a restriction in practice: a cell the surface passes through has every
-/// corner within a voxel diagonal of it, the band is wider than that, and the
-/// blocks cover the band — so a skipped cell is one the surface does not reach.
-pub(super) fn extract(field: &Field) -> Surface {
+/// not a restriction: the field allocates every block the surface reaches -
+/// near the geometry, and wherever the inside test changes away from it (see
+/// [`super::sdf`]) - so a skipped cell is one the surface does not pass through.
+///
+/// The walk is over the dense lattice, up to [`super::grid::MAX_POINTS`] cells,
+/// so it looks for a cancel once per slice.
+pub(super) fn extract(field: &Field, cancel: Option<&CancelToken>) -> Option<Surface> {
     let _z = crate::prof::zone!("Shrinkwrap Extract");
 
     let desc = field.desc;
@@ -96,9 +103,19 @@ pub(super) fn extract(field: &Field) -> Surface {
 
     let cells = desc.dims - IVec3::ONE;
     for z in 0..cells.z {
+        if cancelled(cancel) {
+            return None;
+        }
         for y in 0..cells.y {
             for x in 0..cells.x {
                 let base = IVec3::new(x, y, z);
+                // Most of the lattice is blocks holding one value throughout,
+                // and a cell wholly inside one of those is all one sign: no
+                // need to read its eight corners to find that out.
+                let within = (base % BLOCK).cmplt(IVec3::splat(BLOCK - 1)).all();
+                if within && field.is_flat_at(base) {
+                    continue;
+                }
                 let mut corners = [IVec3::ZERO; 8];
                 let mut values = [0.0f32; 8];
                 let mut complete = true;
@@ -134,7 +151,7 @@ pub(super) fn extract(field: &Field) -> Surface {
         }
     }
     weld_coincident(&mut surface);
-    surface
+    Some(surface)
 }
 
 /// Merge crossings that landed on the same point, and drop the triangles that
@@ -151,22 +168,7 @@ pub(super) fn extract(field: &Field) -> Surface {
 /// same edge traversed both ways, so the neighbours that used them now pair with
 /// each other.
 fn weld_coincident(surface: &mut Surface) {
-    let mut slot_of: HashMap<[u32; 3], u32> = HashMap::new();
-    let mut positions: Vec<Vec3> = Vec::with_capacity(surface.positions.len());
-    let mut remap: Vec<u32> = Vec::with_capacity(surface.positions.len());
-    for &position in &surface.positions {
-        let key = [
-            position.x.to_bits(),
-            position.y.to_bits(),
-            position.z.to_bits(),
-        ];
-        let next = positions.len() as u32;
-        let slot = *slot_of.entry(key).or_insert_with(|| {
-            positions.push(position);
-            next
-        });
-        remap.push(slot);
-    }
+    let (positions, remap) = weld::weld(&surface.positions);
     if positions.len() == surface.positions.len() {
         return;
     }
@@ -370,29 +372,18 @@ pub(super) fn keep_largest_shell(surface: &mut Surface) {
     if triangles < 2 {
         return;
     }
-    let mut parent: Vec<u32> = (0..surface.positions.len() as u32).collect();
-    fn find(parent: &mut [u32], mut node: u32) -> u32 {
-        while parent[node as usize] != node {
-            parent[node as usize] = parent[parent[node as usize] as usize];
-            node = parent[node as usize];
-        }
-        node
-    }
+    let mut sets = UnionFind::new(surface.positions.len());
     for corners in surface.indices.as_chunks::<3>().0 {
-        let root = find(&mut parent, corners[0]);
-        for &corner in &corners[1..] {
-            let other = find(&mut parent, corner);
-            if other != root {
-                parent[other as usize] = root;
-            }
-        }
+        sets.union(corners[0], corners[1]);
+        sets.union(corners[0], corners[2]);
     }
 
-    // The component with the most triangles wins; ties break on the lower root,
-    // so the choice does not depend on the walk order.
+    // The component with the most triangles wins; ties break on the lower root -
+    // the component's lowest vertex - so the choice does not depend on the walk
+    // order.
     let mut counts: HashMap<u32, usize> = HashMap::new();
     for corners in surface.indices.as_chunks::<3>().0 {
-        let root = find(&mut parent, corners[0]);
+        let root = sets.find(corners[0]);
         *counts.entry(root).or_insert(0) += 1;
     }
     let Some(&keep) = counts
@@ -408,7 +399,7 @@ pub(super) fn keep_largest_shell(surface: &mut Surface) {
 
     let mut indices = Vec::with_capacity(surface.indices.len());
     for corners in surface.indices.as_chunks::<3>().0 {
-        if find(&mut parent, corners[0]) == keep {
+        if sets.find(corners[0]) == keep {
             indices.extend_from_slice(corners);
         }
     }
@@ -434,7 +425,6 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
-    use crate::shrinkwrap::grid::BLOCK;
 
     #[test]
     fn the_tetrahedra_are_positively_oriented() {
@@ -547,7 +537,7 @@ mod tests {
 
     #[test]
     fn marching_tetrahedra_of_a_sphere_sdf_is_closed_and_manifold() {
-        let surface = extract(&sphere_field(24));
+        let surface = extract(&sphere_field(24), None).expect("nothing cancels it");
         assert!(surface.triangle_count() > 100, "the sphere has a surface");
 
         // Every *directed* edge appears exactly once, which is the strongest
@@ -580,7 +570,7 @@ mod tests {
 
     #[test]
     fn the_extracted_sphere_sits_where_the_field_says_it_does() {
-        let surface = extract(&sphere_field(32));
+        let surface = extract(&sphere_field(32), None).expect("nothing cancels it");
         for position in &surface.positions {
             let radius = position.length();
             assert!(

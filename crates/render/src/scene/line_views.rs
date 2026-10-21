@@ -166,8 +166,12 @@ impl SceneGpu {
             BoundingBoxScope::OnlySelection => selected_nodes,
             _ => &[],
         };
+        // With nothing hidden, Visible Only is the whole model, and the UI labels it
+        // with the scene bounds (a selected clip's envelope), so the box must be
+        // drawn from the same figure.
         let scope_bounds = match scope {
             BoundingBoxScope::AllMeshes => scene_bounds,
+            BoundingBoxScope::VisibleOnly if scope_hidden.is_empty() => scene_bounds,
             _ => None,
         };
         let bounding_box_unchanged = match (
@@ -191,6 +195,9 @@ impl SceneGpu {
                     BoundingBoxScope::AllMeshes => scope_bounds.or(model.bounds),
                     BoundingBoxScope::OnlySelection => {
                         selection_bounds(model, scope_selection, scope_nodes)
+                    }
+                    BoundingBoxScope::VisibleOnly if scope_hidden.is_empty() => {
+                        scope_bounds.or(model.bounds)
                     }
                     BoundingBoxScope::VisibleOnly => model.visible_bounds(scope_hidden),
                 };

@@ -137,8 +137,10 @@ pub fn export_fbx(
         }
         LodPackaging::FilePerLod => {
             for (lod, file) in lods.iter().zip(&paths) {
-                // Each file holds one level, so its meshes keep their plain names
-                // rather than a suffix the filename already carries.
+                // Each file holds one level, so its meshes and their nodes keep
+                // their plain names rather than a suffix the filename already
+                // carries — and the level goes on the source node itself, not
+                // on a suffixed copy beside it (`place_level_node`).
                 let scene = build_scene(
                     std::slice::from_ref(lod),
                     source,
@@ -277,10 +279,13 @@ mod tests {
     }
 
     #[test]
-    fn level_name_suffixes_level_zero_only_inside_a_chain() {
+    fn level_name_suffixes_only_inside_a_chain() {
         assert_eq!(level_name("Body", 0, true), "Body_LOD0");
         assert_eq!(level_name("Body", 2, true), "Body_LOD2");
         assert_eq!(level_name("Body", 0, false), "Body");
+        // One file per LOD: the file name carries the level, the node keeps
+        // the source's own name.
+        assert_eq!(level_name("Body", 2, false), "Body");
     }
 
     #[test]
@@ -619,5 +624,14 @@ mod tests {
         assert_eq!(copy, 4);
         assert_eq!(scene.nodes[4].parent, 0, "the level copy is a sibling");
         assert_eq!(scene.nodes[4].name.to_str().unwrap(), "SM_Crate_LOD0_LOD1");
+
+        // A file holding one level (one file per LOD) puts any level on the
+        // source node itself: a copy beside it would leave that node empty.
+        let nodes_before = scene.nodes.len();
+        assert_eq!(
+            place_level_node(&mut scene, &placed, &source, &extras, &group, 2, false),
+            1
+        );
+        assert_eq!(scene.nodes.len(), nodes_before, "no copy for a lone level");
     }
 }

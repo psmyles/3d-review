@@ -26,7 +26,10 @@ impl App {
             .unwrap_or_else(|| self.scene_model.name.clone());
         let source = ReportSource {
             file,
-            generator: format!("{} {}", crate::APP_NAME, env!("CARGO_PKG_VERSION")),
+            // `product.json`'s version, as the About box, the log and the update
+            // check give it - not the crate's, which only a build warning keeps
+            // in step with it.
+            generator: format!("{} {}", crate::APP_NAME, env!("REVIEW_VERSION")),
             created_unix: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_secs()),

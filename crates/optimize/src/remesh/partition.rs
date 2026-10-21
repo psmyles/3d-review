@@ -65,8 +65,6 @@ pub(crate) const NO_REGION: u32 = u32::MAX;
 pub(crate) struct Partition {
     /// Per vertex: the seed it belongs to, or [`NO_REGION`].
     pub(crate) label: Vec<u32>,
-    /// Per vertex: the cost of reaching it from that seed.
-    pub(crate) distance: Vec<f32>,
     /// Region-major CSR start offsets, `regions + 1` long.
     starts: Vec<u32>,
     /// Vertices of each region, ascending within a region.
@@ -116,7 +114,6 @@ pub(crate) fn build(
     let count = surface.vertex_count();
     let mut partition = Partition {
         label: vec![NO_REGION; count],
-        distance: vec![f32::INFINITY; count],
         starts: Vec::new(),
         members: Vec::new(),
         regions: seeds.len(),
@@ -126,6 +123,29 @@ pub(crate) fn build(
         return partition;
     }
 
+    let claims = grow(surface, features, seeds, threads, cancel);
+    for (vertex, claim) in claims.iter().enumerate() {
+        partition.label[vertex] = claim.label;
+    }
+
+    // Anything the sweeps never reached — an isolated vertex, or a component
+    // whose seeds were all consumed — takes its lowest labelled neighbour, so
+    // no vertex is left out of the collapse.
+    fill_unreached(surface, &mut partition);
+    index_regions(&mut partition);
+    partition
+}
+
+/// The sweeps themselves: every seed's claim spread until no vertex's claim
+/// changes, or the run is cancelled, or [`MAX_SWEEPS`] runs out.
+fn grow(
+    surface: Surface<'_>,
+    features: &Features,
+    seeds: &Seeds,
+    threads: usize,
+    cancel: Option<&CancelToken>,
+) -> Vec<Claim> {
+    let count = surface.vertex_count();
     let mut claims = vec![Claim::UNCLAIMED; count];
     for (region, &vertex) in seeds.vertices.iter().enumerate() {
         claims[vertex as usize] = Claim {
@@ -145,27 +165,19 @@ pub(crate) fn build(
         // Compared in vertex order rather than reduced across the chunks: it is
         // a single pass over a flat array, and "did anything move" decides how
         // many more sweeps run, so it must not depend on the schedule either.
-        let moved = next
-            .iter()
-            .zip(&claims)
-            .any(|(fresh, old)| fresh.label != old.label);
+        //
+        // The whole claim, distance as well as label. A sweep that only lowered
+        // some distances can still relabel a vertex on the next - the cheaper
+        // path reaches a region's edge one sweep later - so stopping at the
+        // first sweep that relabelled nothing stopped short of the fixed point
+        // the design promises. Distances only ever fall, so this still ends.
+        let moved = next.iter().zip(&claims).any(|(fresh, old)| fresh != old);
         std::mem::swap(&mut claims, &mut next);
         if !moved || cancelled(cancel) {
             break;
         }
     }
-
-    for (vertex, claim) in claims.iter().enumerate() {
-        partition.label[vertex] = claim.label;
-        partition.distance[vertex] = claim.distance;
-    }
-
-    // Anything the sweeps never reached — an isolated vertex, or a component
-    // whose seeds were all consumed — takes its lowest labelled neighbour, so
-    // no vertex is left out of the collapse.
-    fill_unreached(surface, &mut partition);
-    index_regions(&mut partition);
-    partition
+    claims
 }
 
 /// The cheapest way to reach `vertex`: its own standing claim, or a neighbour's
@@ -387,7 +399,6 @@ mod tests {
                 partition.label[vertex as usize], region as u32,
                 "seed {region} lost its own vertex"
             );
-            assert_eq!(partition.distance[vertex as usize], 0.0);
         }
     }
 
@@ -415,6 +426,32 @@ mod tests {
             .filter(|&&label| label != NO_REGION)
             .count();
         assert_eq!(seen, labelled, "every labelled vertex is indexed once");
+    }
+
+    /// The sweeps stop at a fixed point: no vertex has a better offer from any
+    /// neighbour than the claim it ended with.
+    ///
+    /// They used to stop at the first sweep that relabelled nothing, though a
+    /// sweep that only lowered distances could still relabel a vertex on the
+    /// next one. On an even grid the two coincide - the cheapest path is also
+    /// the one with fewest edges - so this pins the property rather than
+    /// reproducing the early stop, which needs a mesh where a longer chain of
+    /// short edges undercuts a shorter one.
+    #[test]
+    fn the_partition_is_a_fixed_point() {
+        for (side, size, faces) in [(40, 0.05, 600), (30, 0.08, 400), (24, 0.12, 150)] {
+            let setup = setup(side, size, faces);
+
+            let claims = grow(setup.surface(), &setup.features, &setup.seeds, 1, None);
+
+            for vertex in 0..claims.len() as u32 {
+                assert_eq!(
+                    best_offer(setup.surface(), &setup.features, &claims, vertex),
+                    claims[vertex as usize],
+                    "vertex {vertex} still has a better offer"
+                );
+            }
+        }
     }
 
     /// The property the whole design rests on.

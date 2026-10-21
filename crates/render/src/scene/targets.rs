@@ -9,7 +9,7 @@
 use std::ffi::CStr;
 
 use crate::GtaoQuality;
-use crate::rhi::{ColorTarget, DepthTarget, Format, Frame, GpuResult};
+use crate::rhi::{ColorTarget, DepthTarget, Format, Frame, GpuResult, Zone};
 
 use super::ao_accum::{AoAccumState, AoPlan};
 use super::pipelines::build_scene_pipelines;
@@ -82,13 +82,21 @@ pub(super) struct TargetSet {
     /// swapchain job: the Opt split counts both meshes before either ramp runs, so
     /// a shared count would show the second mesh's in both halves.
     pub(super) overdraw_count: Option<ColorTarget>,
+    /// Which of the [`SceneGpu`]'s sets this is — what the GPU profiler files its
+    /// passes under ([`Self::zone`]).
+    pub(super) role: TargetSetId,
 }
 
 /// Levels in the GTAO depth prefilter chain, including the full-resolution level 0.
 pub(super) const DEPTH_MIP_LEVELS: usize = 5;
 
 impl TargetSet {
-    pub(super) fn new(width: u32, height: u32, sample_count: u32) -> GpuResult<Self> {
+    pub(super) fn new(
+        width: u32,
+        height: u32,
+        sample_count: u32,
+        role: TargetSetId,
+    ) -> GpuResult<Self> {
         let (width, height) = (width.max(1), height.max(1));
         Ok(Self {
             color: ColorTarget::hdr(width, height, sample_count, c"scene colour")?,
@@ -102,7 +110,25 @@ impl TargetSet {
             ao: AoAccumState::default(),
             ao_plan: AoPlan::default(),
             overdraw_count: None,
+            role,
         })
+    }
+
+    /// The profiler zone a pass drawn into this set is timed under: the zone itself
+    /// for the primary set, its right-view twin for the Opt split's second one — so
+    /// a frame that draws the same passes into both does not time one over the other.
+    pub(super) fn zone(&self, zone: Zone) -> Zone {
+        match self.role {
+            TargetSetId::Primary => zone,
+            TargetSetId::Split => zone.in_split(),
+        }
+    }
+
+    /// Mark this frame as one that runs no GTAO into this set (see
+    /// [`AoAccumState::advance`]): its average holds its place, and it stops asking
+    /// for frames.
+    pub(super) fn idle_ao(&mut self) {
+        self.ao_plan = self.ao.advance(None);
     }
 
     /// Build (or free) this set's overdraw count, at the set's own size.
@@ -118,6 +144,14 @@ impl TargetSet {
 
     /// Recreate the set when the render size or the MSAA level moved. Steady-state
     /// frames allocate nothing.
+    ///
+    /// **All or nothing.** Every replacement is created before any member is
+    /// assigned, so a creation that fails leaves the whole set as it was: still one
+    /// size and one sample count, and still differing from the request — which is
+    /// what makes the next frame try again. Assigning member by member instead
+    /// stranded a new `color` beside the old `ambient` and `depth` when a later one
+    /// failed; the next frame compared only `color`, found it current, and drew into
+    /// mismatched attachments for good (a fatal validation error in a debug build).
     pub(super) fn sync(&mut self, size: (u32, u32), sample_count: u32) -> GpuResult<()> {
         let (width, height) = (size.0.max(1), size.1.max(1));
         let size_changed = self.color.size() != (width, height);
@@ -125,24 +159,27 @@ impl TargetSet {
         if !size_changed && !samples_changed {
             return Ok(());
         }
-        self.color = ColorTarget::hdr(width, height, sample_count, c"scene colour")?;
-        self.ambient = ColorTarget::hdr(width, height, sample_count, c"scene ambient")?;
-        self.depth = DepthTarget::new(width, height, sample_count, c"scene depth")?;
-        // The scratch depth and GTAO's targets are single-sample by design, so only a
-        // size change touches them.
         if size_changed {
-            self.scratch_depth = DepthTarget::new(width, height, 1, c"scratch depth")?;
-            self.gtao_gbuffer = ColorTarget::hdr(width, height, 1, c"gtao gbuffer")?;
-            self.gtao_depth_mips = depth_mips(width, height)?;
-            self.ao_history = occlusion_pair(width, height, c"gtao history")?;
-            self.ao_denoise = occlusion_pair(width, height, c"gtao denoise")?;
-            // The history buffers the average lived in are gone, so the average is
-            // too — whatever the key says.
-            self.ao.reset();
-            if self.overdraw_count.is_some() {
-                self.overdraw_count = Some(overdraw_count(width, height)?);
-            }
+            // Everything is sized together, so a new size is a new set.
+            let overdraw = match self.overdraw_count {
+                Some(_) => Some(overdraw_count(width, height)?),
+                None => None,
+            };
+            let mut fresh = TargetSet::new(width, height, sample_count, self.role)?;
+            fresh.overdraw_count = overdraw;
+            // `fresh.ao` is a new accumulator: the history buffers the average lived
+            // in are gone, so the average is too — whatever the key says.
+            *self = fresh;
+            return Ok(());
         }
+        // An MSAA change alone. The scratch depth and GTAO's targets are single-sample
+        // by design, so only the three multisampled attachments are replaced.
+        let color = ColorTarget::hdr(width, height, sample_count, c"scene colour")?;
+        let ambient = ColorTarget::hdr(width, height, sample_count, c"scene ambient")?;
+        let depth = DepthTarget::new(width, height, sample_count, c"scene depth")?;
+        self.color = color;
+        self.ambient = ambient;
+        self.depth = depth;
         Ok(())
     }
 
@@ -273,9 +310,12 @@ impl SceneGpu {
                 set.sync(size, self.sample_count)?;
                 set
             }
-            None => self
-                .split_targets
-                .insert(TargetSet::new(size.0, size.1, self.sample_count)?),
+            None => self.split_targets.insert(TargetSet::new(
+                size.0,
+                size.1,
+                self.sample_count,
+                TargetSetId::Split,
+            )?),
         };
         set.sync_overdraw_count(overdraw)
     }
@@ -283,6 +323,19 @@ impl SceneGpu {
     /// Drop the split's second set (invariant 3) — no split is on screen.
     pub(super) fn release_split_targets(&mut self) {
         self.split_targets = None;
+    }
+
+    /// Idle the ambient-occlusion average of every target set (see
+    /// [`AoAccumState::advance`]). The first thing each render entry point does, so a
+    /// set is only ever reported as converging by a frame that actually ran GTAO into
+    /// it: [`Self::sync_ao_history`] re-activates exactly the sets this frame draws
+    /// a 3D view into, and every other path — the UV and Tex viewports, the Aud
+    /// split's UV half, a frame that fails before it gets that far — leaves them idle.
+    pub(crate) fn idle_ao_history(&mut self) {
+        self.targets.idle_ao();
+        if let Some(split) = self.split_targets.as_mut() {
+            split.idle_ao();
+        }
     }
 
     /// The primary target set, which every single-view path renders through.

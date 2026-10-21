@@ -67,8 +67,9 @@ pub(crate) struct Seeds {
     pub(crate) polyline: Vec<u32>,
     /// Per seed: it sits on a junction and may not move at all.
     pub(crate) pinned: Vec<bool>,
-    /// How many of them came from a border chain — the `B` of the budget, and
-    /// the number of border edges the result will have.
+    /// How many of them sit on a border chain, each counted once however many
+    /// chains end there — the `B` of the budget, and the number of border edges
+    /// the result will have.
     pub(crate) border_seeds: usize,
 }
 
@@ -108,23 +109,44 @@ pub(crate) fn place(
     // Feature chains first. They are the part of the budget that is not
     // negotiable — a border has to be seeded along its whole length or the
     // rebuild loses it — so they are spent before the interior is counted.
+    let mut on_border = vec![false; count];
     for (index, line) in features.polylines.iter().enumerate() {
         let stations = stations_for(surface, line);
         for &vertex in &stations {
             push_seed(&mut seeds, &mut taken, vertex, index as u32, features);
-            if line.kind == FeatureKind::Boundary {
-                seeds.border_seeds += 1;
-            }
         }
         // A junction is a corner: a station near it is not good enough, so it
         // gets a seed of its own whether the spacing asked for one or not.
         for &vertex in &line.vertices {
             if features.junction[vertex as usize] && !taken[vertex as usize] {
                 push_seed(&mut seeds, &mut taken, vertex, index as u32, features);
-                if line.kind == FeatureKind::Boundary {
-                    seeds.border_seeds += 1;
-                }
             }
+        }
+        if line.kind == FeatureKind::Boundary {
+            for &vertex in &line.vertices {
+                on_border[vertex as usize] = true;
+            }
+        }
+    }
+    // `B` counts the border edges the output will have, and an outline has
+    // exactly as many as it has seeds, each seed once. Counted per station
+    // instead, a vertex where two open border chains meet - the shared end of
+    // both - was counted by each, and so was one a crease had already seeded;
+    // every such double count is half a vertex of budget spent on nothing.
+    seeds.border_seeds = seeds
+        .vertices
+        .iter()
+        .filter(|&&vertex| on_border[vertex as usize])
+        .count();
+    // A corner on no chain - a point where the surface meets itself, which
+    // `features` holds - is seeded the same way, or nothing would ever put a
+    // region's survivor there.
+    for vertex in 0..count as u32 {
+        if features.junction[vertex as usize]
+            && features.polyline_of[vertex as usize] == u32::MAX
+            && surface.topology.is_referenced(vertex)
+        {
+            push_seed(&mut seeds, &mut taken, vertex, u32::MAX, features);
         }
     }
     if cancelled(cancel) {

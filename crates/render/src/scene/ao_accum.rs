@@ -98,7 +98,7 @@ impl AoKey {
         size: (u32, u32),
     ) -> Self {
         Self {
-            view: camera.view_matrix().to_cols_array_2d(),
+            view: camera.view_matrix_for(scene.projection).to_cols_array_2d(),
             proj: camera
                 .projection_matrix(scene.projection)
                 .to_cols_array_2d(),
@@ -148,10 +148,17 @@ pub(super) struct AoPlan {
 impl AoAccumState {
     /// Decide this frame's accumulation and advance the state.
     ///
-    /// `None` means GTAO is not running this frame (switched off, no mesh, or one of
-    /// the flat data-inspection views). That neither advances nor resets: coming back
-    /// to a view you left is the common case, and the key comparison already catches
+    /// `None` means GTAO is not running this frame (switched off, no mesh, one of the
+    /// flat data-inspection views or an overdraw view, or a viewport that draws no 3D
+    /// scene into this set at all). That neither advances nor resets: coming back to
+    /// a view you left is the common case, and the key comparison already catches
     /// anything that actually changed while you were away.
+    ///
+    /// Every render entry point idles each of its sets this way before it decides
+    /// anything, so a set the frame does not run GTAO into reports itself idle rather
+    /// than whatever it last reported — the UV and Tex viewports never run it at all,
+    /// and before this they left [`Self::converging`] answering for the 3D view they
+    /// replaced, which kept the app redrawing at the refresh rate indefinitely.
     pub(super) fn advance(&mut self, key: Option<AoKey>) -> AoPlan {
         let Some(key) = key else {
             self.active = false;
@@ -197,13 +204,6 @@ impl AoAccumState {
     /// keeps the app redrawing (invariant 6).
     pub(super) fn converging(&self) -> bool {
         self.active && self.frames < AO_CONVERGED_FRAMES
-    }
-
-    /// Throw the average away. Called when the targets themselves are recreated, so
-    /// the history buffers no longer hold what the key says they do.
-    pub(super) fn reset(&mut self) {
-        self.key = None;
-        self.frames = 0;
     }
 }
 
@@ -330,13 +330,71 @@ mod tests {
     }
 
     /// A target recreation invalidates the history buffers themselves, so the next
-    /// frame has to write rather than blend.
+    /// frame has to write rather than blend. `TargetSet::sync` recreates a resized set
+    /// whole, accumulator included, which is this.
     #[test]
-    fn a_reset_forces_the_next_frame_to_replace() {
+    fn a_recreated_set_forces_the_next_frame_to_replace() {
         let mut state = AoAccumState::default();
         state.advance(key(0.35));
         state.advance(key(0.35));
-        state.reset();
+        state = AoAccumState::default();
         assert_eq!(state.advance(key(0.35)).weight, 1.0);
+    }
+
+    /// A recreated set has nothing averaging in it, so it must not ask for frames.
+    /// This is the resize in the UV viewport: the targets are recreated by a view that
+    /// never runs GTAO, so no later frame would come along and clear the answer. (The
+    /// reset this replaced cleared the frame count and kept `active`, which reads as
+    /// "zero of 24 frames in" — converging, for good.)
+    #[test]
+    fn a_recreated_set_is_not_converging() {
+        let mut state = AoAccumState::default();
+        state.advance(key(0.35));
+        assert!(
+            state.converging(),
+            "one sample in, the average is under way"
+        );
+        state = AoAccumState::default();
+        assert!(!state.converging(), "a fresh set must not ask for frames");
+    }
+
+    /// Leaving the 3D view mid-average — an orbit or a slider drag just ended, a few
+    /// frames in — for a viewport that runs no GTAO: idling the set is what stops the
+    /// redraw, and coming back resumes the same average rather than starting over.
+    #[test]
+    fn leaving_mid_average_stops_the_redraw_and_coming_back_resumes() {
+        let mut state = AoAccumState::default();
+        for _ in 0..3 {
+            state.advance(key(0.35));
+        }
+        assert!(state.converging());
+        // The UV or Tex viewport: every frame idles the set and nothing advances it.
+        for _ in 0..5 {
+            let plan = state.advance(None);
+            assert!(!plan.run, "an idle frame must not run the passes");
+            assert!(
+                !state.converging(),
+                "an idle set must not keep the app redrawing"
+            );
+        }
+        assert_eq!(
+            state.advance(key(0.35)).weight,
+            1.0 / 4.0,
+            "the fourth sample of the same view"
+        );
+        assert!(state.converging());
+    }
+
+    /// A converged set stays converged across an idle stretch: going back to it is not
+    /// a reason to run the passes again.
+    #[test]
+    fn a_converged_set_stays_converged_across_an_idle_stretch() {
+        let mut state = AoAccumState::default();
+        for _ in 0..AO_CONVERGED_FRAMES {
+            state.advance(key(0.35));
+        }
+        state.advance(None);
+        assert!(!state.advance(key(0.35)).run);
+        assert!(!state.converging());
     }
 }

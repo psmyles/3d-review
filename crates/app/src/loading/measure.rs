@@ -26,6 +26,9 @@ use crate::{App, keys, prof};
 
 /// What one load leaves to be measured once it is on screen.
 pub(super) struct MeasureJob {
+    /// The measure generation of the model on screen (`App::measure_generation`)
+    /// — not the load generation, which a request bumps before it is known to
+    /// succeed.
     pub(super) generation: u64,
     /// The loading card the request opened: the job's last message closes it.
     pub(super) activity: ActivityId,
@@ -44,7 +47,8 @@ pub(super) struct MeasureJob {
 /// capture did not describe the model (nothing is kept, and the export says so).
 #[derive(Debug)]
 pub(crate) struct SourceExtrasReady {
-    /// Matched against the current load generation exactly as [`ModelMeasured`] is.
+    /// Matched against the current measure generation exactly as
+    /// [`ModelMeasured`] is.
     generation: u64,
     extras: Result<Option<Arc<SourceExtras>>, ImportError>,
 }
@@ -76,8 +80,8 @@ pub(crate) enum ModelMeasurement {
 /// A measurement arriving from a measuring worker.
 #[derive(Debug)]
 pub(crate) struct ModelMeasured {
-    /// Matched against the current load generation, so a measurement of a model
-    /// no longer on screen is dropped.
+    /// Matched against the current measure generation, so a measurement of a
+    /// model no longer on screen is dropped.
     generation: u64,
     measurement: ModelMeasurement,
     /// The loading card this job's request opened.
@@ -104,6 +108,7 @@ fn run(job: MeasureJob, cancel: &CancelToken, send: Sink<'_>) {
         clock.enter(stage);
         send(UserEvent::ModelLoadProgress(ModelLoadProgress {
             generation,
+            measuring: true,
             message: progress_message(ImportProgress::stage(stage)),
             fraction: None,
             activity,
@@ -198,7 +203,7 @@ impl App {
     /// Measure `job` on a worker thread — or in place, when there is no event
     /// loop to post back to.
     pub(super) fn spawn_measure(&mut self, job: MeasureJob) {
-        let cancel = CancelToken::new(Arc::clone(&self.model_load_generation), job.generation);
+        let cancel = CancelToken::new(Arc::clone(&self.measure_generation), job.generation);
         let Some(proxy) = self.textures.proxy.clone() else {
             let landed = std::cell::RefCell::new(Vec::new());
             run(job, &cancel, &|event| landed.borrow_mut().push(event));
@@ -241,7 +246,7 @@ impl App {
         ) {
             self.notifications.end_activity(message.activity);
         }
-        if message.generation != self.model_load_generation() {
+        if message.generation != self.measure_generation() {
             return;
         }
         match message.measurement {
@@ -266,14 +271,23 @@ impl App {
     /// generation has been superseded describes a model no longer shown and is
     /// dropped.
     pub(crate) fn handle_source_extras_ready(&mut self, message: SourceExtrasReady) {
-        if message.generation != self.model_load_generation() {
+        if message.generation != self.measure_generation() {
             return;
         }
         // Landed or failed, the capture has settled: the audit can run now
         // rather than run twice.
         self.audit_capture_settled();
         match message.extras {
-            Ok(extras) => self.scene_extras = extras,
+            Ok(extras) => {
+                let landed = extras.is_some();
+                self.scene_extras = extras;
+                // An Opt run started before this — the one a load starts in
+                // the workspace at once — had none of it to carry; the audit
+                // waits for the capture, but Opt does not, so it runs again.
+                if landed {
+                    self.opt_capture_landed();
+                }
+            }
             Err(error) => {
                 // The model stays; only the re-export fidelity is lost, and the
                 // export report will say so.

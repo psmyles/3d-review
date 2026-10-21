@@ -4,7 +4,9 @@
 //! Every map is an exhaustive `match` with no fall-through arm, the same rule
 //! `ui`'s `labels.rs` keeps: a rule added to `review-audit` is a compile error
 //! here rather than English on a translated screen, and a catalog message
-//! nothing names is `dead_code`.
+//! nothing names is `dead_code`. The one exception is [`param`], keyed on the
+//! profile's own strings, where a test walking `review-audit`'s parameter table
+//! stands in for the compiler.
 
 use review_audit::{
     AuditError, AuditProfile, AuditReport, Axis, Category, DiagnosticView, Engine, Measured,
@@ -279,8 +281,22 @@ pub fn rule_fix(rule: RuleId) -> Key {
 }
 
 /// A rule parameter's label and explanation, by its profile key.
+///
+/// The one map here keyed on a string rather than an enum, because a string is
+/// what a profile stores and what `review-audit`'s parameter table declares, so
+/// the compiler cannot see a key go missing. A test can:
+/// `every_parameter_has_a_label_of_its_own` walks that table for every rule,
+/// so a key added to `review-audit` without a label here fails it rather than
+/// showing as "Maximum". A key the table does not declare never gets this far
+/// (a profile's sanitize drops it), and takes that label only so the function
+/// can answer.
 pub fn param(key: &str) -> (Key, Key) {
-    match key {
+    param_label(key).unwrap_or((k::PARAM_MAX, k::PARAM_MAX_DESCRIPTION))
+}
+
+/// [`param`]'s map, with no answer for a key it does not know.
+fn param_label(key: &str) -> Option<(Key, Key)> {
+    Some(match key {
         "tolerance" => (k::PARAM_TOLERANCE, k::PARAM_TOLERANCE_DESCRIPTION),
         "max_ratio" => (k::PARAM_MAX_RATIO, k::PARAM_MAX_RATIO_DESCRIPTION),
         "max_per_object" => (k::PARAM_MAX_PER_OBJECT, k::PARAM_MAX_PER_OBJECT_DESCRIPTION),
@@ -306,9 +322,9 @@ pub fn param(key: &str) -> (Key, Key) {
         "prefixes" => (k::PARAM_PREFIXES, k::PARAM_PREFIXES_DESCRIPTION),
         "static" => (k::PARAM_STATIC, k::PARAM_STATIC_DESCRIPTION),
         "ignore" => (k::PARAM_IGNORE, k::PARAM_IGNORE_DESCRIPTION),
-        // "max", and anything a newer profile names that this build does not.
-        _ => (k::PARAM_MAX, k::PARAM_MAX_DESCRIPTION),
-    }
+        "max" => (k::PARAM_MAX, k::PARAM_MAX_DESCRIPTION),
+        _ => return None,
+    })
 }
 
 /// A number with `digits` decimals, trailing zeros trimmed.
@@ -330,6 +346,7 @@ pub fn measured(value: &Measured) -> String {
         Measured::Degrees(degrees) => k::value_degrees(number(*degrees, 1)),
         Measured::PerSquareMeter(value) => k::value_per_square_meter(number(*value, 0)),
         Measured::PxPerMeter(value) => k::value_px_per_meter(number(*value, 0)),
+        Measured::Pixels(value) => k::value_pixels(number(*value, 1)),
         Measured::SquarePixels(value) => k::value_square_pixels(number(*value, 1)),
         Measured::ScreenSize(value) => k::value_screen_size(number(*value, 2)),
         Measured::UnitMeters(value) => match crate::units::match_known_unit(*value as f32) {
@@ -431,6 +448,33 @@ mod tests {
         assert_eq!(number(1.50, 2), "1.5");
         assert_eq!(number(2.0, 2), "2");
         assert_eq!(number(1024.0, 0), "1024");
+    }
+
+    /// What the compiler checks for every other map here, for the one keyed on
+    /// a string: each parameter any rule declares has a label, and no two
+    /// parameters share one.
+    #[test]
+    fn every_parameter_has_a_label_of_its_own() {
+        let mut labels: std::collections::BTreeMap<&str, (Key, Key)> = Default::default();
+        for &rule in RuleId::ALL {
+            for spec in review_audit::param_specs(rule) {
+                let Some(label) = param_label(spec.key) else {
+                    panic!(
+                        "{} declares the parameter `{}`, which has no label",
+                        rule.as_str(),
+                        spec.key
+                    );
+                };
+                labels.insert(spec.key, label);
+            }
+        }
+        let mut seen: std::collections::BTreeMap<&'static str, &str> = Default::default();
+        for (key, (label, _)) in &labels {
+            if let Some(other) = seen.insert(label.id(), key) {
+                panic!("`{key}` and `{other}` share the label `{}`", label.id());
+            }
+        }
+        assert!(param_label("no_such_parameter").is_none());
     }
 
     #[test]

@@ -9,7 +9,9 @@
 //! reused (invariant 2: the pixels live in the app-owned [`TexturePoolEntry`]; the
 //! UI emits only plain placement + channel values).
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
+
+use review_render::DecodedImage;
 
 use crate::keys;
 use crate::state::{
@@ -76,25 +78,46 @@ fn draw_canvas(
     // disk reload (the decoded-image `Arc` identity changes), and on a
     // double-click — a new image should simply appear fitted, with no animation.
     // Both cancel any in-flight ease / pending request.
+    //
+    // The identity is the pointer `view.fitted_key` records *and* a `Weak` to the
+    // image kept beside the canvas. The pointer alone is a number: once the
+    // fitted image was freed, the next one decoded could be allocated at the same
+    // address and read as already fitted. A `Weak` pins the allocation it points
+    // at, so while it is held no other image can arrive there.
+    let fitted_id = ui.id().with("tex_canvas_fitted");
     let identity = Arc::as_ptr(image) as usize;
-    if view.fitted_key != Some(identity) || response.double_clicked() {
-        let (zoom, pan) = fit_target(rect, img_px);
-        view.zoom = zoom;
-        view.pan = pan;
-        view.fitted_key = Some(identity);
+    let fitted = view.fitted_key == Some(identity)
+        && ui
+            .data(|data| data.get_temp::<Weak<DecodedImage>>(fitted_id))
+            .is_some_and(|fitted| std::ptr::eq(fitted.as_ptr(), Arc::as_ptr(image)));
+    if !fitted || response.double_clicked() {
+        // A canvas with no area — a window minimized, or squeezed shut between
+        // the side panels — has nothing to fit to. The image stays unfitted
+        // rather than being marked as fitted at a placeholder zoom, so the first
+        // frame with room fits it.
+        if let Some((zoom, pan)) = fit_target(rect, img_px) {
+            view.zoom = zoom;
+            view.pan = pan;
+            view.fitted_key = Some(identity);
+            ui.data_mut(|data| data.insert_temp(fitted_id, Arc::downgrade(image)));
+        }
         view.transition = None;
         view.request = None;
     }
 
     // A pending animated request — the zoom-readout toggle (100% ↔ fit) or the
     // `F` / `R` frame reset — resolved here (where the viewport rect is known) into
-    // a concrete pan/zoom target, then eased over `TEXTURE_ZOOM_ANIM_SECS`.
-    if let Some(request) = view.request.take() {
-        let (to_zoom, to_pan) = match request {
-            TexViewRequest::Zoom(zoom) => (zoom, view.pan),
+    // a concrete pan/zoom target, then eased over `TEXTURE_ZOOM_ANIM_SECS`. A fit
+    // asked for while the canvas has no area waits for one.
+    if let Some(request) = view.request {
+        let target = match request {
+            TexViewRequest::Zoom(zoom) => Some((zoom, view.pan)),
             TexViewRequest::Fit => fit_target(rect, img_px),
         };
-        start_transition(view, ctx, to_zoom, to_pan);
+        if let Some((to_zoom, to_pan)) = target {
+            view.request = None;
+            start_transition(view, ctx, to_zoom, to_pan);
+        }
     }
 
     // Left-drag pans. Right-drag zooms (drag down = zoom in), anchored on the
@@ -153,16 +176,17 @@ fn zoom_at(view: &mut TextureViewState, center: egui::Pos2, anchor: egui::Pos2, 
 }
 
 /// The (zoom, pan) that fits the image to the viewport — centered (zero pan),
-/// with a small margin. A degenerate viewport falls back to 1:1.
-fn fit_target(rect: egui::Rect, img_px: egui::Vec2) -> (f32, egui::Vec2) {
+/// with a small margin. `None` for a viewport with no area, which there is no
+/// fitting anything to.
+fn fit_target(rect: egui::Rect, img_px: egui::Vec2) -> Option<(f32, egui::Vec2)> {
     let avail = rect.size() * size::TEXTURE_FIT_MARGIN;
     let scale = (avail.x / img_px.x).min(avail.y / img_px.y);
-    let zoom = if scale.is_finite() && scale > 0.0 {
-        scale.clamp(size::TEXTURE_ZOOM_MIN, size::TEXTURE_ZOOM_MAX)
-    } else {
-        1.0
-    };
-    (zoom, egui::Vec2::ZERO)
+    (scale.is_finite() && scale > 0.0).then(|| {
+        (
+            scale.clamp(size::TEXTURE_ZOOM_MIN, size::TEXTURE_ZOOM_MAX),
+            egui::Vec2::ZERO,
+        )
+    })
 }
 
 /// Begin a [`TexViewTransition`] easing the current pan/zoom toward
@@ -226,4 +250,99 @@ fn draw_empty_hint(ui: &mut egui::Ui, rect: egui::Rect) {
         egui::FontId::proportional(font::VIEWPORT_EMPTY_HINT),
         color::TEXT_MUTED,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    fn entry(name: &str) -> TexturePoolEntry {
+        let (width, height) = (512, 256);
+        TexturePoolEntry {
+            path: PathBuf::from(name),
+            image: Arc::new(DecodedImage {
+                width,
+                height,
+                rgba: vec![255; (width * height * 4) as usize],
+                source_channels: 4,
+                source_bit_depth: 8,
+            }),
+            file_size: 0,
+        }
+    }
+
+    /// One pass of the canvas over `rect`, in a headless context.
+    fn draw_over(
+        ctx: &egui::Context,
+        view: &mut TextureViewState,
+        rect: egui::Rect,
+        entry: &TexturePoolEntry,
+    ) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let output = ctx.run_ui(input, |ui| {
+            let ctx = ui.ctx().clone();
+            draw_canvas(ui, &ctx, view, rect, entry);
+        });
+        output.drop_without_applying_deltas();
+    }
+
+    fn canvas(width: f32) -> egui::Rect {
+        egui::Rect::from_min_size(egui::pos2(100.0, 40.0), egui::vec2(width, 600.0))
+    }
+
+    fn fitted_zoom(rect: egui::Rect, entry: &TexturePoolEntry) -> f32 {
+        let img_px = egui::vec2(entry.image.width as f32, entry.image.height as f32);
+        fit_target(rect, img_px).expect("a canvas with area").0
+    }
+
+    /// The Tex workspace can be entered with the side panels squeezing the canvas
+    /// shut. That fit used to fall back to 1:1 and still be recorded as done, so
+    /// the image stayed at 1:1 once the canvas opened up.
+    #[test]
+    fn a_fit_on_a_canvas_with_no_area_waits_for_one() {
+        let ctx = egui::Context::default();
+        let mut view = TextureViewState::default();
+        let entry = entry("albedo.png");
+
+        draw_over(&ctx, &mut view, canvas(0.0), &entry);
+        assert_eq!(
+            view.fitted_key, None,
+            "a fit to no area was recorded as done"
+        );
+
+        draw_over(&ctx, &mut view, canvas(800.0), &entry);
+        assert_eq!(view.zoom, fitted_zoom(canvas(800.0), &entry));
+        assert!(view.fitted_key.is_some());
+    }
+
+    /// Once fitted, the image keeps the view the user gives it; a different image
+    /// is fitted afresh.
+    #[test]
+    fn only_a_new_image_is_refitted() {
+        let ctx = egui::Context::default();
+        let mut view = TextureViewState::default();
+        let first = entry("albedo.png");
+
+        draw_over(&ctx, &mut view, canvas(800.0), &first);
+        view.zoom = 3.0;
+        draw_over(&ctx, &mut view, canvas(800.0), &first);
+        assert_eq!(view.zoom, 3.0, "the image already on screen was refitted");
+
+        drop(first);
+        let reloaded = entry("albedo.png");
+        draw_over(&ctx, &mut view, canvas(800.0), &reloaded);
+        assert_eq!(
+            view.zoom,
+            fitted_zoom(canvas(800.0), &reloaded),
+            "a reloaded image kept the old one's view"
+        );
+    }
 }

@@ -40,12 +40,7 @@ pub(crate) fn color_swatch_row(
 ) {
     grid_label_tip(ui, label);
     grid_control(ui, |ui| {
-        // Right-align the whole swatch run while keeping the swatches themselves
-        // in left-to-right order (a plain `ui.horizontal` group, placed at the
-        // right edge of the right-to-left control cell).
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = size::PANEL_SWATCH_GAP;
-            let side = ui.spacing().interact_size.y;
+        swatch_run(ui, colors.len(), |ui, side| {
             let corner_radius = ui.visuals().widgets.inactive.corner_radius;
             for &swatch in colors {
                 let mut button = egui::Button::new(())
@@ -80,15 +75,8 @@ pub(crate) fn background_swatch_row(
 ) {
     grid_label_tip(ui, label);
     grid_control(ui, |ui| {
-        // The control cell is right-aligned (a `right_to_left` layout), and
-        // `ui.horizontal` inherits that preference — so children are placed
-        // right-to-left. Walk `ALL` in reverse (Gradient first → rightmost, Black
-        // last → leftmost) so the run reads left-to-right on screen (Black …
-        // Gradient) while staying flush to the panel's right edge.
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = size::PANEL_SWATCH_GAP;
-            let side = ui.spacing().interact_size.y;
-            for preset in ViewportBackground::ALL.into_iter().rev() {
+        swatch_run(ui, ViewportBackground::ALL.len(), |ui, side| {
+            for preset in ViewportBackground::ALL {
                 let (rect, response) =
                     ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click());
                 paint_background_swatch(ui, rect, preset, *selected == preset);
@@ -102,6 +90,29 @@ pub(crate) fn background_swatch_row(
         });
     });
     ui.end_row();
+}
+
+/// Lay `count` square swatches out as one left-to-right run, flush with the right
+/// edge of the control cell it sits in, and hand `add` the swatch side.
+///
+/// The cell is a `right_to_left` layout (see [`grid_control`]), and a plain
+/// `ui.horizontal` inside it inherits that direction: the first swatch landed
+/// rightmost and every palette read backwards. So the run is allocated at its own
+/// width — which the right-to-left cell places at its right edge — with an
+/// explicit left-to-right layout inside, and the swatches go in the order given.
+fn swatch_run<R>(ui: &mut egui::Ui, count: usize, add: impl FnOnce(&mut egui::Ui, f32) -> R) -> R {
+    let side = ui.spacing().interact_size.y;
+    let gap = size::PANEL_SWATCH_GAP;
+    let width = side * count as f32 + gap * count.saturating_sub(1) as f32;
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, side),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            add(ui, side)
+        },
+    )
+    .inner
 }
 
 /// Paint one [`ViewportBackground`] preset swatch: a solid rounded fill, or a
@@ -207,16 +218,17 @@ mod tests {
     use super::super::form::panel_grid;
     use super::*;
 
+    const COLORS: [egui::Color32; 3] = [
+        egui::Color32::WHITE,
+        egui::Color32::GREEN,
+        egui::Color32::RED,
+    ];
+
     /// Lay out one [`color_swatch_row`] headlessly with `selected` marked and the
     /// pointer at `pointer`, and return the height the row's content took. Two
     /// passes, because a widget's state follows the *previous* pass's response —
     /// the second is the one that reflects the pointer.
     fn swatch_row_height(selected: egui::Color32, pointer: Option<egui::Pos2>) -> f32 {
-        const COLORS: [egui::Color32; 3] = [
-            egui::Color32::WHITE,
-            egui::Color32::GREEN,
-            egui::Color32::RED,
-        ];
         let ctx = egui::Context::default();
         let mut height = 0.0;
         for _ in 0..2 {
@@ -272,5 +284,63 @@ mod tests {
                 "hovering at x={x} changed the row height"
             );
         }
+    }
+
+    /// Click a [`color_swatch_row`] of [`COLORS`] at `pointer` and return the
+    /// colour that click picked, if it landed on a swatch.
+    fn swatch_clicked_at(pointer: egui::Pos2) -> Option<egui::Color32> {
+        // Not in the palette, so any change is the click's doing.
+        const NONE_PICKED: egui::Color32 = egui::Color32::BLUE;
+        let ctx = egui::Context::default();
+        let mut selected = NONE_PICKED;
+        let button = |pressed| egui::Event::PointerButton {
+            pos: pointer,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        for events in [
+            vec![egui::Event::PointerMoved(pointer)],
+            vec![button(true)],
+            vec![button(false)],
+        ] {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 200.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                panel_grid(ui, "swatch_test", |ui| {
+                    color_swatch_row(
+                        ui,
+                        Tip::new(crate::keys::ui_panels::LINE_COLOR),
+                        &mut selected,
+                        &COLORS,
+                    );
+                });
+            });
+            output.textures_delta.clear();
+        }
+        (selected != NONE_PICKED).then_some(selected)
+    }
+
+    /// A palette reads left to right in the order it is given. The row's
+    /// `ui.horizontal` used to inherit the control cell's right-to-left layout,
+    /// so the first colour sat rightmost and every palette read backwards.
+    #[test]
+    fn a_palette_reads_left_to_right() {
+        let y = swatch_row_height(egui::Color32::BLUE, None) * 0.5;
+        let mut seen: Vec<egui::Color32> = Vec::new();
+        for x in (0..400).step_by(2) {
+            if let Some(color) = swatch_clicked_at(egui::pos2(x as f32, y))
+                && seen.last() != Some(&color)
+            {
+                seen.push(color);
+            }
+        }
+        assert_eq!(seen, COLORS, "the swatches, clicked from left to right");
     }
 }

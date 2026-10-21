@@ -59,13 +59,16 @@ pub(crate) struct OptSubsystem {
     /// borrow a level's mesh without copying it.
     pub(crate) processed: Option<Arc<ProcessedResult>>,
     /// One triangle BVH per level of [`Self::processed`], in the same order.
-    /// Replaced wholesale with each run, so it can never describe a mesh that is
-    /// no longer on screen.
-    pub(crate) level_bvhs: Vec<Arc<SceneBvh>>,
-    /// Model revision for the level currently being drawn. Drawn from the app's
-    /// shared revision counter so it can never collide with a source model's.
-    pub(crate) processed_revision: u64,
-    /// Which level `processed_revision` was issued for, so switching levels
+    /// Replaced wholesale with each run and dropped with the result, so it can
+    /// never describe a mesh that is no longer on screen. Read through
+    /// [`Self::level_bvh`], which also knows when a preview stands in.
+    level_bvhs: Vec<Arc<SceneBvh>>,
+    /// Model revision of the finished level currently being drawn. Drawn from
+    /// the app's shared revision counter so it can never collide with a source
+    /// model's. A preview carries its own ([`OptPreviewMesh::revision`]), so showing
+    /// one and then letting it go never leaves this number attached to it.
+    level_revision: u64,
+    /// Which level `level_revision` was issued for, so switching levels
     /// re-issues one (the renderer caches its mesh buffers by revision).
     revision_level: usize,
     /// The stack revision the newest run *covers* — set when that run is
@@ -92,14 +95,25 @@ pub(crate) struct OptSubsystem {
     started_at: Option<Instant>,
     /// Whether the "still working" toast is currently up.
     activity: Option<ActivityId>,
-    /// The newest part-finished mesh, and the generation that produced it.
+    /// The newest part-finished mesh.
     ///
     /// Drawn in place of the finished level while a run is going, so a rebuild
     /// is watched settling rather than waited out. Cleared when that run lands,
     /// and never consulted for a *measurement*: the stats card keeps showing
     /// the last completed run, because a half-finished count is worse than a
     /// slightly old one.
-    pub(crate) preview: Option<(u64, Arc<ModelData>)>,
+    preview: Option<OptPreviewMesh>,
+    /// Whether the newest run was started without the source-property capture,
+    /// because it had not landed yet. Such a run has no polygons, extra skin
+    /// layers or colour sets to carry, so once the capture lands it is run
+    /// again ([`Self::capture_owed`]), and until then its result is exported
+    /// without the capture rather than beside one it never saw.
+    ran_without_capture: bool,
+    /// Whether [`Self::processed`] came from such a run.
+    processed_without_capture: bool,
+    /// The capture has landed since the newest run started without it, so a
+    /// run with it is owed.
+    capture_owed: bool,
     /// The newest progress line, kept whether or not the toast is up yet.
     ///
     /// Reports start arriving the moment the run does, but the toast is
@@ -123,7 +137,7 @@ impl Default for OptSubsystem {
         Self {
             processed: None,
             level_bvhs: Vec::new(),
-            processed_revision: 0,
+            level_revision: 0,
             revision_level: usize::MAX,
             covers_revision: u64::MAX,
             seen_revision: u64::MAX,
@@ -133,11 +147,26 @@ impl Default for OptSubsystem {
             started_at: None,
             activity: None,
             preview: None,
+            ran_without_capture: false,
+            processed_without_capture: false,
+            capture_owed: false,
             last_progress: None,
             announced_warnings: Vec::new(),
             seen_hidden: Vec::new(),
         }
     }
+}
+
+/// A part-finished mesh a run published, and the revision it is drawn under.
+#[derive(Debug)]
+struct OptPreviewMesh {
+    model: Arc<ModelData>,
+    /// Issued for this mesh alone. The renderer keys its mesh buffers on the
+    /// revision, so the finished level behind the preview keeps its own number
+    /// and is uploaded again when the preview goes — whether the run finished,
+    /// failed or was cancelled — rather than the preview staying on screen
+    /// under a number that now names the finished level.
+    revision: u64,
 }
 
 impl OptSubsystem {
@@ -158,31 +187,73 @@ impl OptSubsystem {
     /// what level 0 becomes. The LOD fan-out has not happened yet, so standing
     /// in for a simplified level would show the wrong density entirely.
     fn preview_of(&self, level: usize) -> Option<&ModelData> {
-        match &self.preview {
-            Some((_, model)) if level == 0 => Some(model),
-            _ => None,
-        }
+        self.shown_preview(level)
+            .map(|preview| preview.model.as_ref())
+    }
+
+    /// The preview drawn for `level`, if any — the one rule [`Self::preview_of`],
+    /// [`Self::level_mesh`] and [`Self::drawn_revision`] share, so the mesh drawn
+    /// and the revision it is drawn under cannot disagree.
+    fn shown_preview(&self, level: usize) -> Option<&OptPreviewMesh> {
+        self.preview.as_ref().filter(|_| level == 0)
     }
 
     /// [`Self::preview_of`] as an owned handle, which the renderer's borrow of
     /// `self` can outlive.
     pub(crate) fn level_mesh(&self, level: usize) -> Option<Arc<ModelData>> {
-        match &self.preview {
-            Some((_, model)) if level == 0 => Some(Arc::clone(model)),
-            _ => None,
+        self.shown_preview(level)
+            .map(|preview| Arc::clone(&preview.model))
+    }
+
+    /// The triangle index of the mesh drawn for `level`.
+    ///
+    /// `None` while a preview stands in for it: a part-finished mesh is never
+    /// indexed, and the finished level's index describes a different mesh, so
+    /// answering with it would test a pick or a label against triangles that are
+    /// not on screen.
+    pub(crate) fn level_bvh(&self, level: usize) -> Option<&Arc<SceneBvh>> {
+        if self.preview_of(level).is_some() {
+            return None;
         }
+        self.level_bvhs.get(level)
+    }
+
+    /// The revision of the mesh drawn for `level`, or `None` when there is none.
+    /// A preview is drawn under its own; the finished level under
+    /// [`Self::level_revision`], which the caller has issued for `level`.
+    fn drawn_revision(&self, level: usize) -> Option<u64> {
+        if let Some(preview) = self.shown_preview(level) {
+            return Some(preview.revision);
+        }
+        self.processed
+            .as_ref()
+            .and_then(|result| result.lod(level))
+            .map(|_| self.level_revision)
     }
 
     pub(crate) fn is_running(&self) -> bool {
         self.in_flight.is_some()
     }
 
-    /// Whether a run should be queued for `stack_revision` this frame: either the
-    /// UI just edited the stack, or there is no result and nothing has been asked
+    /// Whether a run should be queued for `stack_revision` this frame: the UI
+    /// just edited the stack, the source capture has landed since the newest
+    /// run started without it, or there is no result and nothing has been asked
     /// to produce one (a run that errored leaves the revision covered, so a
     /// failure is reported once rather than retried forever).
     fn needs_run(&self, stack_revision: u64, changed: bool) -> bool {
-        changed || (self.processed.is_none() && self.covers_revision != stack_revision)
+        changed
+            || self.capture_owed
+            || (self.processed.is_none() && self.covers_revision != stack_revision)
+    }
+
+    /// Whether an export of [`Self::processed`] should be handed the source
+    /// capture: only when the run that produced it had it. A chain processed
+    /// before the capture landed carries none of the polygons the capture
+    /// describes, and written beside it every mesh would come out as triangles
+    /// with a note blaming the stack; written without it, the export says what
+    /// actually happened.
+    pub(crate) fn processed_with_capture(&self) -> bool {
+        !self.processed_without_capture
     }
 }
 
@@ -213,6 +284,7 @@ impl App {
         self.ui.opt.lod_pinned = false;
         self.ui.opt.processing = false;
 
+        let stack_revision = self.ui.opt.stack_revision;
         if let Some(opt) = self.opt.as_mut() {
             // Bumping the generation invalidates any run still on the worker for
             // the previous model - and, since the worker's token reads this same
@@ -221,10 +293,21 @@ impl App {
             opt.generation.fetch_add(1, Ordering::Relaxed);
             opt.preview = None;
             opt.processed = None;
+            // The old model's level indices go with its result rather than stay
+            // resident until the next run lands.
+            opt.level_bvhs.clear();
             opt.covers_revision = u64::MAX;
             opt.revision_level = usize::MAX;
             opt.dirty = false;
+            opt.ran_without_capture = false;
+            opt.processed_without_capture = false;
+            opt.capture_owed = false;
             opt.announced_warnings.clear();
+            // The override clear above is not an edit to react to: the run below
+            // (or the one entering the workspace starts) already covers it, and
+            // seeing it as one next frame would cancel that run to start the
+            // same one again.
+            opt.seen_revision = stack_revision;
             // The hidden set is cleared on model load (its node indices no
             // longer apply), so forget the old one rather than read a change
             // out of it.
@@ -258,6 +341,52 @@ mod tests {
         // `spawn_process` marks the revision as covered as it starts the worker.
         opt.covers_revision = 7;
         assert!(!opt.needs_run(7, false), "the queued run already covers it");
+    }
+
+    /// A run started before the source capture landed — what a load in the
+    /// workspace always starts — carries none of it, and its export would write
+    /// every mesh as triangles. The capture landing makes a run owed; one that
+    /// already had a capture owes nothing.
+    #[test]
+    fn a_run_without_the_capture_runs_again_once_it_lands() {
+        let mut app = crate::App::default();
+        let revision = app.ui.opt.stack_revision;
+        app.opt = Some(OptSubsystem {
+            covers_revision: revision,
+            ran_without_capture: true,
+            ..Default::default()
+        });
+        let needs_run = |app: &crate::App| {
+            app.opt
+                .as_ref()
+                .is_some_and(|opt| opt.needs_run(revision, false))
+        };
+        assert!(!needs_run(&app), "the run in flight covers the revision");
+        app.opt_capture_landed();
+        assert!(needs_run(&app), "the capture landing owes a run");
+
+        app.opt = Some(OptSubsystem {
+            covers_revision: revision,
+            ..Default::default()
+        });
+        app.opt_capture_landed();
+        assert!(
+            !needs_run(&app),
+            "a run that had the capture is not repeated"
+        );
+    }
+
+    /// A chain processed without the capture is exported without it, so the
+    /// file says the properties had not loaded rather than blaming the stack
+    /// for polygons it never saw.
+    #[test]
+    fn a_chain_processed_without_the_capture_is_exported_without_it() {
+        let opt = OptSubsystem {
+            processed_without_capture: true,
+            ..Default::default()
+        };
+        assert!(!opt.processed_with_capture());
+        assert!(OptSubsystem::default().processed_with_capture());
     }
 
     /// A failed run leaves no result, but the revision stays covered: the error

@@ -57,6 +57,9 @@ pub enum OptWarning {
     ShrinkwrapEmptyVoxels { object: String, resolution: u32 },
     /// The voxel wrap's remesh refused an object.
     ShrinkwrapVoxelFailed { object: String, detail: String },
+    /// Shrinkwrap could not place its shell's faces on an object's surface and
+    /// left the object as it was.
+    ShrinkwrapFailed { object: String, detail: String },
     /// Shrinkwrap ran at a lower resolution than asked, to bound its memory.
     ShrinkwrapResolutionLowered {
         object: String,
@@ -170,6 +173,9 @@ impl fmt::Display for OptWarning {
                 "Shrinkwrap: '{object}' could not be voxel remeshed ({detail}), so it was left \
                  as it is."
             ),
+            Self::ShrinkwrapFailed { object, detail } => {
+                write!(f, "Shrinkwrap: '{object}' was left as it is — {detail}")
+            }
             Self::ShrinkwrapResolutionLowered {
                 object,
                 requested,
@@ -255,7 +261,9 @@ pub enum ExportNote {
     NonBindPosesSkipped { count: usize },
     /// Skin clusters bound to nodes that could not be written.
     UnplacedClusters { mesh: String, count: usize },
-    /// Layered textures nested inside another layered texture.
+    /// Layered textures whose layers could not all be placed: one nested in a
+    /// cycle, or naming a layer the capture could not resolve. Nesting itself is
+    /// written back, in any capture order.
     NestedLayeredTextures { count: usize },
     /// A node's parent chain looped; that branch was exported flat.
     ParentChainLooped,
@@ -315,7 +323,7 @@ impl fmt::Display for ExportNote {
             ),
             Self::NestedLayeredTextures { count } => write!(
                 f,
-                "{count} layered texture(s) nested inside another layered texture were not \
+                "{count} layered texture(s) whose layers could not be placed were not \
                  written."
             ),
             Self::ParentChainLooped => {

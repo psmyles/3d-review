@@ -41,13 +41,37 @@
 //! off its patch is better served by continuing the attribute gradient than by
 //! being pinned to the patch's rim, which would flatten a UV island's border
 //! into a ridge.
+//!
+//! ## No range
+//!
+//! The nearest point on the source is searched for however far away it is
+//! ([`UNBOUNDED`]). A face the rebuild produced is part of the result, so "where
+//! on the original is this" has an answer for every one of them, and a bound
+//! only ever turned that answer into a missing face. It used to be a quarter of
+//! the object's bounding radius, generous for a Remesh, whose surface lies on the
+//! source - and not for a Shrinkwrap, whose offset puts the whole shell a fixed
+//! distance off the surface whatever the object's size (half a metre at most):
+//! a 1 m cube wrapped at 0.25 m, or a 30 cm prop at 7 cm, lost every face and
+//! came back as nothing, with no warning. A cap a wrap draws across an opening
+//! is as far from the source as the opening is wide, for the same reason.
+//!
+//! An unbounded search costs no more than a bounded one in practice: the
+//! hierarchy descends nearer child first, so the first leaf it reaches already
+//! bounds the rest of the walk.
 
 use glam::{Vec2, Vec3, Vec4};
 use review_model::{Bvh, ModelData, Vertex, closest_point_on_triangle, triangle_positions};
 
+use crate::OptError;
+use crate::cancel::{CancelToken, cancelled};
 use crate::submesh::{NO_MATERIAL, Submesh};
 
 use super::RemeshOutput;
+use super::union_find::UnionFind;
+
+/// How far from a rebuilt face the source surface is looked for. See the module
+/// docs: everywhere.
+const UNBOUNDED: f32 = f32::INFINITY;
 
 /// How far a barycentric coordinate may be extrapolated past the triangle it
 /// belongs to. Half a triangle's width in any direction — beyond that the sample
@@ -88,8 +112,16 @@ pub(crate) struct ProjectionSource {
 const REGION_WALK_LIMIT: usize = 256;
 
 impl ProjectionSource {
-    pub(crate) fn build(pieces: &[&Submesh]) -> Self {
+    /// Index the node's pieces, or `None` when the run was cancelled part way.
+    ///
+    /// Checked between the stages rather than inside them: the hierarchy is one
+    /// call into the model crate, and the adjacency sort is one call into the
+    /// standard library, so the gaps between them are the only places to stop.
+    pub(crate) fn build(pieces: &[&Submesh], cancel: Option<&CancelToken>) -> Option<Self> {
         let _z = crate::prof::zone!("Remesh Projection Source");
+        if cancelled(cancel) {
+            return None;
+        }
 
         let uv_channel_count = pieces
             .iter()
@@ -129,8 +161,14 @@ impl ProjectionSource {
             }
         }
 
+        if cancelled(cancel) {
+            return None;
+        }
         let adjacency = build_adjacency(&indices);
         let region = build_regions(&adjacency);
+        if cancelled(cancel) {
+            return None;
+        }
         let model = ModelData {
             vertices,
             indices,
@@ -138,7 +176,7 @@ impl ProjectionSource {
         };
         let bvh = Bvh::build(&model);
 
-        Self {
+        Some(Self {
             model,
             uv_channels,
             color_channels,
@@ -146,7 +184,7 @@ impl ProjectionSource {
             adjacency,
             region,
             bvh,
-        }
+        })
     }
 
     pub(crate) fn triangle_count(&self) -> usize {
@@ -175,13 +213,13 @@ impl ProjectionSource {
     /// is what lets two faces of one region weld their shared corner. Otherwise
     /// the nearest triangle the walk below reaches without leaving the region,
     /// so a corner beside a seam reads its own side of it.
-    fn sample_triangle(&self, anchor: u32, query: Vec3, range: f32) -> u32 {
+    fn sample_triangle(&self, anchor: u32, query: Vec3) -> u32 {
         let region = self
             .region
             .get(anchor as usize)
             .copied()
             .unwrap_or(u32::MAX);
-        if let Some(hit) = self.bvh.closest_point(&self.model, query, range)
+        if let Some(hit) = self.bvh.closest_point(&self.model, query, UNBOUNDED)
             && self.region.get(hit.triangle as usize).copied() == Some(region)
         {
             return hit.triangle;
@@ -342,26 +380,10 @@ pub(crate) struct FaceSample {
     pub corners: Vec<CornerSample>,
 }
 
-/// Where a rebuilt face's winding comes from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Winding {
-    /// Take it from the source surface: flip a face whose normal opposes the
-    /// source's at the point under its centroid. For a soup whose winding carries
-    /// no relation to which way the object faces, which is what the field
-    /// extraction Remesh used to be built on produced. Neither caller asks for it
-    /// now: the collapse keeps the source's own winding, and a shell is
-    /// [`Self::Keep`] for the reason below.
-    FromSource,
-    /// Leave it exactly as the soup has it. A [`crate::shrinkwrap`] shell's
-    /// winding is derived from the distance field's sign and is *more* reliable
-    /// than the source's — the source being a kitbash whose parts face whichever
-    /// way they were modelled. Re-deriving it there would flip individual faces
-    /// of a consistently oriented shell, which is the one thing that turns a
-    /// closed manifold back into a broken one.
-    Keep,
-}
-
-/// Project every face of `output` onto `source`.
+/// Project every face of `output` onto `source`, in face order. A face comes
+/// back `None` when there is no source surface to place it on, which takes a
+/// source with no triangles or a corner with no finite position; the caller
+/// decides what that costs. `Err` only for a cancelled run.
 ///
 /// Parallel over faces, dealt round-robin into per-worker buckets before the
 /// threads start — the same static partition the AO bake uses, and for the same
@@ -370,29 +392,29 @@ pub(crate) enum Winding {
 pub(crate) fn project_faces(
     output: &RemeshOutput,
     source: &ProjectionSource,
-    range: f32,
     uv_channel_count: usize,
     color_channel_count: usize,
-    winding: Winding,
     threads: usize,
-) -> Vec<FaceSample> {
+    cancel: Option<&CancelToken>,
+) -> Result<Vec<Option<FaceSample>>, OptError> {
     let _z = crate::prof::zone!("Remesh Projection");
 
-    let mut faces: Vec<FaceSample> = vec![FaceSample::default(); output.face_count()];
+    let mut faces: Vec<Option<FaceSample>> = vec![None; output.face_count()];
     if faces.is_empty() || source.triangle_count() == 0 {
-        return faces;
+        return Ok(faces);
     }
 
+    /// A run of faces and the index of its first one.
+    type Job<'a> = (usize, &'a mut [Option<FaceSample>]);
     const CHUNK: usize = 256;
-    let mut jobs: Vec<(usize, &mut [FaceSample])> = Vec::new();
+    let mut jobs: Vec<Job<'_>> = Vec::new();
     for (index, chunk) in faces.chunks_mut(CHUNK).enumerate() {
         jobs.push((index * CHUNK, chunk));
     }
     // The object's own share of the machine: this runs inside `solve_nodes`,
     // which already puts one object on each core.
     let workers = threads.min(jobs.len()).max(1);
-    let mut buckets: Vec<Vec<(usize, &mut [FaceSample])>> =
-        (0..workers).map(|_| Vec::new()).collect();
+    let mut buckets: Vec<Vec<Job<'_>>> = (0..workers).map(|_| Vec::new()).collect();
     for (slot, job) in jobs.into_iter().enumerate() {
         buckets[slot % workers].push(job);
     }
@@ -401,15 +423,20 @@ pub(crate) fn project_faces(
         for bucket in buckets {
             scope.spawn(move || {
                 for (first, chunk) in bucket {
+                    // A chunk at a time: a projection of a dense object is a
+                    // nearest-point query per corner, seconds of them, and the
+                    // final one runs after every stage of the solve has already
+                    // been given its chance to stop.
+                    if cancelled(cancel) {
+                        return;
+                    }
                     for (offset, destination) in chunk.iter_mut().enumerate() {
                         *destination = project_face(
                             output,
                             source,
                             first + offset,
-                            range,
                             uv_channel_count,
                             color_channel_count,
-                            winding,
                         );
                     }
                 }
@@ -417,70 +444,44 @@ pub(crate) fn project_faces(
         }
     });
 
-    faces
+    if cancelled(cancel) {
+        return Err(OptError::Cancelled);
+    }
+    Ok(faces)
 }
 
-/// Project one face. An unreachable source surface yields an empty face, which
-/// the caller drops.
+/// Project one face, keeping its corners in the order the soup wound them.
 fn project_face(
     output: &RemeshOutput,
     source: &ProjectionSource,
     face: usize,
-    range: f32,
     uv_channel_count: usize,
     color_channel_count: usize,
-    winding: Winding,
-) -> FaceSample {
-    let corners = output.face(face);
-    let positions: Vec<Vec3> = corners
+) -> Option<FaceSample> {
+    let positions: Vec<Vec3> = output
+        .face(face)
         .iter()
         .map(|&corner| output.positions[corner as usize])
         .collect();
     let centroid = positions.iter().copied().sum::<Vec3>() / positions.len() as f32;
 
-    let Some(anchor) = source.bvh.closest_point(&source.model, centroid, range) else {
-        return FaceSample::default();
-    };
+    let anchor = source
+        .bvh
+        .closest_point(&source.model, centroid, UNBOUNDED)?;
     let material = source.material_of(anchor.triangle);
 
-    // A soup that does not keep the source's winding would draw a face whose
-    // normal opposes the surface it was built from back-to-front. Newell's
-    // formula rather than one corner's cross product, so a slightly non-planar
-    // quad still answers. See [`Winding`] for why a wrapped shell opts out.
-    let mut ordered = positions;
-    if winding == Winding::FromSource
-        && let (Some(face_normal), Some(source_normal)) =
-            (newell_normal(&ordered), source.face_normal(anchor.triangle))
-        && face_normal.dot(source_normal) < 0.0
-    {
-        ordered.reverse();
-    }
-
-    let sampled = ordered
+    let sampled = positions
         .into_iter()
         .map(|position| {
-            let triangle = source.sample_triangle(anchor.triangle, position, range);
+            let triangle = source.sample_triangle(anchor.triangle, position);
             source.sample(triangle, position, uv_channel_count, color_channel_count)
         })
         .collect();
 
-    FaceSample {
+    Some(FaceSample {
         material,
         corners: sampled,
-    }
-}
-
-/// Newell's normal of a polygon: robust for a non-planar face, where a single
-/// corner's cross product is not.
-fn newell_normal(positions: &[Vec3]) -> Option<Vec3> {
-    let mut normal = Vec3::ZERO;
-    for (index, &current) in positions.iter().enumerate() {
-        let next = positions[(index + 1) % positions.len()];
-        normal.x += (current.y - next.y) * (current.z + next.z);
-        normal.y += (current.z - next.z) * (current.x + next.x);
-        normal.z += (current.x - next.x) * (current.y + next.y);
-    }
-    normal.try_normalize()
+    })
 }
 
 /// Barycentric coordinates of `query`'s projection onto `triangle`'s plane,
@@ -556,45 +557,21 @@ fn build_adjacency(indices: &[u32]) -> Vec<[u32; 3]> {
 
 /// Per triangle, the connected component of `adjacency` it belongs to.
 ///
-/// Union-find with path halving and union by size: near-linear, and — unlike a
-/// flood fill — independent of the order the triangles are visited in, so the
-/// component *ids* are a function of the mesh rather than of the walk.
+/// Union-find rather than a flood fill: near-linear, and independent of the
+/// order the triangles are visited in, so a component's id - its lowest
+/// triangle - is a function of the mesh rather than of the walk.
 fn build_regions(adjacency: &[[u32; 3]]) -> Vec<u32> {
     let count = adjacency.len();
-    let mut parent: Vec<u32> = (0..count as u32).collect();
-    let mut size: Vec<u32> = vec![1; count];
-
-    fn find(parent: &mut [u32], mut node: u32) -> u32 {
-        while parent[node as usize] != node {
-            // Path halving: point each node at its grandparent as we climb.
-            parent[node as usize] = parent[parent[node as usize] as usize];
-            node = parent[node as usize];
-        }
-        node
-    }
-
+    let mut sets = UnionFind::new(count);
     for (triangle, neighbours) in adjacency.iter().enumerate() {
         for &neighbour in neighbours {
-            if neighbour == u32::MAX {
-                continue;
+            if neighbour != u32::MAX {
+                sets.union(triangle as u32, neighbour);
             }
-            let (mut a, mut b) = (
-                find(&mut parent, triangle as u32),
-                find(&mut parent, neighbour),
-            );
-            if a == b {
-                continue;
-            }
-            if size[a as usize] < size[b as usize] {
-                std::mem::swap(&mut a, &mut b);
-            }
-            parent[b as usize] = a;
-            size[a as usize] += size[b as usize];
         }
     }
-
     (0..count as u32)
-        .map(|triangle| find(&mut parent, triangle))
+        .map(|triangle| sets.find(triangle))
         .collect()
 }
 
@@ -609,7 +586,57 @@ mod tests {
         let model = demo_cube_model();
         let (pieces, _) = partition(&model, None);
         let borrowed: Vec<&Submesh> = pieces.iter().collect();
-        ProjectionSource::build(&borrowed)
+        ProjectionSource::build(&borrowed, None).expect("nothing cancels it")
+    }
+
+    /// A face far off the surface still finds it. A Shrinkwrap offset puts a
+    /// whole shell that far out, and a bounded search used to drop every face
+    /// past a quarter of the object's radius - so a cube wrapped at an offset of
+    /// half its width came back with nothing in it.
+    #[test]
+    fn a_face_far_off_the_surface_is_still_placed() {
+        let source = cube_source();
+        // A triangle a full cube's width above the +Y face (the cube tops out at
+        // 1.03), well past where the old range gave up.
+        let output = RemeshOutput {
+            positions: vec![
+                Vec3::new(-0.2, 2.1, -0.2),
+                Vec3::new(0.2, 2.1, -0.2),
+                Vec3::new(0.0, 2.1, 0.2),
+            ],
+            face_offsets: vec![0, 3],
+            corners: vec![0, 1, 2],
+        };
+
+        let faces = project_faces(&output, &source, 0, 0, 1, None).expect("not cancelled");
+
+        let face = faces[0].as_ref().expect("the face finds the cube");
+        assert_eq!(face.corners.len(), 3);
+        assert!(
+            face.corners.iter().all(|corner| corner.normal.y > 0.9),
+            "and reads the top face's shading, the surface it is nearest"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_projection_says_so() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicU64;
+        let model = demo_cube_model();
+        let (pieces, _) = partition(&model, None);
+        let borrowed: Vec<&Submesh> = pieces.iter().collect();
+        let dead = CancelToken::new(Arc::new(AtomicU64::new(2)), 1);
+
+        assert!(ProjectionSource::build(&borrowed, Some(&dead)).is_none());
+        let output = RemeshOutput {
+            positions: vec![Vec3::ZERO, Vec3::X, Vec3::Y],
+            face_offsets: vec![0, 3],
+            corners: vec![0, 1, 2],
+        };
+        assert!(matches!(
+            project_faces(&output, &cube_source(), 0, 0, 1, Some(&dead)),
+            Err(OptError::Cancelled)
+        ));
     }
 
     #[test]
@@ -661,8 +688,8 @@ mod tests {
 
         // Both triangles of the +Z face, standing in for two output faces whose
         // centroids landed in different source triangles of the same region.
-        let from_first = source.sample_triangle(0, query, 1.0);
-        let from_second = source.sample_triangle(1, query, 1.0);
+        let from_first = source.sample_triangle(0, query);
+        let from_second = source.sample_triangle(1, query);
 
         assert_eq!(
             source.sample(from_first, query, 0, 0),
@@ -686,8 +713,8 @@ mod tests {
             })
             .expect("the cube has a +X face");
 
-        let from_z = source.sample_triangle(0, on_edge, 1.0);
-        let from_x = source.sample_triangle(plus_x, on_edge, 1.0);
+        let from_z = source.sample_triangle(0, on_edge);
+        let from_x = source.sample_triangle(plus_x, on_edge);
 
         assert_eq!(source.region[from_z as usize], source.region[0]);
         assert_eq!(

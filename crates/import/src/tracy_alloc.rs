@@ -82,9 +82,14 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for TracyAllocator<A> {
         let running = Client::running().is_some();
         // The free is reported *before* the realloc, deliberately. Reported after,
         // another thread could be handed the old address and report its alloc
-        // first, and Tracy would pair our free with that block. The cost is that a
-        // failed realloc leaves Tracy believing a live block was freed, and a
-        // failed realloc ends in `handle_alloc_error`, which aborts.
+        // first, and Tracy would pair our free with that block.
+        //
+        // A realloc can fail without the process ending: `Vec::try_reserve` and
+        // friends get the null back and carry on with the old block, which is
+        // still live and will be freed later. Left alone, Tracy would see that
+        // later free as a double free of a block it already closed, so a failure
+        // re-reports the old block as allocated — no other thread can have been
+        // handed its address, since it was never actually released.
         if !ptr.is_null() && running {
             // SAFETY: `ptr` is the non-null block about to be reallocated; records
             // the free of the old block before the reallocation.
@@ -94,9 +99,17 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for TracyAllocator<A> {
         // — they are the original pointer and layout the caller got from this
         // allocator and a valid new size.
         let new_ptr = unsafe { self.inner.realloc(ptr, layout, new_size) };
-        if !new_ptr.is_null() && running {
-            // SAFETY: `new_ptr` is the non-null reallocated block of `new_size` bytes.
-            unsafe { sys::___tracy_emit_memory_alloc(new_ptr.cast(), new_size) };
+        if running {
+            if !new_ptr.is_null() {
+                // SAFETY: `new_ptr` is the non-null reallocated block of `new_size`
+                // bytes.
+                unsafe { sys::___tracy_emit_memory_alloc(new_ptr.cast(), new_size) };
+            } else if !ptr.is_null() {
+                // SAFETY: the realloc failed, so `ptr` is still the caller's live
+                // block of `layout.size()` bytes; this undoes the free reported
+                // above.
+                unsafe { sys::___tracy_emit_memory_alloc(ptr.cast(), layout.size()) };
+            }
         }
         new_ptr
     }

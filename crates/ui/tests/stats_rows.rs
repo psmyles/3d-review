@@ -158,3 +158,56 @@ fn clicking_a_stats_row_copies_it() {
         "a copied row should read as `label: value`, got: {copied}"
     );
 }
+
+impl Harness {
+    /// Settle the card, click the row under [`over_row_text`], and return what
+    /// that click copied.
+    fn copy_row(&mut self) -> String {
+        for _ in 0..3 {
+            self.pass(0.05, Vec::new());
+        }
+        let pos = over_row_text(self.card());
+        let button = |pressed| Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        self.copied.clear();
+        self.pass(0.0, vec![Event::PointerMoved(pos)]);
+        self.pass(0.05, vec![button(true)]);
+        self.pass(0.05, vec![button(false)]);
+        // Far enough apart that the next click is not a double-click.
+        self.pass(1.0, Vec::new());
+        assert_eq!(self.copied.len(), 1, "one click copies one row");
+        self.copied.remove(0)
+    }
+}
+
+/// Until the per-draw-group table lands, the Sel and Vis columns have nothing to
+/// sum. They used to sum an empty table anyway and print "0" under Vis for
+/// Draws / Polys / Tris — a count no scope measured (invariant 5) — for the
+/// seconds a large load spends measuring it. They stay blank instead, and fill
+/// in the moment the table arrives.
+///
+/// Read through what a click copies, which carries exactly the columns that hold
+/// a value: with nothing selected, a measured row copies its All and Vis cells,
+/// and a row still waiting copies All alone.
+#[test]
+fn the_scoped_columns_wait_for_the_draw_group_table() {
+    let mut harness = Harness::new();
+    let before = harness.copy_row();
+    assert!(
+        !before.contains(", "),
+        "before the draw-group table, only the All column holds a value; copied: {before}"
+    );
+
+    let groups = harness.model.mesh_group_stats();
+    harness.state.set_mesh_group_stats(groups);
+    let after = harness.copy_row();
+    assert!(
+        after.contains(", "),
+        "once the table has landed, the Vis column holds a measured value too; \
+         copied: {after}"
+    );
+}

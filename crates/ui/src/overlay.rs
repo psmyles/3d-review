@@ -1,6 +1,7 @@
-//! Top-level overlay orchestration: assembles the viewport scene callback and
-//! the egui chrome (toolbar, option panel, gizmo, stats, status bar) each frame,
-//! and returns the [`UiOutput`] intents for `app` to apply.
+//! Top-level overlay orchestration: lays the egui chrome (toolbar, side panels,
+//! option windows, gizmo, stats, status bar) out each frame over the scene the
+//! renderer has already drawn into it, and returns the [`UiOutput`] intents for
+//! `app` to apply.
 
 use review_model::{ModelData, SceneBvh};
 use review_render::{OrbitCamera, Selection};
@@ -87,8 +88,9 @@ pub fn draw_overlay(
     // Re-scoped before the panels rather than after: the Inspector's multi-part
     // summary states these same sums, and measuring them after it had drawn
     // would leave it one frame behind the selection it describes. The call is
-    // cached against the selection + hidden set, so the second one below is a
-    // lookup (invariant 6 — nothing O(mesh) per frame).
+    // cached against the selection + hidden set, so it is a lookup on every
+    // frame the two have not moved (invariant 6 — nothing O(mesh) per frame).
+    // `None` until the per-draw-group table has landed.
     let scoped = state.scoped_stats(model);
 
     // Outliner (left) + Inspector (right) dockable side panels, in every
@@ -230,7 +232,8 @@ pub fn draw_overlay(
     output
 }
 
-/// The line between the Opt split's two views. Drawn on egui's background layer
+/// The line between a split's two views — Opt's source and processed meshes, or
+/// Aud's model and its UV layout. Drawn on egui's background layer
 /// (so the stats cards and option windows still float over it) in the same
 /// hairline the chrome panels are edged with, so the divider reads as part of
 /// the frame rather than as something in the scene.
@@ -250,7 +253,8 @@ fn draw_split_divider(ctx: &egui::Context, state: &UiState, viewport: egui::Rect
     );
 }
 
-/// The two rects the Opt split lays its views out in. The renderer halves the same
+/// The two rects a split lays its views out in — the Opt split's two meshes, or the
+/// Aud split's model and UV layout. The renderer halves the same
 /// rect the same way (`SceneViewport`), so these are where its two composites
 /// actually land — which is what lets the divider sit on the seam, the dimension
 /// labels project into the half they belong to, and `app` route the pointer and
@@ -264,7 +268,8 @@ pub fn split_halves(viewport: egui::Rect) -> (egui::Rect, egui::Rect) {
 }
 
 /// The labelled views this frame: normally one over the whole viewport, but two in
-/// the Opt split — each with its own mesh, camera and half of the screen.
+/// the Opt split — each with its own mesh, camera and half of the screen — and one
+/// over the left half in the Aud split, whose right half is a UV layout.
 ///
 /// `screen` is the whole window, which is what a single view's clip space maps onto
 /// (the renderer draws the scene over the full backbuffer and the chrome paints on
@@ -330,6 +335,26 @@ fn dimension_views<'a>(
         .collect();
     }
 
+    // The Aud split draws the model into the left half alone — the right half is the
+    // focused finding's UV layout, which has no box to label — through a camera the
+    // renderer re-aspects for that half, exactly as one half of the Opt split. Projected
+    // through the whole window instead, the labels spread out from the box they name
+    // and land over the UV view.
+    if state.mode == WorkspaceMode::Aud && state.aud.split() {
+        let (left, _) = split_halves(viewport);
+        return source_bounds
+            .map(|bounds| DimensionView {
+                camera: half_camera(camera, left),
+                model,
+                bvh,
+                bounds,
+                image: left,
+                clamp: left,
+            })
+            .into_iter()
+            .collect();
+    }
+
     // One view. In the overlay layout both meshes share the space, so the labels
     // describe whichever reads as solid — otherwise a swapped overlay measures the
     // mesh underneath the one you can see. Its two cameras are synced, so either
@@ -353,7 +378,7 @@ fn dimension_views<'a>(
         .collect()
 }
 
-/// `camera` re-aspected for one half of the Opt split. Each view is half as wide as
+/// `camera` re-aspected for one half of a split. Each view is half as wide as
 /// the area it draws into, and the renderer corrects for that on its side; a label
 /// projected through the uncorrected camera would drift horizontally from the box it
 /// belongs to.
@@ -364,11 +389,6 @@ fn half_camera(mut camera: OrbitCamera, half: egui::Rect) -> OrbitCamera {
     camera
 }
 
-/// Draw every open tool option panel as its own native `egui::Window`
-/// (resizable, collapsible, closable, drop-shadowed — egui owns each window's
-/// position/size/collapsed state in memory, constrained to `viewport` so they
-/// stay inside the free scene area, and several can be open at once). A window's
-/// title-bar X clears it from [`UiState::panels_open`].
 /// The frame every option window shares. Extracted from [`draw_option_panels`] so
 /// the size test below measures the window the overlay actually builds — a test
 /// that rebuilt this by hand would keep passing after this lost a call.
@@ -403,6 +423,12 @@ fn option_window<'open>(panel: OptionPanel, style: &egui::Style) -> egui::Window
         .fade_out(false)
 }
 
+/// Draw every open tool option panel as its own native `egui::Window`
+/// (collapsible, closable, drop-shadowed, and sized by its body rather than
+/// resizable — see [`option_window`]). egui owns each window's position and
+/// collapsed state in memory, constrained to `viewport` so they stay inside the
+/// free scene area, and several can be open at once. A window's title-bar X
+/// clears it from [`UiState::panels_open`].
 fn draw_option_panels(ctx: &egui::Context, state: &mut UiState, viewport: egui::Rect) {
     let style = ctx.global_style();
     for (slot, panel) in OptionPanel::ALL.into_iter().enumerate() {
@@ -605,7 +631,7 @@ fn pinned_to_panel_width<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -
 fn draw_stats_overlay(
     ctx: &egui::Context,
     state: &UiState,
-    scoped: ScopedStats,
+    scoped: Option<ScopedStats>,
     status_bar_height: f32,
     left_inset: f32,
     right_inset: f32,
@@ -1077,6 +1103,64 @@ mod tests {
                 "{mode:?}: tab height differs"
             );
         }
+    }
+
+    /// The Aud split draws the model into the left half only, through a camera
+    /// re-aspected for it, so that is where its dimension labels must project.
+    /// They used to be projected through the whole window, landing away from the
+    /// box and over the UV view.
+    #[test]
+    fn the_aud_split_labels_its_model_half() {
+        let model = review_model::demo_cube_model();
+        let rule = review_audit::RuleId::ALL
+            .iter()
+            .copied()
+            .find(|rule| rule.is_uv())
+            .expect("a UV rule to focus");
+        let mut state = UiState {
+            mode: WorkspaceMode::Aud,
+            bounds: model.bounds,
+            ..UiState::default()
+        };
+        state.debug.show_bounding_box = true;
+        state.aud.view = Some(review_audit::DiagnosticView::Issues);
+        state.aud.focus = Some(crate::aud_state::AuditFocus::Rule(rule));
+        assert!(state.aud.split(), "the fixture must split the viewport");
+
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0));
+        let viewport = egui::Rect::from_min_max(egui::pos2(300.0, 40.0), egui::pos2(1300.0, 870.0));
+        let views = dimension_views(
+            &mut state,
+            OrbitCamera::default(),
+            &model,
+            None,
+            None,
+            screen,
+            viewport,
+        );
+        let (left, _) = split_halves(viewport);
+        assert_eq!(views.len(), 1, "one labelled view: the model half");
+        let view = &views[0];
+        assert_eq!(view.image, left, "projected into the wrong rect");
+        assert_eq!(view.clamp, left, "labels may spill over the UV half");
+        assert!(
+            (view.camera.aspect_ratio - left.width() / left.height()).abs() < 1e-5,
+            "the camera is not re-aspected for its half"
+        );
+
+        // Not split: one view over the whole window, as before.
+        state.aud.focus = None;
+        let views = dimension_views(
+            &mut state,
+            OrbitCamera::default(),
+            &model,
+            None,
+            None,
+            screen,
+            viewport,
+        );
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].image, screen);
     }
 
     /// A collapsed option window's frame must surround its title bar.

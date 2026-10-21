@@ -240,8 +240,29 @@ impl App {
         // tens of seconds per slider nudge.
         opt.generation.fetch_add(1, Ordering::Relaxed);
         opt.dirty = true;
+        // Whichever run answers this one reads the capture as it stands then,
+        // so a capture that landed is no longer owed a run of its own.
+        opt.capture_owed = false;
         if opt.in_flight.is_none() {
             self.spawn_process();
+        }
+    }
+
+    /// The source-property capture has landed for the model on screen.
+    ///
+    /// A run started before it — the one a load starts at once in the
+    /// workspace, or entering the workspace right after a load — had no
+    /// polygons, extra skin layers or colour sets to carry, so its levels lose
+    /// all of them on export. It is run again, now with the capture: at once
+    /// in the workspace (`sync_opt` reads the flag on the next frame), or on
+    /// the way back into it.
+    pub(crate) fn opt_capture_landed(&mut self) {
+        let Some(opt) = self.opt.as_mut() else {
+            return;
+        };
+        if opt.ran_without_capture {
+            opt.capture_owed = true;
+            self.request_redraw();
         }
     }
 
@@ -264,6 +285,9 @@ impl App {
             opt.processed = None;
             opt.level_bvhs.clear();
             opt.covers_revision = stack_revision;
+            // Nothing ran, so nothing is owed a rerun when the capture lands.
+            opt.ran_without_capture = false;
+            opt.capture_owed = false;
             self.ui.opt.result = None;
             self.ui.opt.active_lod = 0;
             // Free the processed mesh's GPU buffers rather than leave them
@@ -286,6 +310,8 @@ impl App {
             if let Some(opt) = self.opt.as_mut() {
                 opt.dirty = false;
                 opt.covers_revision = stack_revision;
+                opt.ran_without_capture = false;
+                opt.capture_owed = false;
             }
             return;
         };
@@ -300,6 +326,10 @@ impl App {
         opt.covers_revision = stack_revision;
         opt.started_at = Some(Instant::now());
         opt.last_progress = None;
+        // A load starts its run before the capture is marshaled, so this is
+        // the common case right after one; `opt_capture_landed` runs it again.
+        opt.ran_without_capture = extras.is_none();
+        opt.capture_owed = false;
 
         // The renderer's own vertex size, so the reported overfetch describes the
         // buffer the GPU actually reads rather than the optimizer's intermediate
@@ -399,6 +429,8 @@ impl App {
             if let Some(opt) = self.opt.as_mut() {
                 opt.in_flight = None;
                 opt.started_at = None;
+                // Nothing ran, so a capture landing later owes no rerun either.
+                opt.ran_without_capture = false;
             }
             self.notifications.error(
                 review_localization::tr(keys::app_notifications::OPT_START_FAILED).into_owned(),
@@ -414,9 +446,11 @@ impl App {
         opt.in_flight = None;
         opt.started_at = None;
         opt.last_progress = None;
-        // Whatever this run was showing is superseded by what it produced —
-        // including when it produced an error, where the source alone is the
-        // honest thing to draw.
+        // Whatever this run was showing is superseded by what it produced, and
+        // when it produced nothing — an error, or a cancel — by the last run
+        // that finished, which is what the stats card still describes. The
+        // preview's revision goes with it, so the renderer uploads the level
+        // drawn in its place rather than keep the abandoned mesh on screen.
         opt.preview = None;
         // An edit that arrived mid-run is already marked, and it is what decides
         // whether the card comes down: a drag now *cancels* each run rather than
@@ -500,17 +534,25 @@ impl App {
     /// notice carry on exactly as they would have. A preview from a superseded
     /// run is dropped, as its result would be.
     pub(crate) fn handle_opt_previewed(&mut self, message: OptPreviewed) {
-        let revision = self.next_model_revision();
-        let Some(opt) = self.opt.as_mut() else {
-            return;
-        };
-        if message.generation != opt.generation.load(Ordering::Relaxed) {
+        let current = self
+            .opt
+            .as_ref()
+            .is_some_and(|opt| message.generation == opt.generation.load(Ordering::Relaxed));
+        if !current {
             return;
         }
-        opt.preview = Some((message.generation, Arc::new(message.model)));
         // The renderer caches its mesh buffers by revision, so a fresh one is
-        // what makes the new mesh reach the GPU.
-        opt.processed_revision = revision;
+        // what makes the new mesh reach the GPU. The preview's own: the finished
+        // level keeps its number, so a preview drawn over level 0 costs a level
+        // shown elsewhere nothing, and letting the preview go uploads what
+        // replaces it.
+        let revision = self.next_model_revision();
+        if let Some(opt) = self.opt.as_mut() {
+            opt.preview = Some(OptPreviewMesh {
+                model: Arc::new(message.model),
+                revision,
+            });
+        }
         self.request_redraw();
     }
 
@@ -570,9 +612,11 @@ impl App {
         if let Some(opt) = self.opt.as_mut() {
             opt.processed = Some(Arc::new(result));
             opt.level_bvhs = level_bvhs;
-            opt.processed_revision = revision;
+            opt.level_revision = revision;
             opt.revision_level = level;
             opt.covers_revision = stack_revision;
+            // Its generation is current, so it is the newest run's result.
+            opt.processed_without_capture = opt.ran_without_capture;
         }
 
         // Warnings describe a *condition* of the mesh and the stack (skinning
@@ -619,12 +663,15 @@ impl App {
         self.redraw.requested = true;
     }
 
-    /// The processed mesh to draw, and its revision — `None` when there is no
+    /// The revision of the processed mesh to draw — `None` when there is no
     /// result yet, so the workspace falls back to the source mesh.
     ///
-    /// Switching levels re-issues the revision: the renderer caches its mesh
-    /// buffers by revision alone, so reusing one across two different meshes
-    /// would leave the previous level's geometry on screen.
+    /// Every distinct mesh is drawn under a revision of its own, and keeps it:
+    /// the renderer caches its mesh buffers by revision alone, so reusing one
+    /// across two different meshes would leave the previous one's geometry on
+    /// screen, and re-issuing one for an unchanged mesh re-uploads it and
+    /// restarts the ambient occlusion's convergence for nothing. Switching levels
+    /// re-issues the finished level's; a preview carries its own.
     pub(crate) fn opt_processed_revision(&mut self) -> Option<u64> {
         let level = self.ui.opt.active_lod;
         let stale = self
@@ -634,14 +681,118 @@ impl App {
         if stale {
             let revision = self.next_model_revision();
             if let Some(opt) = self.opt.as_mut() {
-                opt.processed_revision = revision;
+                opt.level_revision = revision;
                 opt.revision_level = level;
             }
         }
-        self.opt.as_ref().and_then(|opt| {
-            opt.level_model(level)
-                .is_some()
-                .then_some(opt.processed_revision)
+        self.opt.as_ref().and_then(|opt| opt.drawn_revision(level))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use review_model::ModelData;
+    use review_optimize::{ProcessedLod, ProcessedResult};
+
+    use super::super::{OptPreviewMesh, OptSubsystem};
+
+    /// A finished result with `levels` levels; their meshes are empty, which is
+    /// all the revision bookkeeping looks at.
+    fn result(levels: usize) -> ProcessedResult {
+        ProcessedResult {
+            lods: (0..levels)
+                .map(|level| ProcessedLod {
+                    level,
+                    model: ModelData::default(),
+                    metrics: Default::default(),
+                    carry: Default::default(),
+                })
+                .collect(),
+            source: Default::default(),
+            source_metrics: Default::default(),
+            warnings: Vec::new(),
+            elapsed: Default::default(),
+        }
+    }
+
+    fn preview(revision: u64) -> Option<OptPreviewMesh> {
+        Some(OptPreviewMesh {
+            model: Arc::new(ModelData::default()),
+            revision,
         })
+    }
+
+    /// A run that is cancelled or fails drops its preview, and the finished
+    /// level drawn in its place must not inherit the preview's revision: the
+    /// renderer would read the number as the mesh it already holds and leave the
+    /// abandoned preview on screen.
+    #[test]
+    fn a_dropped_preview_takes_its_revision_with_it() {
+        let mut opt = OptSubsystem {
+            processed: Some(Arc::new(result(1))),
+            level_revision: 5,
+            revision_level: 0,
+            ..Default::default()
+        };
+        assert_eq!(opt.drawn_revision(0), Some(5));
+        opt.preview = preview(9);
+        assert_eq!(
+            opt.drawn_revision(0),
+            Some(9),
+            "the preview is what is drawn"
+        );
+        opt.preview = None;
+        assert_eq!(
+            opt.drawn_revision(0),
+            Some(5),
+            "the finished level is drawn under its own number again"
+        );
+    }
+
+    /// A preview stands in for level 0 only, so a simplified level on screen
+    /// keeps its revision — and its uploaded buffers — however many previews
+    /// arrive.
+    #[test]
+    fn a_preview_leaves_another_levels_revision_alone() {
+        let opt = OptSubsystem {
+            processed: Some(Arc::new(result(2))),
+            level_revision: 5,
+            revision_level: 1,
+            preview: preview(9),
+            ..Default::default()
+        };
+        assert_eq!(opt.drawn_revision(1), Some(5));
+        assert!(opt.level_mesh(1).is_none());
+    }
+
+    /// The index answering a pick or a label is the drawn mesh's own: none
+    /// while a preview stands in, never the finished level's under it.
+    #[test]
+    fn a_preview_has_no_level_index() {
+        let mut opt = OptSubsystem {
+            processed: Some(Arc::new(result(1))),
+            level_bvhs: vec![Arc::new(review_model::SceneBvh::build(
+                &ModelData::default(),
+            ))],
+            preview: preview(9),
+            ..Default::default()
+        };
+        assert!(opt.level_bvh(0).is_none());
+        opt.preview = None;
+        assert!(opt.level_bvh(0).is_some());
+    }
+
+    /// A preview drawn before any run has finished is still drawn under its
+    /// own revision.
+    #[test]
+    fn a_first_preview_is_drawn_before_any_result() {
+        let opt = OptSubsystem {
+            preview: preview(3),
+            ..Default::default()
+        };
+        assert_eq!(opt.drawn_revision(0), Some(3));
+        assert_eq!(OptSubsystem::default().drawn_revision(0), None);
     }
 }

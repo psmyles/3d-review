@@ -32,8 +32,12 @@ muda = { workspace = true, default-features = false }
 # The menu's own labels (invariant 12). macOS-only, like everything else here.
 review-localization.workspace = true
 
-[target.'cfg(target_os = "macos")'.build-dependencies]
-# Generates `keys.rs` for the `menu-` messages into this crate's OUT_DIR.
+[build-dependencies]
+# Generates `keys.rs` for the `menu-` messages into this crate's OUT_DIR. On
+# every host, not only a Mac: Cargo matches a build dependency's platform
+# against the host, and the build script decides from the *target* (see
+# build.rs), so a Mac build checked from Windows needs it too. Every other
+# crate that shows text builds it already, so this costs nothing.
 review-localization-build.workspace = true
 
 [lints]

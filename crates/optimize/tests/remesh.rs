@@ -21,11 +21,11 @@ mod common;
 
 use common::{fixture, run};
 
-/// Every fixture this suite loads.
-const FIXTURES: [&str; 5] = [
+/// Every fixture this suite loads. (An ammo crate was listed here too, though no
+/// test loaded it; it went with the other proprietary models in a9c6db3.)
+const FIXTURES: [&str; 4] = [
     "monkey.fbx",
     "SM_column04.fbx",
-    "SM_Ammo_Crate_01a.fbx",
     "cpg_pedestal_pebbles.fbx",
     "stylized_palm_plant_04.fbx",
 ];

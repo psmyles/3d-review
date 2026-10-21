@@ -156,16 +156,23 @@ pub(super) fn issues_tab(
     }
 
     let mut clicked = None;
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show_rows(ui, size::OUTLINER_ROW_HEIGHT, rows.len(), |ui, range| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            for index in range {
-                if let Some(click) = draw_row(ui, state, &report, model, rows[index], index) {
-                    clicked = Some(click);
+    ui.scope(|ui| {
+        // Rows abut, and `show_rows` takes the row pitch from the spacing of the
+        // `Ui` it is called on, so the spacing is zeroed here rather than inside
+        // the rows: zeroed only there, `show_rows` sized the list and placed its
+        // first visible row on a pitch a spacing taller than the rows are drawn
+        // on, so they jumped as the list scrolled and it ran on past its end.
+        ui.spacing_mut().item_spacing.y = 0.0;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show_rows(ui, size::OUTLINER_ROW_HEIGHT, rows.len(), |ui, range| {
+                for index in range {
+                    if let Some(click) = draw_row(ui, state, &report, model, rows[index], index) {
+                        clicked = Some(click);
+                    }
                 }
-            }
-        });
+            });
+    });
     match clicked {
         Some(Click::Row(row)) => apply_click(state, row),
         Some(Click::Fold(group)) => state.aud.toggle(group),

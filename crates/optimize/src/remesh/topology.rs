@@ -34,6 +34,8 @@
 use crate::cancel::{CancelToken, cancelled};
 use crate::parallel;
 
+use super::union_find::UnionFind;
+
 /// One undirected edge as seen from a vertex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EdgeAt {
@@ -90,7 +92,9 @@ pub(crate) struct Topology {
     /// Per vertex: on a branching edge, or its faces form more than one fan.
     /// Treated as a feature everywhere downstream — never collapsed into, always
     /// a survivor — so the rebuilt surface keeps a vertex where the input
-    /// branched instead of inventing a third face on an edge.
+    /// branched instead of inventing a third face on an edge. [`super::features`]
+    /// is what makes that so: a branching edge is a feature edge, and a vertex
+    /// with no such edge but several fans is held as a corner of its own.
     pub(crate) nonmanifold: Vec<bool>,
     /// Connected component per vertex; `u32::MAX` for a vertex no face uses.
     pub(crate) component: Vec<u32>,
@@ -187,26 +191,154 @@ impl Topology {
     /// (one per thread): a sweep over five million vertices must not allocate
     /// five million times.
     pub(crate) fn edges_at(&self, indices: &[u32], vertex: u32, scratch: &mut Vec<EdgeAt>) {
-        thread_local! {
-            static PARTNERS: std::cell::RefCell<Vec<(u32, u32)>> =
-                const { std::cell::RefCell::new(Vec::new()) };
-        }
-        PARTNERS.with_borrow_mut(|partners| self.edges_at_with(indices, vertex, scratch, partners));
+        edges_among(indices, vertex, self.faces_of(vertex), scratch);
     }
 
-    fn edges_at_with(
+    /// `V - E + F` over the referenced vertices. Two for a sphere, zero for a
+    /// torus, one per component for a disc.
+    ///
+    /// Read by the seed budget, which turns a face count into a vertex count
+    /// through it; the tests below are what prove the index above is right.
+    pub(crate) fn euler(&self) -> i64 {
+        self.referenced as i64 - self.edge_count as i64 + self.face_count as i64
+    }
+
+    /// One sweep over the vertices: boundary, branch and fan flags, and the
+    /// edge totals.
+    fn analyse(&mut self, indices: &[u32], threads: usize) {
+        let mut facts = vec![VertexFacts::default(); self.vertex_count];
+        parallel::sweep(&mut facts, threads, |base, chunk| {
+            let mut edges: Vec<EdgeAt> = Vec::new();
+            // The local fan union-find, reused down the chunk.
+            let mut fans = UnionFind::default();
+            for (offset, slot) in chunk.iter_mut().enumerate() {
+                let vertex = (base + offset) as u32;
+                *slot = self.analyse_vertex(indices, vertex, &mut edges, &mut fans);
+            }
+        });
+
+        // Merged here rather than inside the sweep: these are counts, and
+        // summing them in vertex order is what keeps the totals the same
+        // however the chunks were scheduled.
+        for (vertex, fact) in facts.iter().enumerate() {
+            self.boundary[vertex] = fact.boundary;
+            self.nonmanifold[vertex] = fact.nonmanifold;
+            self.edge_count += fact.owned_edges as usize;
+            self.boundary_edges += fact.owned_boundary as usize;
+            self.nonmanifold_edges += fact.owned_nonmanifold as usize;
+            if fact.nonmanifold {
+                self.nonmanifold_vertices += 1;
+            }
+            if self.is_referenced(vertex as u32) {
+                self.referenced += 1;
+            }
+        }
+    }
+
+    /// One vertex's edges, flags and owned-edge counts.
+    fn analyse_vertex(
         &self,
         indices: &[u32],
         vertex: u32,
-        scratch: &mut Vec<EdgeAt>,
-        partners: &mut Vec<(u32, u32)>,
-    ) {
+        edges: &mut Vec<EdgeAt>,
+        fans: &mut UnionFind,
+    ) -> VertexFacts {
+        let mut facts = VertexFacts::default();
+        let incident = self.faces_of(vertex);
+        if incident.is_empty() {
+            return facts;
+        }
+        self.edges_at(indices, vertex, edges);
+
+        // The fan test, over this vertex's own incident faces: two faces join
+        // when they share an edge *here*. A branching edge is left out of the
+        // join — it is already a defect, and treating it as a link would report
+        // fans as connected that the surface does not connect.
+        fans.reset(incident.len());
+        for edge in edges.iter() {
+            if edge.other > vertex {
+                facts.owned_edges += 1;
+                if edge.is_boundary() {
+                    facts.owned_boundary += 1;
+                }
+                if edge.is_nonmanifold() {
+                    facts.owned_nonmanifold += 1;
+                }
+            }
+            if edge.is_boundary() {
+                facts.boundary = true;
+            }
+            if edge.is_nonmanifold() {
+                facts.nonmanifold = true;
+                continue;
+            }
+            if edge.uses == 2
+                && let (Some(a), Some(b)) = (
+                    incident.iter().position(|&face| face == edge.faces[0]),
+                    incident.iter().position(|&face| face == edge.faces[1]),
+                )
+            {
+                fans.union(a as u32, b as u32);
+            }
+        }
+        let fan_count = (0..incident.len() as u32)
+            .filter(|&slot| fans.find(slot) == slot)
+            .count();
+        if fan_count > 1 {
+            facts.nonmanifold = true;
+        }
+        facts
+    }
+
+    /// Connected components over the faces, by union-find rather than a flood
+    /// fill, so a component's id is a function of the mesh and not of the walk.
+    fn label_components(&mut self, indices: &[u32]) {
+        let mut sets = UnionFind::new(self.vertex_count);
+        for corners in indices.as_chunks::<3>().0 {
+            let [a, b, c] = *corners;
+            if (a as usize) < self.vertex_count
+                && (b as usize) < self.vertex_count
+                && (c as usize) < self.vertex_count
+            {
+                sets.union(a, b);
+                sets.union(a, c);
+            }
+        }
+        // Numbered by first appearance in vertex order, so the labels are
+        // stable across runs and across thread counts.
+        let mut label_of: Vec<u32> = vec![u32::MAX; self.vertex_count];
+        for vertex in 0..self.vertex_count as u32 {
+            if !self.is_referenced(vertex) {
+                continue;
+            }
+            let root = sets.find(vertex) as usize;
+            if label_of[root] == u32::MAX {
+                label_of[root] = self.components;
+                self.components += 1;
+            }
+            self.component[vertex as usize] = label_of[root];
+        }
+    }
+}
+
+/// [`Topology::edges_at`] over an incidence the caller keeps itself: every
+/// undirected edge at `vertex` among `faces`, once each, ascending by far
+/// endpoint.
+///
+/// For a pass that rewrites faces as it goes - the cleanup's edge flips - and
+/// so cannot read a vertex's faces from an index built before it started.
+pub(crate) fn edges_among(indices: &[u32], vertex: u32, faces: &[u32], scratch: &mut Vec<EdgeAt>) {
+    thread_local! {
+        static PARTNERS: std::cell::RefCell<Vec<(u32, u32)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+    PARTNERS.with_borrow_mut(|partners| {
         scratch.clear();
         // Every face corner adjacent to `vertex`, as (far endpoint, face). A
         // vertex of valence n contributes 2n of these, and an interior edge
         // appears twice — once from each of its faces.
         partners.clear();
-        for &face in self.faces_of(vertex) {
+        for &face in faces {
             let corners = &indices[face as usize * 3..face as usize * 3 + 3];
             let Some(at) = corners.iter().position(|&corner| corner == vertex) else {
                 continue;
@@ -235,153 +367,7 @@ impl Topology {
                 scratch.push(EdgeAt { other, uses, faces });
             }
         }
-    }
-
-    /// `V - E + F` over the referenced vertices. Two for a sphere, zero for a
-    /// torus, one per component for a disc.
-    ///
-    /// Read by the seed budget, which turns a face count into a vertex count
-    /// through it; the tests below are what prove the index above is right.
-    pub(crate) fn euler(&self) -> i64 {
-        self.referenced as i64 - self.edge_count as i64 + self.face_count as i64
-    }
-
-    /// One sweep over the vertices: boundary, branch and fan flags, and the
-    /// edge totals.
-    fn analyse(&mut self, indices: &[u32], threads: usize) {
-        let mut facts = vec![VertexFacts::default(); self.vertex_count];
-        parallel::sweep(&mut facts, threads, |base, chunk| {
-            let mut edges: Vec<EdgeAt> = Vec::new();
-            // The local fan union-find, reused down the chunk.
-            let mut parent: Vec<u32> = Vec::new();
-            for (offset, slot) in chunk.iter_mut().enumerate() {
-                let vertex = (base + offset) as u32;
-                *slot = self.analyse_vertex(indices, vertex, &mut edges, &mut parent);
-            }
-        });
-
-        // Merged here rather than inside the sweep: these are counts, and
-        // summing them in vertex order is what keeps the totals the same
-        // however the chunks were scheduled.
-        for (vertex, fact) in facts.iter().enumerate() {
-            self.boundary[vertex] = fact.boundary;
-            self.nonmanifold[vertex] = fact.nonmanifold;
-            self.edge_count += fact.owned_edges as usize;
-            self.boundary_edges += fact.owned_boundary as usize;
-            self.nonmanifold_edges += fact.owned_nonmanifold as usize;
-            if fact.nonmanifold {
-                self.nonmanifold_vertices += 1;
-            }
-            if self.is_referenced(vertex as u32) {
-                self.referenced += 1;
-            }
-        }
-    }
-
-    /// One vertex's edges, flags and owned-edge counts.
-    fn analyse_vertex(
-        &self,
-        indices: &[u32],
-        vertex: u32,
-        edges: &mut Vec<EdgeAt>,
-        parent: &mut Vec<u32>,
-    ) -> VertexFacts {
-        let mut facts = VertexFacts::default();
-        let incident = self.faces_of(vertex);
-        if incident.is_empty() {
-            return facts;
-        }
-        self.edges_at(indices, vertex, edges);
-
-        // The fan test, over this vertex's own incident faces: two faces join
-        // when they share an edge *here*. A branching edge is left out of the
-        // join — it is already a defect, and treating it as a link would report
-        // fans as connected that the surface does not connect.
-        parent.clear();
-        parent.extend(0..incident.len() as u32);
-        for edge in edges.iter() {
-            if edge.other > vertex {
-                facts.owned_edges += 1;
-                if edge.is_boundary() {
-                    facts.owned_boundary += 1;
-                }
-                if edge.is_nonmanifold() {
-                    facts.owned_nonmanifold += 1;
-                }
-            }
-            if edge.is_boundary() {
-                facts.boundary = true;
-            }
-            if edge.is_nonmanifold() {
-                facts.nonmanifold = true;
-                continue;
-            }
-            if edge.uses == 2
-                && let (Some(a), Some(b)) = (
-                    incident.iter().position(|&face| face == edge.faces[0]),
-                    incident.iter().position(|&face| face == edge.faces[1]),
-                )
-            {
-                union(parent, a as u32, b as u32);
-            }
-        }
-        let fans = (0..incident.len() as u32)
-            .filter(|&slot| find(parent, slot) == slot)
-            .count();
-        if fans > 1 {
-            facts.nonmanifold = true;
-        }
-        facts
-    }
-
-    /// Connected components over the faces, by union-find rather than a flood
-    /// fill, so a component's id is a function of the mesh and not of the walk.
-    fn label_components(&mut self, indices: &[u32]) {
-        let mut parent: Vec<u32> = (0..self.vertex_count as u32).collect();
-        for corners in indices.as_chunks::<3>().0 {
-            let [a, b, c] = *corners;
-            if (a as usize) < self.vertex_count
-                && (b as usize) < self.vertex_count
-                && (c as usize) < self.vertex_count
-            {
-                union(&mut parent, a, b);
-                union(&mut parent, a, c);
-            }
-        }
-        // Numbered by first appearance in vertex order, so the labels are
-        // stable across runs and across thread counts.
-        let mut label_of: Vec<u32> = vec![u32::MAX; self.vertex_count];
-        for vertex in 0..self.vertex_count as u32 {
-            if !self.is_referenced(vertex) {
-                continue;
-            }
-            let root = find(&mut parent, vertex) as usize;
-            if label_of[root] == u32::MAX {
-                label_of[root] = self.components;
-                self.components += 1;
-            }
-            self.component[vertex as usize] = label_of[root];
-        }
-    }
-}
-
-/// Union-find with path halving, the same shape `project::build_regions` uses.
-fn find(parent: &mut [u32], mut node: u32) -> u32 {
-    while parent[node as usize] != node {
-        parent[node as usize] = parent[parent[node as usize] as usize];
-        node = parent[node as usize];
-    }
-    node
-}
-
-fn union(parent: &mut [u32], a: u32, b: u32) {
-    let (a, b) = (find(parent, a), find(parent, b));
-    if a != b {
-        // Lower root wins, so the result does not depend on the order the
-        // caller happened to visit the pair in.
-        let (low, high) = if a < b { (a, b) } else { (b, a) };
-        parent[high as usize] = low;
-    }
+    });
 }
 
 #[cfg(test)]

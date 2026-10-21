@@ -18,9 +18,11 @@
 use glam::Vec3;
 
 use crate::Warnings;
+use crate::cancel::{CancelToken, cancelled};
 use crate::meshopt::{self, SimplifyAttributes, options};
 use crate::notice::OptWarning;
 use crate::remesh::proxy::Proxy;
+use crate::remesh::weld;
 use crate::stack::{ShrinkwrapParams, VoxelTarget};
 
 use super::mc::Surface;
@@ -38,12 +40,18 @@ const VOXEL_GUARD_FLOOR: u32 = 16;
 const MIN_TARGET_TRIANGLES: usize = 12;
 
 /// Remesh the proxy into a welded shell, and the resolution it actually ran at.
-/// `None` (with a warning) when the library refused.
+/// `None` when the library refused (with a warning) or the run was cancelled
+/// (without one).
+///
+/// Each library call is one uninterruptible pass, the remesh itself most of
+/// the time a wrap takes, so a cancel is looked for between them: before each
+/// memory-guard probe, before the remesh, and before the weld.
 pub(super) fn extract(
     proxy: &Proxy,
     params: &ShrinkwrapParams,
     name: &str,
     warnings: &mut Warnings,
+    cancel: Option<&CancelToken>,
 ) -> Option<(Surface, u32)> {
     let _z = crate::prof::zone!("Voxel Remesh");
     let mut flags = 0;
@@ -82,6 +90,9 @@ pub(super) fn extract(
         }
     };
     while bound > VOXEL_MAX_TRIANGLES && resolution > VOXEL_GUARD_FLOOR {
+        if cancelled(cancel) {
+            return None;
+        }
         resolution = (resolution / 2).max(VOXEL_GUARD_FLOOR);
         bound = match bound_at(resolution) {
             Ok(bound) => bound,
@@ -99,6 +110,9 @@ pub(super) fn extract(
         });
     }
 
+    if cancelled(cancel) {
+        return None;
+    }
     let soup = match meshopt::remesh(
         &proxy.indices,
         &proxy.positions,
@@ -113,6 +127,9 @@ pub(super) fn extract(
             return None;
         }
     };
+    if cancelled(cancel) {
+        return None;
+    }
     Some((weld_soup(&soup), resolution))
 }
 
@@ -123,11 +140,14 @@ fn weld_soup(soup: &[f32]) -> Surface {
     if corners < 3 {
         return Surface::default();
     }
-    // Exact bits, with -0 folded onto +0 so the two spellings of one point merge.
+    // The weld every rebuild stage shares (`-0` folded onto `+0` with it), as
+    // the byte key meshoptimizer's remap hashes: a soup is millions of corners,
+    // and the library's table is faster than a map over them.
     let mut key = Vec::with_capacity(corners * 12);
-    for value in soup {
-        let value = if *value == 0.0 { 0.0f32 } else { *value };
-        key.extend_from_slice(&value.to_bits().to_ne_bytes());
+    for point in soup.as_chunks::<3>().0 {
+        for bits in weld::position_key(Vec3::from_array(*point)) {
+            key.extend_from_slice(&bits.to_ne_bytes());
+        }
     }
     let identity: Vec<u32> = (0..corners as u32).collect();
     let Ok((remap, unique)) = meshopt::generate_vertex_remap(&identity, &key, corners, 12) else {

@@ -49,13 +49,16 @@ impl TexturePoolEntry {
     }
 
     /// Uppercased source-file format label from the extension (e.g. `PNG`, `TGA`),
-    /// or `—` when the path carries none. Shown in the Tex viewport's stats panel.
+    /// or, when the path carries none, the stats card's own mark for a value with
+    /// nothing to report. Shown in the Tex viewport's stats panel.
     pub fn format_label(&self) -> String {
         self.path
             .extension()
             .and_then(|ext| ext.to_str())
             .map(|ext| ext.to_ascii_uppercase())
-            .unwrap_or_else(|| "-".to_owned())
+            .unwrap_or_else(|| {
+                review_localization::tr(crate::keys::ui_stats::UNMEASURED).into_owned()
+            })
     }
 }
 
@@ -234,7 +237,7 @@ pub enum TextureIntent {
     /// A property's dropdown was set back to "select texture": revert that slot to
     /// the shader's neutral fallback.
     Clear(TextureSlotRef),
-    /// A pooled texture's remove (✕) was clicked: drop it from the pool and unbind
-    /// every material slot that referenced it.
+    /// A pooled texture's remove button was clicked: drop it from the pool and
+    /// unbind every material slot that referenced it.
     Remove(PathBuf),
 }

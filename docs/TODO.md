@@ -4,6 +4,3 @@
 - generate colliders?
 - UV view during opt mode?
 - viewport presets
-- adjust LOD default error limit
-- show audit viewport controls in opt workspace as well
-- audit part list inspector buttons are not full width

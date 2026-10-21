@@ -124,13 +124,22 @@ impl AudUiState {
         self.profile_revision = self.profile_revision.saturating_add(1);
     }
 
-    /// Drop everything that describes the outgoing model: its report and the
-    /// focus into it. The profile and the list's presentation stay.
+    /// Drop everything that describes the outgoing model: its report, the focus
+    /// into it, and the groups folded under its objects. The profile and the
+    /// list's presentation stay — a category or a check folded away is a choice
+    /// about the list, and means the same over any model.
+    ///
+    /// An object group is keyed on a node index, which on the incoming model
+    /// names some other object, so keeping its fold would start that object the
+    /// wrong way round. The scene-wide group (`Object(None)`) names no node and
+    /// stays with the rest.
     pub fn reset_for_new_model(&mut self) {
         self.report = None;
         self.running = false;
         self.focus = None;
         self.view = None;
+        self.toggled
+            .retain(|group| !matches!(group, IssueGroup::Object(Some(_))));
     }
 
     /// Whether the active adapter can draw `view` (invariant 4): the overdraw
@@ -180,4 +189,30 @@ pub enum AuditIntent {
     SaveReport,
     /// The chrome put the summary on the clipboard; `app` says so.
     SummaryCopied,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fold on an object is a fold on a node index, which the next model
+    /// gives to something else; folds on categories and checks carry over.
+    #[test]
+    fn a_new_model_keeps_the_list_folds_but_not_the_object_ones() {
+        let mut aud = AudUiState::default();
+        let category = IssueGroup::Category(Category::ALL[0]);
+        let rule = IssueGroup::Rule(RuleId::NonManifoldEdges);
+        let object = IssueGroup::Object(Some(3));
+        let scene_wide = IssueGroup::Object(None);
+        for group in [category, rule, object, scene_wide] {
+            aud.toggle(group);
+        }
+        assert!(!aud.is_open(object));
+
+        aud.reset_for_new_model();
+        assert!(aud.is_open(object), "object 3 starts open on the new model");
+        assert!(!aud.is_open(category));
+        assert!(aud.is_open(rule), "a check's list stays opened");
+        assert!(!aud.is_open(scene_wide));
+    }
 }

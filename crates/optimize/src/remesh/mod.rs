@@ -39,18 +39,24 @@
 //! position-only mesh it runs over, `preview` the cheap mesh shown while it
 //! converges, `project` is the attribute transfer, and `layout` the
 //! canonicalization plus the corner-run expansion `process::assemble` uses.
+//! `nodes` is the per-object plumbing this shares with [`crate::shrinkwrap`],
+//! and `weld` and `union_find` the two small identities both lean on.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use glam::{Vec3, Vec4};
 use review_model::{ModelData, Vertex};
 
+use crate::cancel::{CancelToken, cancelled};
 use crate::notice::OptWarning;
 use crate::stack::{
     NormalParams, OpInstance, OpKind, RemeshDensity, RemeshParams, RemeshTopology, WeldParams,
 };
 use crate::submesh::{NO_FACE, PolygonCarry, Submesh};
 use crate::{OptError, Warnings, ops};
+
+use nodes::{NodeOutcome, Outcomes, ThreadBudget};
 
 pub(crate) mod cleanup;
 pub(crate) mod collapse;
@@ -59,6 +65,7 @@ pub(crate) mod features;
 pub(crate) mod geom;
 pub(crate) mod layout;
 pub(crate) mod lloyd;
+pub(crate) mod nodes;
 pub(crate) mod partition;
 pub(crate) mod preview;
 pub(crate) mod project;
@@ -70,8 +77,10 @@ pub(crate) mod size_field;
 pub(crate) mod solve;
 pub(crate) mod surface;
 pub(crate) mod topology;
+pub(crate) mod union_find;
+pub(crate) mod weld;
 
-pub(crate) use project::{ProjectionSource, Winding};
+pub(crate) use project::ProjectionSource;
 
 /// Whether this build can remesh at all.
 ///
@@ -92,13 +101,6 @@ const MIN_FACES: u32 = 4;
 /// triangles carries no surface to partition, and the result would be worse
 /// than what is already there.
 const MIN_INPUT_TRIANGLES: usize = 16;
-
-/// How far from a new corner the source surface may be and still be projected
-/// from, as a multiple of the proxy's bounding-sphere radius. Generous on
-/// purpose: the retopologized surface sits within a fraction of an edge length
-/// of the original, so this only ever rejects a corner the rebuild put
-/// somewhere impossible.
-const PROJECTION_RANGE: f32 = 0.25;
 
 /// How much the faces around a vertex must agree on a direction before that
 /// direction may overrule a projected shading normal. See
@@ -170,6 +172,12 @@ impl RemeshOutput {
                 index: corner,
                 vertex_count: self.positions.len(),
             });
+        }
+        // A corner with no position cannot be found on the source surface,
+        // so it would come back from the projection as a face with nowhere to
+        // be - better refused here, naming what is wrong.
+        if self.positions.iter().any(|position| !position.is_finite()) {
+            return Err(OptError::NonFiniteStream);
         }
         Ok(())
     }
@@ -267,26 +275,15 @@ pub(crate) fn remesh_submeshes(
     let OpKind::Remesh(global) = &op.kind else {
         return;
     };
-    // Nodes in first-seen order, so the output's piece order follows the input's
-    // and two runs over the same stack produce the same buffer layout.
-    let mut seen = std::collections::HashSet::new();
-    let nodes: Vec<u32> = submeshes
-        .iter()
-        .map(|piece| piece.node)
-        .filter(|&node| seen.insert(node))
-        .collect();
 
-    let mut budget_inputs: Vec<BudgetInput> = Vec::new();
-    let mut proxies: HashMap<u32, proxy::Proxy> = HashMap::new();
-    for &node in &nodes {
+    // Everything each solve needs, gathered before any of them starts: the
+    // parallel pass below borrows `submeshes` immutably, and the splice at the
+    // end needs it back. A node that cannot be rebuilt is filtered out here
+    // rather than inside a worker, so the warning for it is raised in stack
+    // order.
+    let mut eligible: Vec<(BudgetInput, Vec<&Submesh>, proxy::Proxy)> = Vec::new();
+    for (node, pieces) in nodes::pieces_by_node(submeshes) {
         if crate::process::is_excluded(stack, node) {
-            continue;
-        }
-        let pieces: Vec<&Submesh> = submeshes
-            .iter()
-            .filter(|piece| piece.node == node && !piece.is_empty())
-            .collect();
-        if pieces.is_empty() {
             continue;
         }
         if pieces.iter().any(|piece| piece.has_rows()) {
@@ -310,47 +307,39 @@ pub(crate) fn remesh_submeshes(
             });
             continue;
         }
-        budget_inputs.push(BudgetInput {
-            node,
-            triangles: proxy.source_triangles,
-            area: proxy.area,
-            params,
-            overridden: !std::ptr::eq(resolved, &op.kind),
-        });
-        proxies.insert(node, proxy);
+        eligible.push((
+            BudgetInput {
+                node,
+                triangles: proxy.source_triangles,
+                area: proxy.area,
+                params,
+                overridden: !std::ptr::eq(resolved, &op.kind),
+            },
+            pieces,
+            proxy,
+        ));
     }
-    if budget_inputs.is_empty() {
+    if eligible.is_empty() {
         return;
     }
 
-    let budgets = resolve_budgets(&budget_inputs);
-
-    // Everything each solve needs, gathered before any of them starts: the
-    // parallel pass below borrows `submeshes` immutably, and the splice at the
-    // end needs it back.
-    let jobs: Vec<NodeJob<'_>> = budget_inputs
-        .iter()
+    let inputs: Vec<BudgetInput> = eligible.iter().map(|(input, ..)| *input).collect();
+    let budgets = resolve_budgets(&inputs);
+    let jobs: Vec<NodeJob<'_>> = eligible
+        .into_iter()
         .zip(&budgets)
-        .filter_map(|(input, budget)| {
-            Some(NodeJob {
-                node: input.node,
-                pieces: submeshes
-                    .iter()
-                    .filter(|piece| piece.node == input.node && !piece.is_empty())
-                    .collect(),
-                proxy: proxies.get(&input.node)?,
-                faces: budget.faces,
-                params: input.params,
-                name: node_name(model, input.node),
-            })
+        .map(|((input, pieces, proxy), budget)| NodeJob {
+            node: input.node,
+            pieces,
+            proxy,
+            faces: budget.faces,
+            params: input.params,
+            name: node_name(model, input.node),
         })
         .collect();
 
-    // One object per core (see [`crate::parallel`]). Each result is parked in
-    // its own slot rather than folded in as it lands, so the warning order and
-    // the piece order are the stack's, not the scheduler's.
-    let total = jobs.len() as u32;
-    let mut done = 0u32;
+    // One object per core (see [`crate::parallel`]).
+    //
     // The token alone, never the whole context: a worker may ask whether the run
     // is still wanted, but the progress sink posts to the event loop and stays
     // on the thread that owns the scope.
@@ -358,49 +347,33 @@ pub(crate) fn remesh_submeshes(
     // Asked once, here: nothing watching means no preview is ever built, and a
     // preview is a full projection of the part-finished object.
     let wants_preview = run.wants_preview();
-    // What each object may spend inside its own rebuild, so the per-object
-    // parallelism and the parallelism *within* an object do not oversubscribe
-    // each other: N objects across N cores get one thread each, one object gets
-    // the machine.
-    let cores = crate::parallel::default_threads();
-    let workers = cores.min(jobs.len().max(1));
-    let threads = (cores / workers).max(1);
+    let budget = ThreadBudget::for_jobs(jobs.len());
     // What every object looks like right now — finished where it is finished and
     // part-finished where it is not. Shared by both callbacks below, which the
     // borrow checker would otherwise refuse: they both write it, and each also
     // reads what the other wrote. `RefCell`, not a lock, because
     // `solve_nodes` calls them both on the one thread that owns the scope.
-    let scene = std::cell::RefCell::new(Progressing {
+    let scene = RefCell::new(Progressing {
         previews: (0..jobs.len()).map(|_| None).collect(),
-        outcomes: (0..jobs.len()).map(|_| None).collect(),
+        outcomes: Outcomes::new(jobs.len()),
     });
     crate::parallel::solve_nodes(
         &jobs,
         token,
         |job, emit| {
             let mut notes = Warnings::default();
-            let rebuilt = rebuild_node(job, &mut notes, token, threads, wants_preview, emit);
+            let rebuilt = rebuild_node(job, &mut notes, token, &budget, wants_preview, emit);
+            budget.finished_one();
             NodeOutcome {
                 rebuilt,
                 notes: notes.into_vec(),
             }
         },
         |index, outcome| {
-            // Reported as each object *lands*: with several in flight there is
-            // no single object being waited on any more, so the count is what
-            // carries the news, and the name says which one just finished. A
-            // solve is minutes on a dense object, so this is what separates
-            // "slow" from "wedged" — the question a user staring at the notice
-            // actually has.
-            done += 1;
-            run.report(crate::process::OptProgress::object(
-                &op.kind,
-                &jobs[index].name,
-                done,
-                total,
-            ));
             let mut scene = scene.borrow_mut();
-            scene.outcomes[index] = Some(outcome);
+            scene
+                .outcomes
+                .land(index, outcome, run, &op.kind, &jobs[index].name);
             // A finished object supersedes whatever its last preview said.
             scene.previews[index] = None;
         },
@@ -412,40 +385,11 @@ pub(crate) fn remesh_submeshes(
             publish_preview(run, submeshes, &jobs, &scene.borrow());
         },
     );
-    let mut outcomes = scene.into_inner().outcomes;
-
-    let mut replacements: HashMap<u32, Vec<Submesh>> = HashMap::new();
-    for (job, outcome) in jobs.iter().zip(&mut outcomes) {
-        let Some(outcome) = outcome.take() else {
-            continue;
-        };
-        for note in &outcome.notes {
-            warnings.push(note.clone());
-        }
-        if let Some(rebuilt) = outcome.rebuilt {
-            replacements.insert(job.node, rebuilt);
-        }
-    }
-    if replacements.is_empty() {
-        return;
-    }
-
-    // Splice: a replaced node's new pieces land where its first old piece was,
-    // and its other old pieces are dropped. Everything else passes through
-    // untouched, in order.
-    let mut rebuilt: Vec<Submesh> = Vec::with_capacity(submeshes.len());
-    let mut placed = std::collections::HashSet::new();
-    for piece in submeshes.drain(..) {
-        match replacements.get_mut(&piece.node) {
-            Some(pieces) => {
-                if placed.insert(piece.node) {
-                    rebuilt.append(pieces);
-                }
-            }
-            None => rebuilt.push(piece),
-        }
-    }
-    *submeshes = rebuilt;
+    let nodes: Vec<u32> = jobs.iter().map(|job| job.node).collect();
+    scene
+        .into_inner()
+        .outcomes
+        .finish(submeshes, nodes, warnings);
 }
 
 /// Hand the caller the scene as it currently stands: every object that has been
@@ -465,31 +409,15 @@ fn publish_preview(
     // What each node currently looks like, if anything has replaced it.
     let mut replacement_of: HashMap<u32, &[Submesh]> = HashMap::new();
     for (slot, job) in jobs.iter().enumerate() {
-        let current = scene.outcomes[slot]
-            .as_ref()
-            .and_then(|outcome| outcome.rebuilt.as_deref())
+        let current = scene
+            .outcomes
+            .rebuilt(slot)
             .or(scene.previews[slot].as_deref());
         if let Some(pieces) = current {
             replacement_of.insert(job.node, pieces);
         }
     }
-
-    // Spliced in the same order the final result will be, so a preview and the
-    // mesh that replaces it are laid out the same way and the viewport does not
-    // jump.
-    let mut spliced: Vec<&Submesh> = Vec::with_capacity(submeshes.len());
-    let mut placed = std::collections::HashSet::new();
-    for piece in submeshes {
-        match replacement_of.get(&piece.node) {
-            Some(pieces) => {
-                if placed.insert(piece.node) {
-                    spliced.extend(pieces.iter());
-                }
-            }
-            None => spliced.push(piece),
-        }
-    }
-    run.preview(&spliced);
+    run.preview(&nodes::spliced(submeshes, &replacement_of));
 }
 
 /// The scene mid-run: what each object has produced so far.
@@ -497,7 +425,7 @@ struct Progressing {
     /// A node's newest part-finished mesh, cleared once it finishes.
     previews: Vec<Option<Vec<Submesh>>>,
     /// A node's finished mesh, which supersedes its preview.
-    outcomes: Vec<Option<NodeOutcome>>,
+    outcomes: Outcomes,
 }
 
 /// One node's whole solve, gathered before the parallel pass so a worker
@@ -505,19 +433,10 @@ struct Progressing {
 struct NodeJob<'a> {
     node: u32,
     pieces: Vec<&'a Submesh>,
-    proxy: &'a proxy::Proxy,
+    proxy: proxy::Proxy,
     faces: u32,
     params: RemeshParams,
     name: String,
-}
-
-/// What one node's solve produced. The warnings ride back with the mesh rather
-/// than going into the shared [`Warnings`] as they happen: a worker cannot
-/// reach it, and folding them in afterwards in job order is what keeps the list
-/// the same on every run.
-struct NodeOutcome {
-    rebuilt: Option<Vec<Submesh>>,
-    notes: Vec<OptWarning>,
 }
 
 /// One node through the in-house rebuild.
@@ -528,8 +447,8 @@ struct NodeOutcome {
 fn rebuild_node(
     job: &NodeJob<'_>,
     warnings: &mut Warnings,
-    cancel: Option<&crate::CancelToken>,
-    threads: usize,
+    cancel: Option<&CancelToken>,
+    budget: &ThreadBudget,
     wants_preview: bool,
     emit: &dyn Fn(Vec<Submesh>),
 ) -> Option<Vec<Submesh>> {
@@ -540,32 +459,28 @@ fn rebuild_node(
     // a preview whose materials were missing would read as a bug rather than
     // as progress.
     //
-    // Built once, here, rather than inside `build_pieces_from`: the solve needs
-    // it too, to put its vertices back on the surface, and a preview would
+    // Built once, here, rather than inside `build_pieces_from`: a preview would
     // otherwise rebuild the whole index — a BVH and an adjacency over the source
-    // — every time it published.
-    if crate::cancel::cancelled(cancel) {
-        return None;
-    }
-    let source = project::ProjectionSource::build(&job.pieces);
+    // — every time it published. A cancelled build is the user having moved
+    // on, which needs no warning.
+    let source = project::ProjectionSource::build(&job.pieces, cancel)?;
+    let normals = job.params.normals.generation(job.params.normal_params);
     let on_pass = |soup: RemeshOutput| {
         if wants_preview && !soup.is_empty() {
             let mut soup = soup;
             layout::canonicalize(&mut soup);
-            emit(build_pieces_from(
-                &soup,
-                &source,
-                &job.pieces,
-                job.proxy,
-                project::Winding::Keep,
-                job.params.normals.generation(job.params.normal_params),
-                threads,
-            ));
+            // A preview that cannot be projected is simply not shown: the next
+            // pass, or the result, says what happened.
+            if let Ok(pieces) =
+                build_pieces_from(&soup, &source, &job.pieces, normals, budget.now(), cancel)
+            {
+                emit(pieces);
+            }
         }
         true
     };
     let (output, report) =
-        match solve::rebuild(job.proxy, job.faces, &job.params, threads, cancel, on_pass) {
+        match solve::rebuild(&job.proxy, job.faces, &job.params, budget, cancel, on_pass) {
             Ok(result) => result,
             // A cancelled rebuild is the user having moved on, and the run it
             // belongs to is discarded whole — so it is not worth a warning.
@@ -578,6 +493,38 @@ fn rebuild_node(
                 return None;
             }
         };
+
+    if output.is_empty() {
+        warnings.push(OptWarning::RemeshEmpty {
+            object: job.name.clone(),
+        });
+        return None;
+    }
+
+    let mut output = output;
+    layout::canonicalize(&mut output);
+    let pieces =
+        match build_pieces_from(&output, &source, &job.pieces, normals, budget.now(), cancel) {
+            Ok(pieces) if !pieces.is_empty() => pieces,
+            Ok(_) => {
+                warnings.push(OptWarning::RemeshEmpty {
+                    object: job.name.clone(),
+                });
+                return None;
+            }
+            Err(OptError::Cancelled) => return None,
+            Err(error) => {
+                warnings.push(OptWarning::RemeshFailed {
+                    object: job.name.clone(),
+                    detail: error.to_string(),
+                });
+                return None;
+            }
+        };
+
+    // What follows describes the mesh being handed back, so it is said only
+    // once there is one: a node left as it was is not "denser than asked".
+    //
     // A rebuild works by merging the mesh it was given, so it can never hand
     // back more faces than went in. Asking for more is a reasonable thing to
     // try - the engines this replaced *could*, because they built a surface
@@ -589,13 +536,6 @@ fn rebuild_node(
             triangles: job.proxy.source_triangles,
             asked: job.faces,
         });
-    }
-
-    if output.is_empty() {
-        warnings.push(OptWarning::RemeshEmpty {
-            object: job.name.clone(),
-        });
-        return None;
     }
 
     // A region that would not come down to one vertex kept the ones it had, so
@@ -623,17 +563,7 @@ fn rebuild_node(
         });
     }
 
-    let mut output = output;
-    layout::canonicalize(&mut output);
-    Some(build_pieces_from(
-        &output,
-        &source,
-        &job.pieces,
-        job.proxy,
-        project::Winding::Keep,
-        job.params.normals.generation(job.params.normal_params),
-        threads,
-    ))
+    Some(pieces)
 }
 
 /// Turn a polygon soup into one [`Submesh`] per material, with every attribute
@@ -642,15 +572,27 @@ fn rebuild_node(
 /// Shared with [`crate::shrinkwrap`], which produces a soup of its own and needs
 /// exactly this: the projection, the per-material split and the weld that turns
 /// the corner stream back into an indexed mesh.
+///
+/// The soup's winding is kept exactly as it is. The collapse keeps the source's
+/// own, and a shell's is derived from the distance field's sign, which is *more*
+/// reliable than the source's — a kitbash whose parts face whichever way they
+/// were modelled. Re-deriving it from the source would flip individual faces of
+/// a consistently oriented surface, which is the one thing that turns a closed
+/// manifold back into a broken one.
+///
+/// **Every face comes back or none does.** A face the projection could not
+/// place is an error rather than a face quietly left out: what a caller hands
+/// over is a surface, and a surface with faces missing is a hole the user did
+/// not ask for. With the projection unbounded (see [`project`]) that takes a
+/// source with no triangles at all, which no caller can reach.
 pub(crate) fn build_pieces_from(
     output: &RemeshOutput,
     source: &project::ProjectionSource,
     pieces: &[&Submesh],
-    proxy: &proxy::Proxy,
-    winding: project::Winding,
     normals: Option<NormalParams>,
     threads: usize,
-) -> Vec<Submesh> {
+    cancel: Option<&CancelToken>,
+) -> Result<Vec<Submesh>, OptError> {
     let node = pieces.first().map_or(0, |piece| piece.node);
     let uv_channel_count = pieces
         .iter()
@@ -662,17 +604,25 @@ pub(crate) fn build_pieces_from(
         .map(|piece| piece.color_channels.len())
         .max()
         .unwrap_or(0);
-    let range = proxy.radius() * PROJECTION_RANGE;
 
     let samples = project::project_faces(
         output,
         source,
-        range,
         uv_channel_count,
         color_channel_count,
-        winding,
         threads,
-    );
+        cancel,
+    )?;
+    let unplaced = samples.iter().filter(|face| face.is_none()).count();
+    if unplaced > 0 {
+        return Err(OptError::Remesh(format!(
+            "{unplaced} of its {} new faces could not be placed on the original surface",
+            samples.len()
+        )));
+    }
+    // Every material below is one some face actually took, so every piece built
+    // from them has faces: no placeholder face can name a material nothing uses.
+    let samples: Vec<project::FaceSample> = samples.into_iter().flatten().collect();
 
     // Generated normals come from the whole object's surface at once, before the
     // per-material split — generating each material's piece alone would put a
@@ -703,6 +653,11 @@ pub(crate) fn build_pieces_from(
 
     let mut built = Vec::with_capacity(order.len());
     for material in order {
+        // Each piece's weld is a pass over its corners; a large object with
+        // many materials is several of them.
+        if cancelled(cancel) {
+            return Err(OptError::Cancelled);
+        }
         let mut piece = Submesh {
             node,
             material,
@@ -796,7 +751,7 @@ pub(crate) fn build_pieces_from(
         }
         built.push(piece);
     }
-    built
+    Ok(built)
 }
 
 /// Normals generated from a rebuilt surface itself: one per face corner, in

@@ -68,6 +68,9 @@ cli-not-there = { $file } isn't there.
 cli-folder-unreadable = Couldn't look in { $folder }: { $reason }
 cli-lfs-pointer = It is a Git LFS pointer, not the model itself. Run git lfs pull to get the model.
 cli-properties-dropped = The model's source properties couldn't be read, so not everything about it carries over: { $reason }
+# Part of a file the importer could not read and loaded the model without - a
+# malformed animation key, blend shape or skin binding - in the importer's words.
+cli-part-left-out = Part of the file couldn't be read and was left out: { $detail }
 cli-warning = Warning: { $text }
 cli-note = Note: { $text }
 cli-report-failed = Couldn't write the report { $file }: { $reason }
@@ -85,7 +88,7 @@ cli-optimize-wrote = Wrote { $file }
 cli-optimize-skipped = Skipped: { $file } is already there.
 cli-optimize-exists = { $file } is already there. Use --if-exists skip or --if-exists replace to go on.
 cli-optimize-is-a-model = { $file } is one of the models being optimized. Choose another --out folder, or add a --suffix.
-cli-optimize-written-twice = { $file } is also where { $other } goes. Give the two models different names, or optimize them separately.
+cli-optimize-written-twice = { $file } is also where { $other } goes. Give the two models different names, or optimize them into different --out folders.
 cli-optimize-failed = Couldn't optimize { $file }: { $problem }
 cli-optimize-done = Done: { $done } optimized, { $skipped } skipped, { $failed } didn't work.
 

@@ -95,13 +95,21 @@ pub struct TriangleData {
 }
 
 impl TriangleData {
-    /// Number of triangles, inferred from the (mutually equal-length) arrays.
+    /// Number of triangles, inferred from whichever arrays are present. Each is
+    /// either empty or `triangle_count` long ([`TriangleData::validate`]), so any
+    /// non-empty one answers — and none is always there: an Opt level leaves
+    /// `to_face` empty beside full `material` and `node` arrays. `0` when the
+    /// model carries no per-triangle info at all.
     pub fn len(&self) -> usize {
-        self.to_face.len()
+        self.to_face
+            .len()
+            .max(self.material.len())
+            .max(self.node.len())
     }
 
+    /// True when the model carries no per-triangle info at all.
     pub fn is_empty(&self) -> bool {
-        self.to_face.is_empty()
+        self.len() == 0
     }
 
     /// Each present (non-empty) array must be exactly `triangle_count` long — an
@@ -186,6 +194,30 @@ mod tests {
 
         // All-empty (a model with no per-triangle info) passes for any count.
         assert!(TriangleData::default().validate(0, 0, 0, 0).is_ok());
+    }
+
+    /// The count comes from whichever arrays are present. An Opt level carries
+    /// no face topology, so its `to_face` is empty beside full material and node
+    /// tags — and still has every one of its triangles.
+    #[test]
+    fn triangle_data_len_counts_from_any_present_array() {
+        let opt_level = TriangleData {
+            to_face: Vec::new(),
+            material: vec![0, 0, 1],
+            node: vec![2, 2, 2],
+        };
+        assert!(opt_level.validate(3, 0, 2, 3).is_ok());
+        assert_eq!(opt_level.len(), 3);
+        assert!(!opt_level.is_empty());
+
+        let nodes_only = TriangleData {
+            node: vec![0; 5],
+            ..TriangleData::default()
+        };
+        assert_eq!(nodes_only.len(), 5);
+
+        assert_eq!(TriangleData::default().len(), 0);
+        assert!(TriangleData::default().is_empty());
     }
 
     #[test]

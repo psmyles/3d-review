@@ -410,7 +410,12 @@ pub struct TextureExtras {
     pub wrap_v: WrapMode,
     /// The authored UV transform, `Some` when the file declared one.
     pub uv_transform: Option<(Vec3, Quat, Vec3)>,
-    /// Embedded image bytes, when the texture (or its video) carried them.
+    /// Embedded image bytes the texture carries *of its own*. Empty when they
+    /// are its video's, which is where FBX keeps embedded content and where
+    /// import stores them, once: a reader hands a texture its video's content
+    /// by pointer, and copying it here as well held every embedded image once
+    /// per texture using it on top of the video's copy. See
+    /// [`VideoExtras::content`].
     pub content: Vec<u8>,
     /// Indexes [`SourceExtras::videos`].
     pub video: Option<u32>,
@@ -425,6 +430,8 @@ pub struct VideoExtras {
     pub filename: String,
     pub absolute_filename: String,
     pub relative_filename: String,
+    /// The embedded image bytes, when the file carried them — the one copy,
+    /// shared by every texture over this video.
     pub content: Vec<u8>,
     pub props: Vec<Prop>,
 }

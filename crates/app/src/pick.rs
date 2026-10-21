@@ -174,21 +174,19 @@ impl App {
         })
     }
 
-    /// The window's device pixel ratio, for turning a size in egui points into
-    /// the physical pixels a pointer position is measured in.
-    fn scale_factor(&self) -> f32 {
-        self.window
-            .as_ref()
-            .map_or(1.0, |window| window.scale_factor() as f32)
-    }
-
     /// The processed level currently drawn, with its own index — what the split's
     /// right half and the overlay's solid mesh are.
+    ///
+    /// `None` while a run's preview stands in for the level: a part-finished mesh
+    /// has no index, and the callers fall back to the source, which is the same
+    /// objects in the same place — what a click is after is which node it lands
+    /// on, and the processed levels keep the source's.
     fn opt_level_pick(&self) -> Option<(&ModelData, &SceneBvh)> {
         let opt = self.opt.as_ref()?;
         let level = self.ui.opt.active_lod;
+        let bvh = opt.level_bvh(level)?;
         let model = &opt.processed.as_ref()?.lod(level)?.model;
-        Some((model, opt.level_bvhs.get(level)?))
+        Some((model, bvh))
     }
 
     /// The mesh drawn solid in the Opt overlay — the processed level, unless the
@@ -225,7 +223,7 @@ impl App {
         let projection: CameraProjection = self.ui.projection_mode.into();
         let ndc = OrbitCamera::ndc_from_viewport(position - view.origin, view.size);
         let (origin, dir) = view.camera.screen_ray(ndc, projection);
-        let (near, far) = view.camera.near_far();
+        let (near, far) = view.camera.near_far_for(projection);
         // The same span the camera draws, so what can be picked is exactly what
         // can be seen. An infinite perspective far plane has no bound to give.
         let t_max = match projection {
@@ -238,7 +236,7 @@ impl App {
             // the same view-relative pixels the projection hands back, and a
             // tolerance scaled out of points into them.
             let pointer = position - view.origin;
-            let tolerance = review_render::BONE_PICK_TOLERANCE_POINTS * self.scale_factor();
+            let tolerance = review_render::BONE_PICK_TOLERANCE_POINTS * self.pixels_per_point();
             let joints = review_render::posed_joint_positions(
                 view.model,
                 view.posed.then_some(&self.animation.deform),
@@ -379,7 +377,7 @@ impl App {
             },
             |world| view.camera.project(world, projection, view.size),
             position - view.origin,
-            crate::audit::AUDIT_PICK_TOLERANCE_POINTS * self.scale_factor(),
+            crate::audit::AUDIT_PICK_TOLERANCE_POINTS * self.pixels_per_point(),
         )
     }
 

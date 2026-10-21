@@ -246,8 +246,10 @@ pub(super) fn build_line_pipelines() -> GpuResult<LinePipelineSet> {
         false,
         SINGLE_SAMPLE,
     )?;
-    // Depth only, through the cheapest program `vs_main` has a pairing for: the
-    // selection fill, whose colour never lands because nothing is written.
+    // Depth only, through the cheapest program that cuts the surface where the shaded
+    // mesh does: the GTAO G-buffer's, which applies `fs_main`'s alpha clip for one
+    // texture read. Its outputs never land — nothing is written — so that they are a
+    // G-buffer's rather than the scene's two colours costs nothing.
     let depth_prepass = |cull: Cull, label: &'static std::ffi::CStr| {
         Pipeline::new(&PipelineDesc {
             attributes: &SCENE_VERTEX_LAYOUT,
@@ -258,8 +260,8 @@ pub(super) fn build_line_pipelines() -> GpuResult<LinePipelineSet> {
             color_write: false,
             ..PipelineDesc::scene(
                 shader::make(
-                    generated::selection_shader_desc,
-                    shader::bytecode!("selection"),
+                    generated::gtao_gbuffer_shader_desc,
+                    shader::bytecode!("gtao_gbuffer"),
                     label,
                 )?,
                 SINGLE_SAMPLE,

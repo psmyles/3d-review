@@ -67,10 +67,13 @@ pub(crate) struct FilesParsed {
 /// An import reporting where it has got to, posted from a worker thread.
 #[derive(Debug)]
 pub(crate) struct ModelLoadProgress {
-    /// Matched against the current load generation exactly as [`FilesParsed`]
-    /// is, so a superseded import can't retitle the card of the one that
-    /// replaced it.
+    /// Matched against the generation of whatever sent it — the load generation
+    /// for a parse, exactly as [`FilesParsed`] is, and the measure generation
+    /// for a measuring job — so a superseded job can't retitle the card of the
+    /// one that replaced it.
     pub(super) generation: u64,
+    /// Whether a measuring job sent it (`measure.rs`) rather than a parse.
+    pub(super) measuring: bool,
     /// The finished stage line, built on the worker: `Reading... 47%`.
     pub(super) message: String,
     /// How far through that stage, when it can be known — the card's bar.
@@ -351,6 +354,7 @@ impl App {
                     let _ = progress_proxy.send_event(UserEvent::ModelLoadProgress(
                         ModelLoadProgress {
                             generation,
+                            measuring: false,
                             message,
                             fraction: progress.fraction(),
                             activity,
@@ -385,7 +389,12 @@ impl App {
     /// Rewrite the loading card's stage line from a worker's progress report. A
     /// report from a superseded load is dropped, exactly as its result would be.
     pub(crate) fn handle_model_load_progress(&mut self, message: ModelLoadProgress) {
-        if message.generation != self.model_load_generation() {
+        let current = if message.measuring {
+            self.measure_generation()
+        } else {
+            self.model_load_generation()
+        };
+        if message.generation != current {
             return;
         }
         self.notifications

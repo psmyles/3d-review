@@ -28,14 +28,25 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Where a replacement is staged before it takes the destination's place.
 ///
-/// The process id keeps two concurrent writers (the export worker and a preset
-/// save, say) off each other's temp even when they target one path.
+/// Unique per staging, not only per process: the process id keeps two
+/// instances of the viewer apart, and the counter keeps two writers *in one
+/// process* apart — the export worker and a preset save are both this process,
+/// and two of them aimed at one path would otherwise share a temp, each
+/// truncating or deleting the other's half-written file. Whichever rename lands
+/// last wins, which is what writing one path twice means anyway; neither can
+/// put the other's fragment in place.
 fn staging_path(path: &Path) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(format!(".partial-{}", std::process::id()));
+    name.push(format!(
+        ".partial-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
     path.with_file_name(name)
 }
 
@@ -237,6 +248,28 @@ mod tests {
         assert_eq!(staged.commit().expect("commits"), path);
 
         assert_eq!(std::fs::read(&path).expect("read"), b"candidate");
+        assert_no_staging(&dir);
+    }
+
+    /// Two writers in one process aimed at one path — an export and a preset
+    /// save, say — each stage their own file. Sharing a temp, the second
+    /// truncated the first's half-written file, and the first then committed
+    /// the second's bytes.
+    #[test]
+    fn two_writers_in_one_process_never_share_a_temp() {
+        let dir = temp_dir("replace-two-writers");
+        let path = dir.join("asset.fbx");
+
+        let first: Staged =
+            Staged::write(&path, |staging| std::fs::write(staging, b"first")).expect("stages");
+        let second: Staged =
+            Staged::write(&path, |staging| std::fs::write(staging, b"second")).expect("stages");
+        assert_ne!(first.staging, second.staging);
+
+        first.commit().expect("commits");
+        assert_eq!(std::fs::read(&path).expect("read"), b"first");
+        second.commit().expect("commits");
+        assert_eq!(std::fs::read(&path).expect("read"), b"second");
         assert_no_staging(&dir);
     }
 

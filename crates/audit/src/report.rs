@@ -11,7 +11,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::AuditError;
-use crate::finding::{AuditReport, ElementSet, Offender, RuleResult};
+use crate::finding::{AuditReport, Axis, ElementSet, Offender, RuleResult};
 use crate::profile::AuditProfile;
 use review_model::ModelData;
 use review_model::extras::SourceExtras;
@@ -63,8 +63,10 @@ pub fn to_value(
         "created_unix": source.created_unix,
         "source": {
             "file": source.file,
-            "unit_meters": model.stats.source_unit_meters,
-            "up_axis": extras.map(|extras| format!("{:?}", extras.scene.axes[1])),
+            "unit_meters": figure(model.stats.source_unit_meters),
+            // Spelled as the profile's `scene.up_axis` target is (`positive_y`),
+            // so one document never names an axis two ways.
+            "up_axis": extras.and_then(|extras| Axis::from_coordinate(extras.scene.axes[1])),
             "counts": {
                 "polygons": model.stats.polygon_count,
                 "triangles": model.stats.triangle_count,
@@ -95,6 +97,16 @@ pub fn to_value(
             .map(|result| result_value(result, model, extras))
             .collect::<Result<Vec<_>, _>>()?,
     }))
+}
+
+/// A measured `f32` figure as the shortest number that reads back as it, rather
+/// than the seventeen digits its widening to `f64` would print
+/// (`0.009999999776482582` for a centimetre). `null` when it is not finite.
+pub fn figure(value: f32) -> Value {
+    match value.to_string().parse::<f64>() {
+        Ok(number) if number.is_finite() => json!(number),
+        _ => Value::Null,
+    }
 }
 
 fn serialized(value: &impl Serialize) -> Result<Value, AuditError> {

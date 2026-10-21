@@ -34,7 +34,14 @@ pub(crate) fn load(path: &Path, progress: &dyn Fn(f32)) -> Result<Loaded, String
         review_import::load_model_staged(path, &report).map_err(|error| problem(path, &error))?;
     let mut model = staged.model;
     model.stats.gpu_vertex_count = model.count_gpu_vertices();
-    let mut warnings = Vec::new();
+    // What the import left out to load the file at all (a malformed key, shape
+    // or binding), in the importer's words, as the viewer's load card says it.
+    let mut warnings: Vec<String> = staged
+        .extras
+        .warnings()
+        .iter()
+        .map(|line| k::part_left_out(line.clone()))
+        .collect();
     let extras = match staged.extras.marshal(&model) {
         Ok(extras) => extras,
         Err(error) => {

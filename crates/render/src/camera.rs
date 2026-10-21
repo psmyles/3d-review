@@ -237,10 +237,15 @@ pub struct OrbitCamera {
     pub distance: f32,
     pub aspect_ratio: f32,
     pub fov_y_radians: f32,
-    /// Bounding-sphere radius of the framed content around `target`. The near /
-    /// far planes are fit to this each frame (see `near_far`) instead of being
-    /// stored, so depth precision stays optimal as `distance` changes on zoom.
+    /// Bounding-sphere radius of the framed content, around [`Self::scene_center`].
+    /// The near / far planes are fit to this each frame (see `near_far`) instead of
+    /// being stored, so depth precision stays optimal as `distance` changes on zoom.
     pub scene_radius: f32,
+    /// Centre of that bounding sphere: the framed box's centre, which the centring
+    /// pan has usually moved the pivot off and a flight moves it away from. The
+    /// orthographic depth range is fit around it ([`Self::near_far_for`]), so it
+    /// follows the content wherever the camera has gone rather than the pivot.
+    pub scene_center: Vec3,
 }
 
 impl Default for OrbitCamera {
@@ -259,6 +264,7 @@ impl Default for OrbitCamera {
             aspect_ratio: 16.0 / 9.0,
             fov_y_radians: DEFAULT_FOV_Y_DEGREES.to_radians(),
             scene_radius: 1.0,
+            scene_center: Vec3::ZERO,
         };
         base.framed_to_bounds(
             GRID_BOUNDS,
@@ -330,11 +336,13 @@ impl OrbitCamera {
     /// the fill, and orthographic off-centre by a fifth.
     ///
     /// An orthographic view's size is tied to the distance (its half-height is
-    /// `distance · tan(fov/2)`), but its eye is still a point on the axis with a
-    /// near plane in front of it, so the distance is also held where orbiting
-    /// cannot slice the model ([`orthographic_clearance`]). Looking down a tall
-    /// box, that, not the area, is what binds — a cost of the coupling, which
-    /// the perspective fit this replaced paid too.
+    /// `distance · tan(fov/2)`), so a tight fit can leave the orbit eye inside a
+    /// deep model. Nothing is clipped if it does — the orthographic depth range
+    /// backs its own eye off to clear the content ([`Self::near_far_for`]) — but
+    /// the orbit eye is the one a projection toggle hands to perspective, which
+    /// keeps the distance, so the distance is still held where no orbit can take
+    /// that eye into the model ([`orthographic_clearance`]). Looking down a tall
+    /// box, that, not the area, is what binds.
     pub fn framed_to_bounds(
         mut self,
         bounds: Bounds,
@@ -396,9 +404,10 @@ impl OrbitCamera {
         // depth along forward is unchanged).
         self.target = center - right * pan_x - up * pan_y;
         self.distance = distance;
-        // Bounding-sphere radius around the box centre (corner distance). Drives
-        // the per-frame near/far fit in `near_far`.
+        // Bounding sphere around the box centre (corner distance). Drives the
+        // per-frame near/far fit in `near_far` / `near_far_for`.
         self.scene_radius = half_size.length().max(0.001);
+        self.scene_center = center;
         self
     }
 
@@ -429,6 +438,8 @@ impl OrbitCamera {
     ///
     /// Only `target` moves; the eye is derived from it, so `distance` — and with
     /// it the near/far fit and the orbit pivot — travels along with the camera.
+    /// The framed content stays put (`scene_center`), which is what lets the
+    /// orthographic depth range keep it in view however far the flight goes.
     pub fn fly(&mut self, delta: Vec3) {
         let right = self.rotation().transform_vector3(Vec3::X);
         self.target += right * delta.x + Vec3::Y * delta.y + self.forward_dir() * delta.z;
@@ -477,8 +488,52 @@ impl OrbitCamera {
         self.target += (-right * delta_x) + (up * delta_y);
     }
 
+    /// The orbit eye: `distance` behind the pivot along the view axis. What
+    /// perspective draws from, and what an orbit, a look and a flight move.
+    /// Orthographic draws from [`Self::eye_for`] instead, which is this eye or a
+    /// point further back along the same axis.
     pub fn eye_position(self) -> Vec3 {
         self.target - self.forward_dir() * self.distance
+    }
+
+    /// The eye `projection` actually draws from.
+    ///
+    /// Perspective draws from the orbit eye, which *is* its picture. An
+    /// orthographic picture does not depend on where along the view axis its eye
+    /// sits — every ray is parallel — so only its clipping does, and the orbit eye
+    /// is a bad place for it: the view's size is `distance · tan(fov/2)`, so a
+    /// zoom brings that eye in towards the pivot and, on anything deeper than the
+    /// view is tall, into the model, cutting away everything in front of the near
+    /// plane (a 1 m window on a 20 m facade showed a cross-section). Orthographic
+    /// therefore backs its eye off along the axis until the framed content starts
+    /// past the orbit fit's near plane, and otherwise leaves it exactly where the
+    /// orbit eye is.
+    pub fn eye_for(self, projection: CameraProjection) -> Vec3 {
+        self.target - self.forward_dir() * self.eye_distance(projection)
+    }
+
+    /// How far behind the pivot [`Self::eye_for`] sits: `distance`, or further for
+    /// an orthographic view whose content would otherwise cross its near plane.
+    fn eye_distance(self, projection: CameraProjection) -> f32 {
+        match projection {
+            CameraProjection::Perspective => self.distance,
+            CameraProjection::Orthographic => {
+                let (near, _) = self.near_far();
+                // The content's nearest depth past the pivot plane (negative when
+                // it reaches back towards the eye), from the sphere it was framed
+                // in rather than from the pivot, which a flight carries away.
+                let front =
+                    self.forward_dir().dot(self.scene_center - self.target) - self.content_reach();
+                self.distance.max(near - front)
+            }
+        }
+    }
+
+    /// The radius the depth range clears around the framed content: the content's
+    /// own, or the reference grid's when that is larger, so the floor is not
+    /// clipped behind a small model ([`Self::near_far`] has always cleared it).
+    fn content_reach(self) -> f32 {
+        self.scene_radius.max(GRID_FAR_RADIUS)
     }
 
     pub fn forward_dir(self) -> Vec3 {
@@ -489,8 +544,17 @@ impl OrbitCamera {
         self.rotation().inverse().transform_vector3(direction)
     }
 
+    /// World → view from the orbit eye, which is perspective's view. Orthographic
+    /// callers want [`Self::view_matrix_for`], whose eye may sit further back.
     pub fn view_matrix(self) -> Mat4 {
-        let world_from_camera = Mat4::from_translation(self.eye_position()) * self.rotation();
+        self.view_matrix_for(CameraProjection::Perspective)
+    }
+
+    /// World → view from the eye `projection` draws from ([`Self::eye_for`]) —
+    /// the view [`Self::view_projection`] is built on, so anything working in view
+    /// space beside it (GTAO's G-buffer) must take this one.
+    pub fn view_matrix_for(self, projection: CameraProjection) -> Mat4 {
+        let world_from_camera = Mat4::from_translation(self.eye_for(projection)) * self.rotation();
         world_from_camera.inverse()
     }
 
@@ -508,28 +572,62 @@ impl OrbitCamera {
     /// (`NEAR_PIVOT_FRACTION`), taking whichever of the two is nearer — the
     /// ratio governs the ordinary case, the pivot term takes over on a close
     /// approach and keeps what's being inspected inside the frustum.
+    ///
+    /// Measured from the orbit eye, so this is perspective's fit. Orthographic
+    /// draws from an eye that may sit further back and needs a far plane that
+    /// follows the content: [`Self::near_far_for`].
     pub fn near_far(self) -> (f32, f32) {
         // Far must clear the grid even when the model is tiny.
-        let content_radius = self.scene_radius.max(GRID_FAR_RADIUS);
-        let z_far = (self.distance + content_radius).max(MIN_Z_NEAR * 2.0);
+        let z_far = (self.distance + self.content_reach()).max(MIN_Z_NEAR * 2.0);
         let z_near = (z_far / MAX_DEPTH_RATIO)
             .min(self.distance * NEAR_PIVOT_FRACTION)
             .max(MIN_Z_NEAR);
         (z_near, z_far)
     }
 
+    /// The near / far planes `projection` draws with, as distances from
+    /// [`Self::eye_for`] — the span a pick along [`Self::screen_ray`] searches.
+    ///
+    /// Perspective's are [`Self::near_far`]'s. Orthographic keeps that near
+    /// plane's distance in front of its own eye, which is backed off just far
+    /// enough that the content's sphere starts past it ([`Self::eye_for`]), and
+    /// keeps the far plane where the orbit fit put it in the world, stretched to
+    /// the back of that sphere when the content reaches beyond it — which a
+    /// flight away from the model, or an orbit about a pivot panned off its
+    /// centre, can do. Between the two the whole sphere is always inside, so no
+    /// zoom, pan, orbit or flight clips the model (or the grid round a small one,
+    /// which the sphere is widened to as `near_far` always was). Wherever the
+    /// sphere already sat inside the orbit fit, this is that fit from the orbit
+    /// eye, so the picture is the one it always was.
+    pub fn near_far_for(self, projection: CameraProjection) -> (f32, f32) {
+        let (z_near, z_far) = self.near_far();
+        match projection {
+            CameraProjection::Perspective => (z_near, z_far),
+            CameraProjection::Orthographic => {
+                let eye = self.eye_distance(projection);
+                let back_off = eye - self.distance;
+                let center = eye + self.forward_dir().dot(self.scene_center - self.target);
+                (
+                    z_near,
+                    (z_far + back_off).max(center + self.content_reach()),
+                )
+            }
+        }
+    }
+
     pub fn view_projection(self, projection_mode: CameraProjection) -> Mat4 {
-        self.projection_matrix(projection_mode) * self.view_matrix()
+        self.projection_matrix(projection_mode) * self.view_matrix_for(projection_mode)
     }
 
     /// The projection matrix alone (view → clip), fit to the current near/far.
     /// Split out from [`view_projection`] so passes that work in view space (GTAO
     /// reconstructs view-space position from this and projects sample points back
-    /// through it) can get the projection without the view baked in.
+    /// through it) can get the projection without the view baked in. Its view is
+    /// [`Self::view_matrix_for`] the same projection.
     ///
     /// [`view_projection`]: OrbitCamera::view_projection
     pub fn projection_matrix(self, projection_mode: CameraProjection) -> Mat4 {
-        let (z_near, z_far) = self.near_far();
+        let (z_near, z_far) = self.near_far_for(projection_mode);
         match projection_mode {
             CameraProjection::Perspective => {
                 Mat4::perspective_infinite_reverse_rh(self.fov_y_radians, self.aspect_ratio, z_near)
@@ -555,7 +653,9 @@ impl OrbitCamera {
 
     /// The world ray under a point of the viewport, as `(origin, direction)`
     /// with a unit direction — so a hit parameter `t` along it reads as a world
-    /// distance, directly comparable with [`Self::near_far`].
+    /// distance, directly comparable with [`Self::near_far_for`] the same
+    /// projection. Its origin lies in the plane of [`Self::eye_for`], so the span
+    /// that returns is exactly the span drawn.
     ///
     /// `ndc` is normalised device coordinates: `-1..1` across the viewport with
     /// **y up**, which is what [`Self::project`] hands back and the inverse of
@@ -585,8 +685,9 @@ impl OrbitCamera {
                 // Every ray runs along the view axis; the pixel picks the origin.
                 let half_height = self.orthographic_half_height();
                 let half_width = half_height * aspect;
-                let origin =
-                    self.eye_position() + right * (ndc.x * half_width) + up * (ndc.y * half_height);
+                let origin = self.eye_for(projection_mode)
+                    + right * (ndc.x * half_width)
+                    + up * (ndc.y * half_height);
                 (origin, forward)
             }
         }
@@ -693,6 +794,7 @@ fn lerp_camera(start: OrbitCamera, end: OrbitCamera, t: f32) -> OrbitCamera {
         aspect_ratio: end.aspect_ratio,
         fov_y_radians: start.fov_y_radians + (end.fov_y_radians - start.fov_y_radians) * t,
         scene_radius: start.scene_radius + (end.scene_radius - start.scene_radius) * t,
+        scene_center: start.scene_center.lerp(end.scene_center, t),
     }
 }
 
@@ -725,7 +827,12 @@ fn fit_distance(points: &[(f32, f32)], [lo, hi]: [f32; 2]) -> f32 {
 }
 
 /// The least distance an orthographic framing may sit at so that orbiting
-/// from it never puts the model through the near plane.
+/// from it never puts the model through the orbit eye's near plane.
+///
+/// The orthographic picture no longer depends on this — its depth range backs
+/// its own eye off to clear the content ([`OrbitCamera::near_far_for`]) — but the
+/// orbit eye is the one a projection toggle hands to perspective, which keeps the
+/// distance, so a framing still keeps that eye out of the model.
 ///
 /// An orbit swings the eye round the pivot at `distance`, so a point `r` from
 /// the pivot comes as close as `distance - r` to it. The pivot is not the box's
@@ -1025,6 +1132,19 @@ mod tests {
         cases
     }
 
+    /// The eight corners of `bounds`.
+    fn corners(bounds: Bounds) -> Vec<Vec3> {
+        let mut corners = Vec::new();
+        for x in [bounds.min.x, bounds.max.x] {
+            for y in [bounds.min.y, bounds.max.y] {
+                for z in [bounds.min.z, bounds.max.z] {
+                    corners.push(Vec3::new(x, y, z));
+                }
+            }
+        }
+        corners
+    }
+
     /// Where each corner of `bounds` lands in an image of `area`'s shape, as
     /// fractions of it (y down), through `camera` in `projection`. Every corner
     /// must also be past the near plane, in either projection, or it is not
@@ -1039,23 +1159,46 @@ mod tests {
             aspect_ratio: area.aspect_ratio,
             ..camera
         };
-        let (near, _) = camera.near_far();
-        let mut points = Vec::new();
-        for x in [bounds.min.x, bounds.max.x] {
-            for y in [bounds.min.y, bounds.max.y] {
-                for z in [bounds.min.z, bounds.max.z] {
-                    let corner = Vec3::new(x, y, z);
-                    let depth = camera.forward_dir().dot(corner - camera.eye_position());
-                    assert!(
-                        depth > near,
-                        "a corner is {depth} from the eye, near {near}"
-                    );
-                    let point = camera.project(corner, projection, Vec2::ONE);
-                    points.push(point.expect("a framed corner is in front of the eye"));
-                }
-            }
+        let (near, _) = camera.near_far_for(projection);
+        let eye = camera.eye_for(projection);
+        corners(bounds)
+            .into_iter()
+            .map(|corner| {
+                let depth = camera.forward_dir().dot(corner - eye);
+                assert!(
+                    depth > near,
+                    "a corner is {depth} from the eye, near {near}"
+                );
+                let point = camera.project(corner, projection, Vec2::ONE);
+                point.expect("a framed corner is in front of the eye")
+            })
+            .collect()
+    }
+
+    /// Every corner of `bounds` lies inside the depth range `camera` draws
+    /// orthographically with, measured from the eye it draws from, and so lands
+    /// inside the projection's `0..1` depth.
+    fn assert_inside_orthographic_depth(camera: OrbitCamera, bounds: Bounds, case: &str) {
+        let projection = CameraProjection::Orthographic;
+        let (near, far) = camera.near_far_for(projection);
+        let eye = camera.eye_for(projection);
+        let matrix = camera.view_projection(projection);
+        // Rounding in the depth of a corner far from the origin, not slack.
+        let slack = 1e-5 * (far + eye.length()).max(1.0);
+        for corner in corners(bounds) {
+            let depth = camera.forward_dir().dot(corner - eye);
+            assert!(
+                depth >= near - slack && depth <= far + slack,
+                "{case}: a corner is {depth} from the eye, outside {near}..{far}"
+            );
+            let clip = matrix * corner.extend(1.0);
+            let z = clip.z / clip.w;
+            let z_slack = slack / (far - near);
+            assert!(
+                (-z_slack..=1.0 + z_slack).contains(&z),
+                "{case}: a corner's depth is {z}, outside 0..1"
+            );
         }
-        points
     }
 
     /// How much of `area`'s visible part, less the margin, `points` span along
@@ -1134,12 +1277,14 @@ mod tests {
     }
 
     /// An orthographic framing is a place to orbit from, not only a picture: its
-    /// eye sits close in (the view's size is tied to the distance), so a fit that
-    /// cleared only the corners in front of it put the far ones through the near
-    /// plane as soon as the camera turned.
+    /// orbit eye sits close in (the view's size is tied to the distance), so a fit
+    /// that cleared only the corners in front of it put the far ones through the
+    /// near plane as soon as the camera turned. The orthographic picture backs its
+    /// own eye off now, but the orbit eye is what a projection toggle hands to
+    /// perspective, so the framing must keep the model in front of that one too.
     #[test]
     fn an_orthographic_framing_survives_an_orbit() {
-        for (_, area, bounds, framed) in framings(CameraProjection::Orthographic) {
+        for (case, area, bounds, framed) in framings(CameraProjection::Orthographic) {
             for yaw in (0..360).step_by(45) {
                 for pitch in [-1.5_f32, -0.6, 0.0, 0.6, 1.5] {
                     let camera = OrbitCamera {
@@ -1149,8 +1294,105 @@ mod tests {
                     };
                     // `landed` asserts every corner is past the near plane.
                     landed(camera, area, bounds, CameraProjection::Orthographic);
+                    let (near, _) = camera.near_far();
+                    for corner in corners(bounds) {
+                        let depth = camera.forward_dir().dot(corner - camera.eye_position());
+                        assert!(
+                            depth > near,
+                            "{case}: a corner is {depth} from the orbit eye, near {near}"
+                        );
+                    }
                 }
             }
+        }
+    }
+
+    /// The orthographic picture never clips the model, however the camera got
+    /// where it is: the view's size is tied to the orbit distance, so a zoom used
+    /// to walk the eye into anything deeper than the view was tall (a 1 m window on
+    /// a 20 m facade drew a cross-section), and a flight carried the depth range
+    /// away from the model with the pivot until it fell past the far plane.
+    #[test]
+    fn an_orthographic_view_never_clips_the_model() {
+        let facade = Bounds {
+            min: Vec3::new(-10.0, 0.0, -1.0),
+            max: Vec3::new(10.0, 8.0, 1.0),
+        };
+        let prop = Bounds {
+            min: Vec3::splat(-0.02),
+            max: Vec3::splat(0.02),
+        };
+        let mut boxes = framing_boxes();
+        boxes.extend([facade, prop]);
+        let viewport = Vec2::new(1600.0, 900.0);
+        for (index, bounds) in boxes.into_iter().enumerate() {
+            let radius = bounds.size().length() * 0.5;
+            let mut camera = OrbitCamera::default().framed_to_bounds(
+                bounds,
+                FramingArea::whole(16.0 / 9.0),
+                CameraProjection::Orthographic,
+            );
+            let step = |name: &str, camera: &OrbitCamera| {
+                assert_inside_orthographic_depth(*camera, bounds, &format!("box {index}, {name}"));
+            };
+            step("framed", &camera);
+            for _ in 0..40 {
+                camera.zoom(WHEEL_NOTCH);
+            }
+            step("zoomed in", &camera);
+            camera.pan_screen_delta(Vec2::new(300.0, -200.0), viewport);
+            step("panned", &camera);
+            camera.orbit(Vec2::new(120.0, -80.0));
+            step("orbited about a panned pivot", &camera);
+            for _ in 0..300 {
+                camera.zoom(WHEEL_NOTCH);
+            }
+            step("zoomed to the floor", &camera);
+            camera.look(Vec2::new(-60.0, 40.0));
+            step("looked round", &camera);
+            camera.fly(Vec3::new(0.0, 0.0, 50.0 * radius));
+            step("flown through and past", &camera);
+            camera.fly(Vec3::new(0.0, 0.0, -150.0 * radius));
+            step("flown back beyond it", &camera);
+            camera.fly(Vec3::new(40.0 * radius, -30.0 * radius, 0.0));
+            step("flown aside and down", &camera);
+            for _ in 0..200 {
+                camera.zoom(-WHEEL_NOTCH);
+            }
+            step("zoomed out", &camera);
+        }
+    }
+
+    /// Backing the orthographic eye off is a fix for clipping and nothing else:
+    /// wherever the content already sat inside the orbit fit, orthographic draws
+    /// from the orbit eye with the orbit fit's planes, as it always did, and
+    /// perspective is untouched everywhere.
+    #[test]
+    fn the_depth_fit_moves_only_where_it_would_have_clipped() {
+        let large = Bounds {
+            min: Vec3::splat(-20.0),
+            max: Vec3::splat(20.0),
+        };
+        let framed = OrbitCamera::default().framed_to_bounds(
+            large,
+            FramingArea::whole(16.0 / 9.0),
+            CameraProjection::Orthographic,
+        );
+        let ortho = CameraProjection::Orthographic;
+        assert_eq!(framed.eye_for(ortho), framed.eye_position());
+        let (near, far) = framed.near_far();
+        let (ortho_near, ortho_far) = framed.near_far_for(ortho);
+        assert_eq!(ortho_near, near);
+        assert!(
+            (ortho_far - far).abs() <= 1e-5 * far,
+            "{ortho_far} against {far}"
+        );
+
+        for camera in sample_cameras() {
+            let perspective = CameraProjection::Perspective;
+            assert_eq!(camera.eye_for(perspective), camera.eye_position());
+            assert_eq!(camera.near_far_for(perspective), camera.near_far());
+            assert_eq!(camera.view_matrix_for(perspective), camera.view_matrix());
         }
     }
 
@@ -1165,7 +1407,7 @@ mod tests {
     #[test]
     fn orthographic_projection_uses_reversed_z() {
         let camera = OrbitCamera::default();
-        let (near, far) = camera.near_far();
+        let (near, far) = camera.near_far_for(CameraProjection::Orthographic);
         let projection = camera.projection_matrix(CameraProjection::Orthographic);
 
         assert!((ndc_z(projection, -near) - 1.0).abs() < 1e-5);
@@ -1297,7 +1539,8 @@ mod tests {
         assert!(!perspective[0].1.abs_diff_eq(perspective[1].1, 1e-3));
     }
 
-    /// The centre pixel looks straight down the view axis in both projections.
+    /// The centre pixel looks straight down the view axis in both projections,
+    /// from the eye each one draws from.
     #[test]
     fn the_centre_pixel_looks_along_the_view_axis() {
         for camera in sample_cameras() {
@@ -1307,7 +1550,7 @@ mod tests {
             ] {
                 let (origin, dir) = camera.screen_ray(Vec2::ZERO, projection);
                 assert!(dir.abs_diff_eq(camera.forward_dir(), 1e-5));
-                assert!(origin.abs_diff_eq(camera.eye_position(), 1e-4));
+                assert!(origin.abs_diff_eq(camera.eye_for(projection), 1e-4));
             }
         }
     }

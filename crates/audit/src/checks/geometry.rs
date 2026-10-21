@@ -19,7 +19,8 @@ const DEGENERATE_RATIO: f32 = 1.0e-7;
 /// an inverted face (the cosine of the angle past perpendicular).
 const INVERTED_COS: f32 = 0.2;
 
-/// Two normals more than this far apart (as `1 - cos`) make an edge hard.
+/// Two corner normals whose cosine is below this (a little under a degree
+/// apart) make an edge hard.
 const HARD_EDGE_COS: f32 = 0.9999;
 
 /// The render corners of polygon `face` (or triangle, for a model without face
@@ -395,7 +396,11 @@ pub(super) fn triangle_budget(ctx: &Context<'_>, config: &RuleConfig) -> Outcome
         })
         .collect();
     let total = (ctx.model.indices.len() / 3) as u64;
-    if total > total_max {
+    // The headline is a figure beside the bound it broke: the whole file
+    // against the file's budget when that is what failed - it is the larger
+    // figure, so beside the per-part bound it would read as one part that big -
+    // and otherwise the largest part against the per-part one.
+    let (measured, limit) = if total > total_max {
         offenders.insert(
             0,
             Offender {
@@ -406,12 +411,15 @@ pub(super) fn triangle_budget(ctx: &Context<'_>, config: &RuleConfig) -> Outcome
                 elements: ElementSet::None,
             },
         );
-    }
-    let measured = largest(&offenders, |m| match m {
-        Measured::Count(c) => Some(*c as f64),
-        _ => None,
-    });
-    Outcome::judged(offenders, Threshold::Max(Measured::Count(per_object))).with_measured(measured)
+        (Some(Measured::Count(total)), total_max)
+    } else {
+        let largest = largest(&offenders, |m| match m {
+            Measured::Count(c) => Some(*c as f64),
+            _ => None,
+        });
+        (largest, per_object)
+    };
+    Outcome::judged(offenders, Threshold::Max(Measured::Count(limit))).with_measured(measured)
 }
 
 pub(super) fn draw_call_budget(ctx: &Context<'_>, config: &RuleConfig) -> Outcome {

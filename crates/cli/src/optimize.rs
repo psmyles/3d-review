@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use review_labels::opt::{
-    explain_export_note, explain_opt_error, explain_opt_warning, rebind_notes,
+    explain_export_note, explain_opt_error, explain_opt_warning, rebind_notes, repair_notes,
 };
 use review_localization::tr;
 use review_model::ENGINE_VERTEX_BYTES;
@@ -69,7 +69,7 @@ fn work(common: &Common, args: &OptimizeArgs, bar: &Bar, report: &mut Report) {
         args,
         sources: models
             .iter()
-            .map(|model| inputs::canonical(&model.path))
+            .map(|model| inputs::identity(&model.path))
             .collect(),
         claimed: HashMap::new(),
     };
@@ -111,7 +111,14 @@ fn build_stack(args: &OptimizeArgs) -> Result<OptStack, String> {
                 |reason: String| k::optimize_preset_unreadable(path.display().to_string(), reason);
             let json =
                 std::fs::read_to_string(path).map_err(|error| unreadable(error.to_string()))?;
-            preset::from_json(&json).map_err(|error| unreadable(explain_opt_error(&error)))?
+            let (stack, repairs) = preset::from_json_with_repairs(&json)
+                .map_err(|error| unreadable(explain_opt_error(&error)))?;
+            // Only a preset edited by hand breaks the stack's rules; say what was
+            // left out rather than run something other than what it reads as.
+            for note in repair_notes(repairs) {
+                console::warn(&note);
+            }
+            stack
         }
         None => OptStack::default(),
     };
@@ -235,9 +242,11 @@ fn level_count(stack: &OptStack) -> usize {
 struct Batch<'a> {
     stack: &'a OptStack,
     args: &'a OptimizeArgs,
-    /// Every model being read, resolved: none of them may be written over.
+    /// Every model being read, by [`inputs::identity`]: none of them may be
+    /// written over.
     sources: HashSet<PathBuf>,
-    /// Every file a model of this run is to write, resolved, with that model.
+    /// Every file a model of this run is to write, by [`inputs::identity`],
+    /// with that model.
     claimed: HashMap<PathBuf, String>,
 }
 
@@ -388,11 +397,16 @@ impl Batch<'_> {
     /// Claim `files` for `model`, or say why it cannot have them: one is a
     /// model of this run, another model of this run is to write one, or one is
     /// already there and `--if-exists` does not say to replace it.
+    ///
+    /// The first two are asked of each file's identity, not its spelling: the
+    /// output's `.fbx` is lower case whatever the source's, `Rock.FBX` and
+    /// `Rock.fbx` are one file on Windows and macOS, and a folder `--out`
+    /// creates part-way through the run must not make a later model's file look
+    /// different from an earlier one's. Both are asked before the third, so a
+    /// file another model of this run has just written is reported as that,
+    /// never as one `--if-exists replace` would let it overwrite.
     fn claim(&mut self, model: &Model, files: &[PathBuf]) -> Result<(), (Status, String)> {
-        let resolved: Vec<PathBuf> = files
-            .iter()
-            .map(|file| inputs::canonical_destination(file))
-            .collect();
+        let resolved: Vec<PathBuf> = files.iter().map(|file| inputs::identity(file)).collect();
         for (file, resolved) in files.iter().zip(&resolved) {
             let shown = file.display().to_string();
             if self.sources.contains(resolved) {

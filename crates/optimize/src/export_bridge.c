@@ -909,11 +909,17 @@ static ufbxw_material rvo_write_material(ufbxw_scene *out, const rvo_export_scen
     if (type == UFBXW_MATERIAL_CUSTOM && source->shading_model && source->shading_model[0]) {
         ufbxw_set_string(out, material.id, "ShadingModel", source->shading_model);
     }
-    if (source->props.count > 0) {
+    if (source->authored) {
+        /* The source's own material: exactly the properties it declared. One
+         * that declared none had its template's defaults, and writing nothing
+         * gives a reader those same defaults back. Writing the viewer's figures
+         * instead made it black (the Rust side has no colour to give a captured
+         * material), and on a custom shading model, whose template declares no
+         * `DiffuseColor`, failed the whole export with a missing property. */
         rvo_apply_props(out, material.id, scene, source->props);
     } else {
-        /* No authored properties: the viewer's PBR figures onto the classic
-         * slots a Phong has for them. */
+        /* No capture: the viewer's PBR figures onto the classic slots a Phong
+         * has for them. */
         ufbxw_set_vec3(out, material.id, "DiffuseColor", rvo_vec3(source->base_color));
         ufbxw_set_vec3(out, material.id, "EmissiveColor", rvo_vec3(source->emissive));
         if (type == UFBXW_MATERIAL_FBX_PHONG) {
@@ -1077,10 +1083,9 @@ static void rvo_write_curve(ufbxw_scene *out, ufbxw_anim_curve curve, const rvo_
     ufbxw_anim_curve_set_post_extrapolation_repeat_count(out, curve, source->post_repeat);
 }
 
-/* A 0/1 int buffer from a byte flag array — the form the boolean layers are
- * written in. Copied into the scene, so the scratch can go. */
-/* The flags widened into a buffer ufbx_write owns, filled in place. There is no
-   scratch allocation of our own to fail: if ufbx_write cannot allocate it
+/* A byte flag array widened to the 0/1 int buffer the boolean layers are
+   written in, created in a buffer ufbx_write owns and filled in place. There is
+   no scratch allocation of our own to fail: if ufbx_write cannot allocate it
    records the failure on the scene, and the `ufbxw_get_error` check before the
    save turns that into the export's error rather than an empty layer. */
 static ufbxw_int_buffer rvo_bool_ints(ufbxw_scene *out, const uint8_t *flags, size_t count)

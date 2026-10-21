@@ -7,11 +7,12 @@ use crate::theme::{color, size};
 use crate::widgets::{Tip, tip};
 
 /// Wrap a panel's label+control rows in a stock striped two-column
-/// `egui::Grid` — the same primitive (and default styling) egui's demo widget
-/// gallery uses: alternating faint row backgrounds (egui's stock
-/// `faint_bg_color`), a label column auto-sized to its widest entry, the control
-/// column filling the rest, all at egui's default grid spacing, row height and
-/// font. The row helpers below (`labeled_slider_with_value`,
+/// `egui::Grid` — the same primitive egui's demo widget gallery uses:
+/// alternating faint row backgrounds (egui's stock `faint_bg_color`), a label
+/// column pinned to [`size::PANEL_LABEL_COL_WIDTH`] (long labels truncate rather
+/// than widen it — see [`grid_label_tip`]), the control column filling the rest,
+/// [`size::PANEL_GRID_COL_GAP`] between the two, and egui's own row gap, row
+/// height and font. The row helpers below (`labeled_slider_with_value`,
 /// `labeled_color_button`, `labeled_checkbox`, `labeled_color32`,
 /// `labeled_combo`, `value_row`) each emit exactly one grid row, so a panel body
 /// just calls them inside this closure. Full-width controls (the reset button)
@@ -102,10 +103,11 @@ pub(crate) fn style_combo_popup(ui: &mut egui::Ui) {
     ui.visuals_mut().widgets.inactive.fg_stroke.color = color::TEXT_COMBO_DIM;
 }
 
-/// A label + slider grid row, styled like the egui demo's slider: a stock
-/// [`egui::Slider`] with its built-in inline value (drag-to-scrub,
-/// double-click-to-type), at egui's default rail width and row height. `decimals`
-/// caps the value's displayed precision (use 0 for an integer readout).
+/// A label + slider grid row: a stock [`egui::Slider`] with its inline value
+/// hidden, its rail filling the row up to a fixed-width [`egui::DragValue`] box
+/// on the right (drag-to-scrub, double-click-to-type) — see `slider_row` for why
+/// the readout is a separate box. `decimals` caps the value's displayed
+/// precision (use 0 for an integer readout).
 ///
 /// This is the standard slider for every option panel — emit it inside a
 /// [`panel_grid`] closure. Returns `true` when the value changed this frame, so a

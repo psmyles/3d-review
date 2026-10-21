@@ -35,6 +35,40 @@ use crate::prof;
 /// and over rewrites one card instead of stacking a new one per frame.
 const GPU_FAULT_NOTICE: &str = "gpu-fault";
 
+/// egui's texture changes that have not reached the renderer yet.
+///
+/// A frame's [`egui::TexturesDelta`] is a set of *commands* — upload this glyph
+/// patch, free that image — that egui hands over once and never repeats. A frame
+/// whose backbuffer is refused never gets as far as `EguiRenderer::prepare`, so
+/// they are kept here and delivered, merged with the next frame's own
+/// ([`egui::TexturesDelta::append`]), by the next frame that draws. Dropping
+/// them loses the font-atlas patches for good (every later glyph that lands in
+/// the patched region draws garbage) and leaks every texture they would have
+/// freed.
+#[derive(Default)]
+pub(crate) struct UndeliveredTextures(egui::TexturesDelta);
+
+impl UndeliveredTextures {
+    /// Add a frame's changes to what is still owed.
+    fn bank(&mut self, newer: egui::TexturesDelta) {
+        self.0.append(newer);
+    }
+
+    /// Everything owed, for the renderer to apply now.
+    fn take(&mut self) -> egui::TexturesDelta {
+        std::mem::take(&mut self.0)
+    }
+}
+
+impl Drop for UndeliveredTextures {
+    /// At exit nothing is left to apply them to. egui asserts in a debug build
+    /// that a delta was handled before it drops, and a backbuffer refused on the
+    /// last frame is not a bug, so the leftovers are discarded explicitly.
+    fn drop(&mut self) {
+        self.0.clear();
+    }
+}
+
 impl App {
     pub(crate) fn render(&mut self) {
         let _frame = prof::zone!("Frame");
@@ -148,23 +182,10 @@ impl App {
         // then draws, leaving the labels one frame behind on that frame alone. The
         // revision call is idempotent within a frame, so the render's own call further
         // down still resolves the same level.
-        let opt_level = (self.ui.mode == WorkspaceMode::Opt)
+        let opt_revision = (self.ui.mode == WorkspaceMode::Opt)
             .then(|| self.opt_processed_revision())
-            .flatten()
-            .zip(self.opt.as_ref().and_then(|opt| opt.processed.clone()));
-        // The same preference the scene draw makes, so the labels describe the
-        // mesh actually on screen rather than the one behind it.
-        let opt_overlay_preview = opt_level
-            .is_some()
-            .then_some(self.opt.as_ref())
-            .flatten()
-            .and_then(|opt| opt.level_mesh(self.ui.opt.active_lod));
-        let opt_level_model = opt_level.as_ref().and_then(|(revision, result)| {
-            opt_overlay_preview
-                .as_deref()
-                .or_else(|| result.lod(self.ui.opt.active_lod).map(|lod| &lod.model))
-                .map(|model| (model, *revision))
-        });
+            .flatten();
+        let active_lod = self.ui.opt.active_lod;
         let (full_output, ui_output) = {
             let egui_state = self.egui_state.as_mut()?;
             let renderer = self.renderer.as_ref()?;
@@ -178,17 +199,23 @@ impl App {
             // Supplied for the whole Opt workspace, not only once a level exists:
             // the split lays out two halves either way, drawing the source into both
             // until a run lands, so its labels need that half's camera regardless.
+            //
+            // The level is the mesh the scene draw shows — a run's preview while one
+            // stands in, the finished level otherwise — so the labels describe what
+            // is on screen rather than the mesh behind it, and the index occluding
+            // them is that mesh's own: a preview has none, so its labels draw
+            // unoccluded rather than tested against the triangles of another mesh.
             let opt_overlay = (self.ui.mode == WorkspaceMode::Opt).then(|| OptOverlayView {
                 camera: renderer.opt_camera,
-                level: opt_level_model.map(|(model, revision)| OptOverlayLevel {
-                    model,
-                    bvh: self
-                        .opt
-                        .as_ref()
-                        .and_then(|opt| opt.level_bvhs.get(self.ui.opt.active_lod))
-                        .map(Arc::as_ref),
-                    revision,
-                }),
+                level: opt_revision
+                    .zip(self.opt.as_ref())
+                    .and_then(|(revision, opt)| {
+                        Some(OptOverlayLevel {
+                            model: opt.level_model(active_lod)?,
+                            bvh: opt.level_bvh(active_lod).map(Arc::as_ref),
+                            revision,
+                        })
+                    }),
             });
             // Borrowed as a disjoint field so the egui closure can show the toasts
             // alongside its `&mut self.ui` borrow (the toast system lives in `app`).
@@ -307,11 +334,15 @@ impl App {
     /// into.
     fn paint(
         &mut self,
-        full_output: egui::FullOutput,
+        mut full_output: egui::FullOutput,
         egui_ctx: &egui::Context,
         gate_active: bool,
         vsync: bool,
     ) -> Option<Option<Instant>> {
+        // Banked before anything below can return: egui hands each texture
+        // change over once, and a frame that ends early must not take it along.
+        self.undelivered_textures
+            .bank(std::mem::take(&mut full_output.textures_delta));
         let (backbuffer_width, backbuffer_height) =
             self.gpu.as_ref().map_or((0, 0), review_render::Gpu::size);
         // The synced scene inputs the renderer draws this frame (read before the
@@ -545,7 +576,8 @@ impl App {
             let _z = prof::zone!("Paint + Present");
             // Acquire this frame's backbuffer. `None` means there is nothing to draw
             // into — a minimized window, or a drawable the device refused after a
-            // reset — so the frame is skipped rather than drawn into nothing.
+            // reset — so the frame is skipped rather than drawn into nothing. Its
+            // texture changes stay banked for the next frame that does draw.
             let mut frame = gpu.begin_frame()?;
 
             // The renderer records its offscreen passes and leaves the composite for
@@ -668,12 +700,13 @@ impl App {
                 self.redraw.requested = true;
             }
 
-            // Tessellate the chrome and upload its geometry + texture deltas. Outside
-            // any pass on purpose: both are resource updates sokol forbids inside one.
+            // Tessellate the chrome and upload its geometry + texture deltas — this
+            // frame's and any a refused frame left owed. Outside any pass on
+            // purpose: both are resource updates sokol forbids inside one.
             if let Err(err) = egui_renderer.prepare(
                 egui_ctx,
                 full_output.shapes,
-                full_output.textures_delta,
+                self.undelivered_textures.take(),
                 full_output.pixels_per_point,
                 frame.size(),
             ) {
@@ -850,7 +883,38 @@ impl App {
 }
 #[cfg(test)]
 mod tests {
-    use super::scene_viewport_px;
+    use super::{UndeliveredTextures, scene_viewport_px};
+
+    /// A refused frame's texture changes reach the renderer with the next
+    /// frame's, merged, rather than being dropped.
+    #[test]
+    fn a_refused_frames_texture_changes_arrive_with_the_next() {
+        let mut owed = UndeliveredTextures::default();
+        let mut refused = egui::TexturesDelta::default();
+        refused.free(egui::TextureId::Managed(1));
+        owed.bank(refused);
+        let mut next = egui::TexturesDelta::default();
+        next.free(egui::TextureId::Managed(2));
+        owed.bank(next);
+
+        let mut delivered = owed.take();
+        assert!(delivered.free.contains(&egui::TextureId::Managed(1)));
+        assert!(delivered.free.contains(&egui::TextureId::Managed(2)));
+        // Applied, as the renderer would.
+        delivered.clear();
+        assert!(owed.take().is_empty(), "nothing is delivered twice");
+    }
+
+    /// Changes still owed at exit are discarded without tripping egui's
+    /// debug assertion that every delta was handled.
+    #[test]
+    fn changes_owed_at_exit_drop_quietly() {
+        let mut owed = UndeliveredTextures::default();
+        let mut refused = egui::TexturesDelta::default();
+        refused.free(egui::TextureId::Managed(1));
+        owed.bank(refused);
+        drop(owed);
+    }
 
     /// The split's divider has to land in the middle of what the user can see,
     /// so an open side panel must move the rect, not just narrow it.

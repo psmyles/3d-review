@@ -17,6 +17,7 @@ use crate::ImportError;
 
 use super::bridge::ExtrasHandle;
 use super::marshal_model::skinning_method_from_code;
+use super::raw::BridgeExtras;
 use super::raw_extras::*;
 
 // ---- Marshaling the capture into `SourceExtras` ----
@@ -105,7 +106,7 @@ pub(super) fn v3(v: [f64; 3]) -> Vec3 {
 /// element vocabulary, so one body doing all of it ran past seven hundred lines
 /// with no seam a reader could hold; between them they share only the arena
 /// views and the range checks in [`ExtrasView`].
-pub(super) fn marshal_extras(raw: &ReviewImportExtras) -> Result<SourceExtras, ImportError> {
+pub(super) fn marshal_extras(raw: &BridgeExtras) -> Result<SourceExtras, ImportError> {
     let view = ExtrasView {
         strings: raw.strings()?,
         bytes: raw.bytes()?,
@@ -130,7 +131,7 @@ pub(super) fn marshal_extras(raw: &ReviewImportExtras) -> Result<SourceExtras, I
 /// The scene's own settings and metadata.
 pub(super) fn marshal_scene_extras(
     view: &ExtrasView<'_>,
-    raw: &ReviewImportExtras,
+    raw: &BridgeExtras,
 ) -> Result<extras::SceneExtras, ImportError> {
     let scene = {
         let s = &raw.scene;
@@ -175,7 +176,7 @@ pub(super) fn marshal_scene_extras(
 /// whatever attribute it carries.
 pub(super) fn marshal_node_extras(
     view: &ExtrasView<'_>,
-    raw: &ReviewImportExtras,
+    raw: &BridgeExtras,
 ) -> Result<Vec<extras::NodeExtras>, ImportError> {
     let lights = raw.lights()?;
     let cameras = raw.cameras()?;
@@ -300,7 +301,7 @@ pub(super) fn marshal_node_extras(
 /// Every material, with the textures bound to its channels.
 pub(super) fn marshal_material_extras(
     view: &ExtrasView<'_>,
-    raw: &ReviewImportExtras,
+    raw: &BridgeExtras,
 ) -> Result<Vec<extras::MaterialExtras>, ImportError> {
     let material_textures = raw.material_textures()?;
     let materials = raw
@@ -333,13 +334,26 @@ pub(super) fn marshal_material_extras(
 /// Every texture, with the layers a layered texture composites.
 pub(super) fn marshal_texture_extras(
     view: &ExtrasView<'_>,
-    raw: &ReviewImportExtras,
+    raw: &BridgeExtras,
 ) -> Result<Vec<extras::TextureExtras>, ImportError> {
     let texture_layers = raw.texture_layers()?;
+    let videos = raw.videos()?;
     let textures = raw
         .textures()?
         .iter()
         .map(|texture| {
+            // ufbx gives a texture its video's content by pointer, and the
+            // capture stores that blob once and names the same range from both.
+            // The bytes live on the video then (which is where FBX keeps
+            // embedded content), so the texture's copy would be a second copy
+            // of the same image, per texture using it.
+            let video = u32::try_from(texture.video).ok();
+            let rides_its_video = video
+                .and_then(|video| videos.get(video as usize))
+                .is_some_and(|video| {
+                    video.content.offset == texture.content.offset
+                        && video.content.length == texture.content.length
+                });
             Ok(extras::TextureExtras {
                 name: view.str(texture.name),
                 kind: extras::TextureKind::from_code(texture.kind),
@@ -362,8 +376,12 @@ pub(super) fn marshal_texture_extras(
                         v3(texture.uv_scale),
                     )
                 }),
-                content: view.bytes(texture.content),
-                video: u32::try_from(texture.video).ok(),
+                content: if rides_its_video {
+                    Vec::new()
+                } else {
+                    view.bytes(texture.content)
+                },
+                video,
                 layers: slice_range(
                     texture_layers,
                     texture.layer_first,
@@ -387,7 +405,7 @@ pub(super) fn marshal_texture_extras(
 /// Every video: an image file reference, with any embedded content.
 pub(super) fn marshal_video_extras(
     view: &ExtrasView<'_>,
-    raw: &ReviewImportExtras,
+    raw: &BridgeExtras,
 ) -> Result<Vec<extras::VideoExtras>, ImportError> {
     let videos = raw
         .videos()?
@@ -411,7 +429,7 @@ pub(super) fn marshal_video_extras(
 /// and the second and later skin deformers with their DQ weights.
 pub(super) fn marshal_mesh_extras(
     view: &ExtrasView<'_>,
-    raw: &ReviewImportExtras,
+    raw: &BridgeExtras,
 ) -> Result<Vec<extras::MeshExtras>, ImportError> {
     let color_sets = raw.color_sets()?;
     let color_values = raw.color_values()?;
@@ -669,7 +687,7 @@ pub(super) fn marshal_mesh_extras(
 /// The authored bind poses.
 pub(super) fn marshal_pose_extras(
     view: &ExtrasView<'_>,
-    raw: &ReviewImportExtras,
+    raw: &BridgeExtras,
 ) -> Result<Vec<extras::PoseExtras>, ImportError> {
     let pose_entries = raw.pose_entries()?;
     let poses = raw
@@ -701,7 +719,7 @@ pub(super) fn marshal_pose_extras(
 /// The display layers, and which nodes are on each.
 pub(super) fn marshal_display_layers(
     view: &ExtrasView<'_>,
-    raw: &ReviewImportExtras,
+    raw: &BridgeExtras,
 ) -> Result<Vec<extras::DisplayLayerExtras>, ImportError> {
     let layer_nodes = raw.layer_nodes()?;
     let display_layers = raw
@@ -730,7 +748,7 @@ pub(super) fn marshal_display_layers(
 /// The selection sets, and what each one selects.
 pub(super) fn marshal_selection_sets(
     view: &ExtrasView<'_>,
-    raw: &ReviewImportExtras,
+    raw: &BridgeExtras,
 ) -> Result<Vec<extras::SelectionSetExtras>, ImportError> {
     let selection_nodes = raw.selection_nodes()?;
     let selection_indices = raw.selection_indices()?;
@@ -790,7 +808,7 @@ pub(super) fn marshal_selection_sets(
 #[allow(clippy::type_complexity)]
 pub(super) fn marshal_animation_extras(
     view: &ExtrasView<'_>,
-    raw: &ReviewImportExtras,
+    raw: &BridgeExtras,
 ) -> Result<(Vec<extras::LayerCurves>, Vec<extras::ClipCurves>), ImportError> {
     let anim_keys = raw.anim_keys()?;
     let anim_curves = raw.anim_curves()?;
@@ -803,8 +821,13 @@ pub(super) fn marshal_animation_extras(
             ImportError::LoadFailed("source properties: curve index out of range".to_owned())
         })?;
         Ok(Some(extras::Curve {
+            // A key whose time or value is not a number is left out here, as the
+            // baked clip leaves out its own (`crate::repair`): `SourceExtras::
+            // validate` would otherwise refuse the whole capture for it, and with
+            // it every property the export gives back.
             keys: slice_range(anim_keys, curve.key_first, curve.key_count, "keys")?
                 .iter()
+                .filter(|key| key.time.is_finite() && key.value.is_finite())
                 .map(|key| extras::RawKey {
                     time: key.time,
                     value: key.value,

@@ -5,7 +5,7 @@
 //! crate with no shared vertices at all and every meshoptimizer operation is a
 //! no-op on it. Skipping it is never useful.
 
-use review_model::ModelData;
+use review_model::{ModelData, SourceExtras};
 
 use crate::Warnings;
 use crate::cancel::{CancelToken, cancelled};
@@ -30,24 +30,43 @@ use super::*;
 /// allowed to cross. Simplification in particular removes *nothing*, which reads
 /// as the tool being broken.
 ///
-/// Merging only vertices that match in position, normal, UV and color is
-/// lossless — each survivor is byte-for-byte what it replaced, so the mesh looks
-/// and shades exactly as it did — and it is the precondition meshoptimizer's own
-/// pipeline assumes ("generate a vertex remap first"). On that same asset it
-/// yields 30018 → 5284 vertices, after which a 50% LOD target is hit exactly.
+/// Merging only vertices that match in everything they carry — position,
+/// normal, every UV and colour set, crease, deform row and an authored tangent
+/// — is lossless: in everything the source authored, each survivor is
+/// byte-for-byte what it replaced, so the mesh looks, shades and exports exactly
+/// as it did. (The one thing not compared is a tangent the import synthesized,
+/// which no file ever carried; [`ops::index_losslessly`] says why.) It is also
+/// the precondition meshoptimizer's own pipeline assumes ("generate a vertex
+/// remap first"). On that same asset it yields 30018 → 5284 vertices, after
+/// which a 50% LOD target is hit exactly.
 ///
 /// It is deliberately not a stack operation: it changes nothing the user can see
 /// and there is no case where skipping it is useful. The Weld operation remains
 /// for the *lossy* merges — dropping normals or UVs from the comparison, or
 /// merging within a tolerance — which do change the mesh.
-pub(crate) fn index_mesh(submeshes: &mut [Submesh], stack: &OptStack, warnings: &mut Warnings) {
+///
+/// Excluded objects are indexed too. Exclusion keeps the user's operations off
+/// an object, and this is not one of them: it moves no triangle and changes no
+/// value. Left corner-split, an excluded object was counted one vertex per face
+/// corner in the baseline and in every level's stats (invariant 5), measured an
+/// ACMR of exactly 3.0, and exported one control point per corner — a polygon
+/// soup with no shared vertex, which is about as far from "untouched" as a file
+/// can get.
+///
+/// `extras` says which pieces authored their tangents; `None` (no capture, or a
+/// model without node tags, where no piece can be matched to its mesh) treats
+/// every tangent as synthesized.
+pub(crate) fn index_mesh(
+    submeshes: &mut [Submesh],
+    extras: Option<&SourceExtras>,
+    warnings: &mut Warnings,
+) {
     let _z = crate::prof::zone!("Index Mesh");
     for piece in submeshes.iter_mut() {
-        // An excluded object is left exactly as it was, down to its vertex order.
-        if is_excluded(stack, piece.node) {
-            continue;
-        }
-        if let Err(error) = ops::weld(piece, &crate::stack::WeldParams::default()) {
+        let tangents_authored = extras
+            .and_then(|extras| extras.mesh_of_node(piece.node))
+            .is_some_and(|part| part.tangents_authored);
+        if let Err(error) = ops::index_losslessly(piece, tangents_authored) {
             warnings.push(OptWarning::IndexFailed {
                 detail: error.to_string(),
             });
@@ -144,17 +163,20 @@ pub(crate) fn simplify_submeshes(
         let before: usize = pieces.iter().map(|piece| piece.triangle_count()).sum();
         let triangles = ((before as f32) * ratio).round() as usize;
 
-        match ops::simplify_object(
+        let outcome = ops::simplify_object(
             &mut pieces,
             &settings,
             triangles,
             target.target_error.max(0.0),
-        ) {
-            Ok(error) => worst_error = worst_error.max(error),
-            Err(error) => warnings.push(OptWarning::OperationFailed {
+        );
+        worst_error = worst_error.max(outcome.error);
+        // Each failure left only its own piece as it was; the rest of the
+        // object is simplified.
+        for error in outcome.failures {
+            warnings.push(OptWarning::OperationFailed {
                 operation: operation.clone(),
                 detail: error.to_string(),
-            }),
+            });
         }
         let after: usize = submeshes
             .iter()
@@ -191,7 +213,12 @@ pub(crate) fn apply_op(
     warnings: &mut Warnings,
     run: &RunContext<'_>,
 ) -> f32 {
-    if !op.enabled {
+    // The LOD operation is the fan-out point the caller handles, and only the
+    // first enabled one is: a second would have to fan out a chain that has
+    // already fanned out. Neither reaches this function to run, so neither is
+    // reported as running. (A preset carrying a second is repaired on load —
+    // `preset::from_json` — and the chrome never adds one.)
+    if !op.enabled || matches!(op.kind, OpKind::SimplifyLod(_)) {
         return 0.0;
     }
 
@@ -268,8 +295,8 @@ pub(crate) fn apply_op(
             OpKind::VertexCache => ops::optimize_vertex_cache(piece),
             OpKind::Overdraw { threshold } => ops::optimize_overdraw(piece, *threshold),
             OpKind::VertexFetch => ops::optimize_vertex_fetch(piece),
-            // The LOD operation is the pipeline's fan-out point, handled by the
-            // caller; Reduce, the AO bake and Remesh are handled above. None
+            // The LOD operation is refused above; Reduce, the AO bake, Remesh,
+            // Shrinkwrap and Recalculate Normals are handled above. None
             // reaches this path.
             OpKind::Reduce(_)
             | OpKind::SimplifyLod(_)

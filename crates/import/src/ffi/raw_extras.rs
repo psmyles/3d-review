@@ -482,4 +482,8 @@ pub(super) struct ReviewImportExtras {
     pub(super) uv_set_count: usize,
     pub(super) unused_vertices: *mut XUnusedVertex,
     pub(super) unused_vertex_count: usize,
+
+    /// Optional mesh layers the capture left out because their values could not
+    /// be read.
+    pub(super) skipped_layer_count: usize,
 }

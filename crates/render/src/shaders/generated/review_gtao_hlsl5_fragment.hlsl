@@ -30,6 +30,11 @@ struct SPIRV_Cross_Output
     float frag_ao : SV_Target0;
 };
 
+bool is_background_depth(float depth)
+{
+    return !((depth > 0.0f) && (depth < 1000000015047466219876688855040.0f));
+}
+
 float3 reconstruct_view_pos(float2 uv, float view_z)
 {
     float _78 = (uv.x * 2.0f) - 1.0f;
@@ -98,169 +103,175 @@ float sample_depth_mip(float2 uv, int level)
     return depth;
 }
 
-bool is_background_depth(float depth)
-{
-    return !((depth > 0.0f) && (depth < 1000000015047466219876688855040.0f));
-}
-
 void frag_main()
 {
-    float4 _281 = gbuffer.SampleLevel(gtao_sampler, v_uv, 0.0f);
-    float3 _284 = _281.xyz;
-    float _287 = _281.w;
-    if ((dot(_284, _284) < 0.25f) || (_287 >= (-9.9999997473787516355514526367188e-05f)))
+    float3 _284 = gbuffer.SampleLevel(gtao_sampler, v_uv, 0.0f).xyz;
+    float4 _290 = depth_mip0.SampleLevel(gtao_sampler, v_uv, 0.0f);
+    float _291 = _290.x;
+    bool _295 = dot(_284, _284) < 0.25f;
+    bool _302;
+    if (!_295)
     {
-        frag_ao = 1.0f;
-        return;
-    }
-    float3 _303 = normalize(_284);
-    float2 param = v_uv;
-    float param_1 = _287;
-    float3 _309 = reconstruct_view_pos(param, param_1);
-    float3 _313 = normalize(-_309);
-    float _318 = max(_57_params.x, 9.9999997473787516355514526367188e-05f);
-    float _325 = clamp(_57_params.z, 0.0f, 1.0f);
-    uint _330 = max(uint(_57_config.y), 1u);
-    uint _335 = max(uint(_57_config.z), 1u);
-    float2 _337 = target_dims();
-    float2 _341 = 1.0f.xx / _337;
-    float3 param_2 = _309 + float3(_318, 0.0f, 0.0f);
-    float _359 = abs(project_to_uv(param_2).x - v_uv.x) * _337.x;
-    if (_359 < 1.2999999523162841796875f)
-    {
-        frag_ao = 1.0f;
-        return;
-    }
-    float _368 = 1.2999999523162841796875f / _359;
-    float _380 = (-1.62601625919342041015625f) / _318;
-    float _385 = ((_318 * 0.3849999904632568359375f) / (0.6150000095367431640625f * _318)) + 1.0f;
-    uint2 param_3 = uint2(uint(gl_FragCoord.x), uint(gl_FragCoord.y));
-    float2 _397 = spatial_dither(param_3);
-    float _404 = frac(_397.x + _57_temporal.x);
-    float _411 = frac(_397.y + _57_temporal.y);
-    float visibility = clamp((10.0f - _359) * 0.00999999977648258209228515625f, 0.0f, 1.0f) * 0.5f;
-    float _691;
-    float _708;
-    for (uint s = 0u; s < _330; s++)
-    {
-        float _438 = ((float(s) + _404) * 3.1415927410125732421875f) / float(_330);
-        float _441 = cos(_438);
-        float _444 = sin(_438);
-        float2 _449 = float2(_441, -_444);
-        float3 _453 = float3(_441, _444, 0.0f);
-        float3 _461 = _453 - (_313 * dot(_453, _313));
-        float3 _465 = cross(_461, _313);
-        float _469 = dot(_465, _465);
-        if (_469 < 9.9999999600419720025001879548654e-13f)
-        {
-            continue;
-        }
-        float3 _480 = _465 * rsqrt(_469);
-        float3 _488 = _303 - (_480 * dot(_303, _480));
-        float _491 = length(_488);
-        float proj_len = _491;
-        if (_491 < 9.9999999747524270787835121154785e-07f)
-        {
-            continue;
-        }
-        float _507 = proj_len;
-        float _509 = clamp(dot(_488, _313) / _507, 0.0f, 1.0f);
-        float _514 = sign(dot(_488, _461)) * acos(_509);
-        float _519 = cos(_514 + 1.57079637050628662109375f);
-        float _523 = cos(_514 - 1.57079637050628662109375f);
-        float horizon_cos0 = _519;
-        float horizon_cos1 = _523;
-        for (uint t = 0u; t < _335; t++)
-        {
-            float _556 = (float(t) + frac(_411 + (float(s + (t * _330)) * 0.61803400516510009765625f))) / float(_335);
-            float2 _567 = (_449 * ((_556 * _556) + _368)) * _359;
-            int _580 = int(clamp(log2(max(length(_567), 1.0f)) - 3.2999999523162841796875f, 0.0f, 4.0f) + 0.5f);
-            float2 _585 = round(_567) * _341;
-            float2 _589 = v_uv + _585;
-            float2 _593 = v_uv - _585;
-            float2 param_4 = _589;
-            int param_5 = _580;
-            float _599 = sample_depth_mip(param_4, param_5);
-            float2 param_6 = _593;
-            int param_7 = _580;
-            float _605 = sample_depth_mip(param_6, param_7);
-            float shc0 = _519;
-            float param_8 = _599;
-            if (!is_background_depth(param_8))
-            {
-                float2 param_9 = _589;
-                float param_10 = -_599;
-                float3 _622 = reconstruct_view_pos(param_9, param_10) - _309;
-                float _625 = length(_622);
-                if (_625 > 9.9999999747524270787835121154785e-07f)
-                {
-                    shc0 = lerp(_519, dot(_622, _313) / _625, clamp((_625 * _380) + _385, 0.0f, 1.0f));
-                }
-            }
-            float shc1 = _523;
-            float param_11 = _605;
-            if (!is_background_depth(param_11))
-            {
-                float2 param_12 = _593;
-                float param_13 = -_605;
-                float3 _661 = reconstruct_view_pos(param_12, param_13) - _309;
-                float _664 = length(_661);
-                if (_664 > 9.9999999747524270787835121154785e-07f)
-                {
-                    shc1 = lerp(_523, dot(_661, _313) / _664, clamp((_664 * _380) + _385, 0.0f, 1.0f));
-                }
-            }
-            float _687 = max(horizon_cos0, shc0);
-            if (horizon_cos0 > shc0)
-            {
-                _691 = lerp(_687, shc0, _325);
-            }
-            else
-            {
-                _691 = _687;
-            }
-            horizon_cos0 = _691;
-            float _704 = max(horizon_cos1, shc1);
-            if (horizon_cos1 > shc1)
-            {
-                _708 = lerp(_704, shc1, _325);
-            }
-            else
-            {
-                _708 = _704;
-            }
-            horizon_cos1 = _708;
-        }
-        float _720 = proj_len;
-        float _722 = lerp(_720, 1.0f, 0.0500000007450580596923828125f);
-        proj_len = _722;
-        float _734 = sin(_514);
-        float _738 = acos(clamp(horizon_cos1, -1.0f, 1.0f)) * (-2.0f);
-        float _752 = 2.0f * acos(clamp(horizon_cos0, -1.0f, 1.0f));
-        visibility += (_722 * (0.25f * (((_509 + (_738 * _734)) - cos(_738 - _514)) + ((_509 + (_752 * _734)) - cos(_752 - _514)))));
-    }
-    float _772 = visibility;
-    float _776 = clamp(_772 / float(_330), 0.0f, 1.0f);
-    visibility = _776;
-    float _782 = pow(max(_776, 9.9999999747524270787835121154785e-07f), max(_57_params.y, 0.0f));
-    if (_57_temporal.z >= 1.0f)
-    {
-        frag_ao = _782;
+        float param = _291;
+        _302 = is_background_depth(param);
     }
     else
     {
-        float4 _796 = ao_history.SampleLevel(gtao_sampler, v_uv, 0.0f);
-        float _797 = _796.x;
-        float _806;
-        if ((_797 >= 0.0f) && (_797 <= 1.0f))
+        _302 = _295;
+    }
+    if (_302 || (_291 <= 9.9999997473787516355514526367188e-05f))
+    {
+        frag_ao = 1.0f;
+        return;
+    }
+    float3 _317 = normalize(_284);
+    float2 param_1 = v_uv;
+    float param_2 = -_291;
+    float3 _323 = reconstruct_view_pos(param_1, param_2);
+    float3 _327 = normalize(-_323);
+    float _331 = max(_57_params.x, 9.9999997473787516355514526367188e-05f);
+    float _338 = clamp(_57_params.z, 0.0f, 1.0f);
+    uint _343 = max(uint(_57_config.y), 1u);
+    uint _348 = max(uint(_57_config.z), 1u);
+    float2 _350 = target_dims();
+    float2 _354 = 1.0f.xx / _350;
+    float3 param_3 = _323 + float3(_331, 0.0f, 0.0f);
+    float _372 = abs(project_to_uv(param_3).x - v_uv.x) * _350.x;
+    if (_372 < 1.2999999523162841796875f)
+    {
+        frag_ao = 1.0f;
+        return;
+    }
+    float _381 = 1.2999999523162841796875f / _372;
+    float _393 = (-1.62601625919342041015625f) / _331;
+    float _398 = ((_331 * 0.3849999904632568359375f) / (0.6150000095367431640625f * _331)) + 1.0f;
+    uint2 param_4 = uint2(uint(gl_FragCoord.x), uint(gl_FragCoord.y));
+    float2 _410 = spatial_dither(param_4);
+    float _417 = frac(_410.x + _57_temporal.x);
+    float _424 = frac(_410.y + _57_temporal.y);
+    float visibility = clamp((10.0f - _372) * 0.00999999977648258209228515625f, 0.0f, 1.0f) * 0.5f;
+    float _704;
+    float _721;
+    for (uint s = 0u; s < _343; s++)
+    {
+        float _451 = ((float(s) + _417) * 3.1415927410125732421875f) / float(_343);
+        float _454 = cos(_451);
+        float _457 = sin(_451);
+        float2 _462 = float2(_454, -_457);
+        float3 _466 = float3(_454, _457, 0.0f);
+        float3 _474 = _466 - (_327 * dot(_466, _327));
+        float3 _478 = cross(_474, _327);
+        float _482 = dot(_478, _478);
+        if (_482 < 9.9999999600419720025001879548654e-13f)
         {
-            _806 = lerp(_797, _782, _57_temporal.z);
+            continue;
+        }
+        float3 _493 = _478 * rsqrt(_482);
+        float3 _501 = _317 - (_493 * dot(_317, _493));
+        float _504 = length(_501);
+        float proj_len = _504;
+        if (_504 < 9.9999999747524270787835121154785e-07f)
+        {
+            continue;
+        }
+        float _520 = proj_len;
+        float _522 = clamp(dot(_501, _327) / _520, 0.0f, 1.0f);
+        float _527 = sign(dot(_501, _474)) * acos(_522);
+        float _532 = cos(_527 + 1.57079637050628662109375f);
+        float _536 = cos(_527 - 1.57079637050628662109375f);
+        float horizon_cos0 = _532;
+        float horizon_cos1 = _536;
+        for (uint t = 0u; t < _348; t++)
+        {
+            float _569 = (float(t) + frac(_424 + (float(s + (t * _343)) * 0.61803400516510009765625f))) / float(_348);
+            float2 _580 = (_462 * ((_569 * _569) + _381)) * _372;
+            int _593 = int(clamp(log2(max(length(_580), 1.0f)) - 3.2999999523162841796875f, 0.0f, 4.0f) + 0.5f);
+            float2 _598 = round(_580) * _354;
+            float2 _602 = v_uv + _598;
+            float2 _606 = v_uv - _598;
+            float2 param_5 = _602;
+            int param_6 = _593;
+            float _612 = sample_depth_mip(param_5, param_6);
+            float2 param_7 = _606;
+            int param_8 = _593;
+            float _618 = sample_depth_mip(param_7, param_8);
+            float shc0 = _532;
+            float param_9 = _612;
+            if (!is_background_depth(param_9))
+            {
+                float2 param_10 = _602;
+                float param_11 = -_612;
+                float3 _635 = reconstruct_view_pos(param_10, param_11) - _323;
+                float _638 = length(_635);
+                if (_638 > 9.9999999747524270787835121154785e-07f)
+                {
+                    shc0 = lerp(_532, dot(_635, _327) / _638, clamp((_638 * _393) + _398, 0.0f, 1.0f));
+                }
+            }
+            float shc1 = _536;
+            float param_12 = _618;
+            if (!is_background_depth(param_12))
+            {
+                float2 param_13 = _606;
+                float param_14 = -_618;
+                float3 _674 = reconstruct_view_pos(param_13, param_14) - _323;
+                float _677 = length(_674);
+                if (_677 > 9.9999999747524270787835121154785e-07f)
+                {
+                    shc1 = lerp(_536, dot(_674, _327) / _677, clamp((_677 * _393) + _398, 0.0f, 1.0f));
+                }
+            }
+            float _700 = max(horizon_cos0, shc0);
+            if (horizon_cos0 > shc0)
+            {
+                _704 = lerp(_700, shc0, _338);
+            }
+            else
+            {
+                _704 = _700;
+            }
+            horizon_cos0 = _704;
+            float _717 = max(horizon_cos1, shc1);
+            if (horizon_cos1 > shc1)
+            {
+                _721 = lerp(_717, shc1, _338);
+            }
+            else
+            {
+                _721 = _717;
+            }
+            horizon_cos1 = _721;
+        }
+        float _733 = proj_len;
+        float _735 = lerp(_733, 1.0f, 0.0500000007450580596923828125f);
+        proj_len = _735;
+        float _747 = sin(_527);
+        float _751 = acos(clamp(horizon_cos1, -1.0f, 1.0f)) * (-2.0f);
+        float _765 = 2.0f * acos(clamp(horizon_cos0, -1.0f, 1.0f));
+        visibility += (_735 * (0.25f * (((_522 + (_751 * _747)) - cos(_751 - _527)) + ((_522 + (_765 * _747)) - cos(_765 - _527)))));
+    }
+    float _785 = visibility;
+    float _789 = clamp(_785 / float(_343), 0.0f, 1.0f);
+    visibility = _789;
+    float _795 = pow(max(_789, 9.9999999747524270787835121154785e-07f), max(_57_params.y, 0.0f));
+    if (_57_temporal.z >= 1.0f)
+    {
+        frag_ao = _795;
+    }
+    else
+    {
+        float4 _809 = ao_history.SampleLevel(gtao_sampler, v_uv, 0.0f);
+        float _810 = _809.x;
+        float _819;
+        if ((_810 >= 0.0f) && (_810 <= 1.0f))
+        {
+            _819 = lerp(_810, _795, _57_temporal.z);
         }
         else
         {
-            _806 = _782;
+            _819 = _795;
         }
-        frag_ao = _806;
+        frag_ao = _819;
     }
 }
 

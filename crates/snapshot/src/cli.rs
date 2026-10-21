@@ -92,6 +92,7 @@ pub struct ClipSpec {
 }
 
 /// One `INPUT` argument, parsed.
+#[derive(Debug)]
 pub struct InputSpec {
     pub path: PathBuf,
     pub stack: Option<StackSpec>,
@@ -99,6 +100,7 @@ pub struct InputSpec {
 }
 
 /// What to run over the file before rendering it.
+#[derive(Debug, PartialEq)]
 pub enum StackSpec {
     Preset(PathBuf),
     /// Triangle ratios, and an error limit for every level (the default's when `None`).
@@ -106,7 +108,7 @@ pub enum StackSpec {
 }
 
 /// Which part of the file (or of the stack's output) a subject is.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LevelSpec {
     /// The whole file, or every level when a stack runs.
     Default,
@@ -232,8 +234,10 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
             input => args.inputs.push(parse_input(input)?),
         }
     }
+    // Only `--help` is a successful run that renders nothing. A line with no
+    // INPUT is a mistake, and a script that made it has to hear so.
     if args.inputs.is_empty() {
-        return Ok(None);
+        bail!("no INPUT given\n\n{USAGE}");
     }
     if args.curves && args.clip.is_none() {
         bail!("--curves draws a clip's motion: it needs --clip");
@@ -357,32 +361,42 @@ fn parse_background(text: &str) -> Result<ViewportBackground> {
     })
 }
 
-/// `path[@stack][#level]`. The suffixes are looked for only after the file's
-/// extension, so a `#` or `@` in a directory name is not mistaken for one.
+/// `path[@stack][#level]`.
+///
+/// The file is everything up to the last `.fbx` (in any case) that ends the
+/// argument or is followed by `@` or `#`, so `exports.fbx_old/hero.fbx` and
+/// `hero.fbx.v2.fbx` are files, and a `#` or `@` in a directory name is not
+/// mistaken for a suffix. The level is what follows the last `#` - but a
+/// preset's path may hold a `#` of its own, so after `@<preset.json>` a `#` that
+/// does not start a level selector is part of the path.
 fn parse_input(text: &str) -> Result<InputSpec> {
     let lower = text.to_ascii_lowercase();
     let path_end = lower
-        .find(".fbx")
-        .map(|at| at + 4)
+        .match_indices(".fbx")
+        .map(|(at, _)| at + 4)
+        .filter(|&end| matches!(lower.as_bytes().get(end), None | Some(b'@' | b'#')))
+        .last()
         .ok_or_else(|| anyhow!("an input must name an .fbx file: {text}"))?;
     let (path, mut rest) = text.split_at(path_end);
     let mut level = LevelSpec::Default;
-    if let Some((before, after)) = rest.split_once('#') {
-        level = match after.to_ascii_lowercase().as_str() {
-            "all" | "lod*" => LevelSpec::All,
-            selector => LevelSpec::One(
-                selector
-                    .trim_start_matches("lod")
-                    .parse()
-                    .with_context(|| format!("unknown level selector #{after}"))?,
-            ),
-        };
-        rest = before;
+    if let Some((before, after)) = rest.rsplit_once('#') {
+        match parse_level(after) {
+            Some(selected) => {
+                level = selected;
+                rest = before;
+            }
+            // `@lods` takes no `#`, and with no stack there is no path for
+            // one to belong to.
+            None if !rest.starts_with('@') || is_lods(&before[1..]) => {
+                bail!("unknown level selector #{after}")
+            }
+            None => {}
+        }
     }
     let stack = match rest.strip_prefix('@') {
         None if rest.is_empty() => None,
         None => bail!("unexpected text after the file name: {rest}"),
-        Some(lods) if lods == "lods" || lods.starts_with("lods:") || lods.starts_with("lods/") => {
+        Some(lods) if is_lods(lods) => {
             let (list, error) = match lods.split_once('/') {
                 Some((list, error)) => (
                     list,
@@ -413,6 +427,26 @@ fn parse_input(text: &str) -> Result<InputSpec> {
     })
 }
 
+/// Whether a stack (the text after `@`) is the `lods[:ratios][/err]` form
+/// rather than a preset's path.
+fn is_lods(stack: &str) -> bool {
+    stack == "lods" || stack.starts_with("lods:") || stack.starts_with("lods/")
+}
+
+/// `all`, `lod*`, `<n>` or `LOD<n>`, in any case; `None` for anything else.
+fn parse_level(selector: &str) -> Option<LevelSpec> {
+    let selector = selector.to_ascii_lowercase();
+    match selector.as_str() {
+        "all" | "lod*" => Some(LevelSpec::All),
+        other => other
+            .strip_prefix("lod")
+            .unwrap_or(other)
+            .parse()
+            .ok()
+            .map(LevelSpec::One),
+    }
+}
+
 /// `smooth` or `straight`, then optionally `:width:opacity:dot size`.
 fn parse_curve_style(text: &str) -> Result<TrajectoryStyle> {
     let mut parts = text.split(':');
@@ -433,4 +467,75 @@ fn parse_curve_style(text: &str) -> Result<TrajectoryStyle> {
         }
     }
     Ok(style)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn input(text: &str) -> (PathBuf, Option<StackSpec>, LevelSpec) {
+        let spec = parse_input(text).unwrap_or_else(|error| panic!("{text}: {error:#}"));
+        (spec.path, spec.stack, spec.level)
+    }
+
+    #[test]
+    fn the_file_ends_at_the_last_fbx_a_suffix_may_follow() {
+        for path in [
+            "D:/exports.fbx_old/hero.fbx",
+            "hero.fbx.v2.fbx",
+            "D:/odd#dir/a@b/hero.FBX",
+        ] {
+            assert_eq!(input(path), (path.into(), None, LevelSpec::Default));
+        }
+        assert_eq!(
+            input("D:/exports.fbx_old/hero.fbx#LOD2"),
+            (
+                "D:/exports.fbx_old/hero.fbx".into(),
+                None,
+                LevelSpec::One(2)
+            )
+        );
+        assert!(parse_input("hero.fbx.txt").is_err());
+    }
+
+    #[test]
+    fn a_level_follows_the_stack_and_a_presets_path_keeps_its_own_hash() {
+        assert_eq!(
+            input("a.fbx@C:/my#presets/p.json"),
+            (
+                "a.fbx".into(),
+                Some(StackSpec::Preset("C:/my#presets/p.json".into())),
+                LevelSpec::Default
+            )
+        );
+        assert_eq!(
+            input("a.fbx@C:/my#presets/p.json#all"),
+            (
+                "a.fbx".into(),
+                Some(StackSpec::Preset("C:/my#presets/p.json".into())),
+                LevelSpec::All
+            )
+        );
+        assert_eq!(
+            input("a.FBX@lods:0.5,0.25/0.02#lod1"),
+            (
+                "a.FBX".into(),
+                Some(StackSpec::Lods(vec![0.5, 0.25], Some(0.02))),
+                LevelSpec::One(1)
+            )
+        );
+        assert_eq!(input("a.fbx#3").2, LevelSpec::One(3));
+        // Where a `#` cannot belong to a path, it must be a level.
+        assert!(parse_input("a.fbx#bogus").is_err());
+        assert!(parse_input("a.fbx@lods#bogus").is_err());
+    }
+
+    #[test]
+    fn options_without_an_input_are_a_mistake_and_help_is_not() {
+        let line = |line: &str| parse(line.split_whitespace().map(str::to_owned));
+        assert!(line("--grid --look wire").is_err());
+        assert!(line("").is_err());
+        assert!(matches!(line("--grid --help"), Ok(None)));
+        assert!(matches!(line("a.fbx --grid"), Ok(Some(_))));
+    }
 }

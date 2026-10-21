@@ -341,47 +341,53 @@ impl App {
             .is_some_and(|[_, (right, _)]| position.x >= right.x)
     }
 
-    /// The Opt split's two views, left then right, each as `(top-left, size)` in
-    /// the physical pixels a pointer position is measured in; `None` outside the
-    /// split layout.
+    /// The split's two views, left then right, each as `(top-left, size)` in the
+    /// physical pixels a pointer position is measured in; `None` while the scene
+    /// is one view ([`Self::scene_is_split`]).
     ///
     /// The renderer lays the split out inside the chrome-free scene area rather
     /// than across the whole window, so the halves are `ui`'s
     /// [`review_ui::split_halves`] of *that* rect — the same call the divider and
     /// the dimension labels make. Deriving them from the window instead would put
     /// the pointer in the wrong view for every pixel between the two centres.
-    pub(crate) fn opt_split_halves(&self) -> Option<[(Vec2, Vec2); 2]> {
-        if self.ui.mode != WorkspaceMode::Opt || self.ui.opt.layout != OptLayout::Split {
+    fn split_halves(&self) -> Option<[(Vec2, Vec2); 2]> {
+        if !self.scene_is_split() {
             return None;
         }
         let rect = self.ui.scene_viewport?;
-        let scale = self.window.as_ref()?.scale_factor() as f32;
-        let physical = |half: egui::Rect| {
-            (
-                Vec2::new(half.left(), half.top()) * scale,
-                Vec2::new(half.width(), half.height()) * scale,
-            )
-        };
-        let (left, right) = review_ui::split_halves(rect);
-        Some([physical(left), physical(right)])
+        Some(halves_in_pixels(rect, self.pixels_per_point()))
     }
 
-    /// The Aud split's two halves (the model, then its UV layout) in physical
-    /// pixels, as [`Self::opt_split_halves`]; `None` when Aud is not split.
+    /// The Opt split's two views, as [`Self::split_halves`]; `None` outside the
+    /// Opt split layout.
+    pub(crate) fn opt_split_halves(&self) -> Option<[(Vec2, Vec2); 2]> {
+        (self.ui.mode == WorkspaceMode::Opt)
+            .then(|| self.split_halves())
+            .flatten()
+    }
+
+    /// The Aud split's two halves (the model, then its UV layout), as
+    /// [`Self::split_halves`]; `None` when Aud is not split.
     pub(crate) fn aud_split_halves(&self) -> Option<[(Vec2, Vec2); 2]> {
-        if self.ui.mode != WorkspaceMode::Aud || !self.ui.aud.split() {
-            return None;
+        (self.ui.mode == WorkspaceMode::Aud)
+            .then(|| self.split_halves())
+            .flatten()
+    }
+
+    /// How many physical pixels one egui point covers: the factor the chrome was
+    /// last laid out at, and so the one a size it measured in points converts by.
+    ///
+    /// egui's own, not the window's scale factor. The two differ as soon as egui's
+    /// Ctrl +/- zoom (on by default) has been used, and the renderer places the
+    /// split with egui's (`frame.rs`); a pointer judged by the window's would land
+    /// in the wrong half after a zoom.
+    pub(crate) fn pixels_per_point(&self) -> f32 {
+        match (self.egui_ctx.as_ref(), self.window.as_ref()) {
+            (Some(ctx), _) => ctx.pixels_per_point(),
+            // Before egui exists nothing has been measured in points anyway.
+            (None, Some(window)) => window.scale_factor() as f32,
+            (None, None) => 1.0,
         }
-        let rect = self.ui.scene_viewport?;
-        let scale = self.window.as_ref()?.scale_factor() as f32;
-        let physical = |half: egui::Rect| {
-            (
-                Vec2::new(half.left(), half.top()) * scale,
-                Vec2::new(half.width(), half.height()) * scale,
-            )
-        };
-        let (left, right) = review_ui::split_halves(rect);
-        Some([physical(left), physical(right)])
     }
 
     /// Whether a pointer position falls in the Aud split's UV half.
@@ -531,6 +537,19 @@ pub(crate) fn framing_area(screen: egui::Rect, viewport: egui::Rect, split: bool
     }
 }
 
+/// `ui`'s [`review_ui::split_halves`] of `rect` (egui points), each half as
+/// `(top-left, size)` in physical pixels at `pixels_per_point`.
+fn halves_in_pixels(rect: egui::Rect, pixels_per_point: f32) -> [(Vec2, Vec2); 2] {
+    let physical = |half: egui::Rect| {
+        (
+            Vec2::new(half.left(), half.top()) * pixels_per_point,
+            Vec2::new(half.width(), half.height()) * pixels_per_point,
+        )
+    };
+    let (left, right) = review_ui::split_halves(rect);
+    [physical(left), physical(right)]
+}
+
 /// [`framing_area`] for the startup view, framed before egui's first pass has
 /// measured anything. The toolbar and status bar are fixed tokens and can be
 /// kept clear already; the side panels are measured once drawn, and the first
@@ -571,10 +590,24 @@ mod tests {
     use review_ui::theme::size;
     use winit::dpi::PhysicalSize;
 
-    use super::{framing_area, startup_framing_area};
+    use super::{framing_area, halves_in_pixels, startup_framing_area};
 
     fn rect(left: f32, top: f32, right: f32, bottom: f32) -> egui::Rect {
         egui::Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, bottom))
+    }
+
+    /// The halves a pointer is tested against scale by the factor the rect was
+    /// measured at — egui's, zoom included — so they move with the chrome when
+    /// it is zoomed rather than staying where the window's scale would put them.
+    #[test]
+    fn split_halves_follow_the_chrome_zoom() {
+        let viewport = rect(100.0, 20.0, 500.0, 300.0);
+        let [left, right] = halves_in_pixels(viewport, 1.0);
+        let [zoomed_left, zoomed_right] = halves_in_pixels(viewport, 1.5);
+        assert_eq!(zoomed_left.0, left.0 * 1.5);
+        assert_eq!(zoomed_right.0, right.0 * 1.5);
+        assert_eq!(zoomed_right.1, right.1 * 1.5);
+        assert!(right.0.x > left.0.x, "the second half is the right one");
     }
 
     /// A single view keeps the model out from under every panel, and the

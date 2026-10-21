@@ -38,17 +38,22 @@
 //! manifold guarantee working: the output has a few more vertices than asked
 //! for rather than a defect.
 //!
-//! ## Why the survivor does not move until the end
+//! ## Why the survivor moves at every collapse
 //!
-//! Within a region the survivor keeps its own position, and only the last vertex
-//! standing moves to the quadric's optimum. That makes every edge length in the
-//! region *fixed*, so the order edges are collapsed in can be decided once, up
-//! front, by sorting — instead of a priority queue that has to be re-scored
-//! after every collapse.
+//! Keeping the survivor where it is would make every edge length in a region
+//! *fixed*, so the order could be decided once, up front, by one sort. It was
+//! tried, and it is wrong: the last merges in a region then drag one vertex
+//! across the whole of it and turn every sliver on the way inside out (measured
+//! on a nine-stone pedestal: 1489 collapses refused for a flip against 102 for
+//! every other reason, and a fifth more faces than asked for). So each collapse
+//! puts the survivor where the two vertices' quadrics say ([`placement`]) — and
+//! because that changes the lengths, a region's edges are re-read from the live
+//! mesh and re-sorted every round ([`live_edges`]) rather than ordered once.
 //!
-//! It also makes that last move the largest and the least constrained in the
-//! whole rebuild, because by then every collapse has already pulled the
-//! neighbourhood in tight around the vertex. See [`place_survivor`].
+//! When a region is down to one vertex, that vertex makes one more move, to the
+//! optimum of the whole region's quadric. It is the largest and the least
+//! constrained move in the rebuild, because by then every collapse has already
+//! pulled the neighbourhood in tight around it. See [`place_survivor`].
 
 use glam::Vec3;
 
@@ -88,7 +93,19 @@ pub(crate) struct Collapsed {
     pub(crate) corners: Vec<u32>,
     /// Per input vertex: still part of the mesh.
     pub(crate) alive: Vec<bool>,
-    /// Per input vertex: where it is now. Only a region's last survivor moves.
+    /// Per input vertex: on an open border of the mesh *as it stands*.
+    ///
+    /// The input's own flag is not enough once vertices merge. With **Align to
+    /// boundaries** off a border vertex is an ordinary one, free to die into an
+    /// interior neighbour - which is then on the border, and which the input
+    /// says is not. A later collapse between it and a border vertex further
+    /// round the same outline then passed the guard against pinching the loop
+    /// shut. A collapse never makes a border edge, it only hands its dying
+    /// vertex's on to the survivor, so a vertex is on the border exactly when
+    /// it started there or absorbed one that was.
+    pub(crate) border: Vec<bool>,
+    /// Per input vertex: where it is now. A survivor moves at every collapse it
+    /// wins and once more when its region is done; a feature vertex never does.
     pub(crate) positions: Vec<[f64; 3]>,
     /// Regions that did not come down to a single vertex.
     pub(crate) stubborn: usize,
@@ -244,6 +261,7 @@ pub(crate) fn run(
         alive: (0..count)
             .map(|vertex| surface.topology.is_referenced(vertex as u32))
             .collect(),
+        border: surface.topology.boundary.clone(),
         positions: (0..count as u32).map(|v| surface.position(v)).collect(),
         stubborn: 0,
     };
@@ -325,8 +343,7 @@ fn collapse_region(
                 continue;
             }
             let along = faces_along_edge(state, incidence, a, b);
-            let Some((dying, survivor)) = survivor_of(surface, features, is_seed, a, b, along)
-            else {
+            let Some((dying, survivor)) = survivor_of(state, features, is_seed, a, b, along) else {
                 continue;
             };
             if !link_condition(state, incidence, dying, survivor, &mut left, &mut right) {
@@ -411,7 +428,7 @@ fn distance_between(state: &Collapsed, a: u32, b: u32) -> f64 {
 /// Which of the two endpoints dies, or `None` when the edge may not collapse at
 /// all.
 fn survivor_of(
-    surface: Surface<'_>,
+    state: &Collapsed,
     features: &Features,
     is_seed: &[bool],
     a: u32,
@@ -427,11 +444,9 @@ fn survivor_of(
     // collapsing them pinches the loop into a figure of eight: the vertex left
     // behind carries four border edges instead of two. Measured on a stylized
     // plant's bark, which is an open sheet curled into a tube so its outline
-    // passes close to itself.
-    if surface.topology.boundary[a as usize]
-        && surface.topology.boundary[b as usize]
-        && faces_along != 1
-    {
+    // passes close to itself. Read from the border as the collapses have left
+    // it (see [`Collapsed::border`]), not as the input had it.
+    if state.border[a as usize] && state.border[b as usize] && faces_along != 1 {
         return None;
     }
 
@@ -446,16 +461,32 @@ fn survivor_of(
         // input refused those collapses and left the result a fifth denser than
         // it was asked for (measured on a nine-stone pedestal: 3586 faces for a
         // budget of 3000).
-        let chain = features.polyline_of[a as usize];
-        if chain == u32::MAX || chain != features.polyline_of[b as usize] {
+        //
+        // A junction is on every chain that meets there, not only the one
+        // `polyline_of` names - so the vertex beside a cube's corner may merge
+        // into it along any of the three creases, where reading the one name
+        // let it do so along the lowest-numbered crease only and left a sliver
+        // beside every corner on the other two.
+        let (junction_a, junction_b) =
+            (features.junction[a as usize], features.junction[b as usize]);
+        let (chain_a, chain_b) = (
+            features.polyline_of[a as usize],
+            features.polyline_of[b as usize],
+        );
+        let shared = match (junction_a, junction_b) {
+            (true, true) => false,
+            (true, false) => chain_b != u32::MAX && features.lies_on(a, chain_b),
+            (false, true) => chain_a != u32::MAX && features.lies_on(b, chain_a),
+            (false, false) => chain_a != u32::MAX && chain_a == chain_b,
+        };
+        if !shared {
             return None;
         }
         // A junction outranks a plain feature vertex; it is a corner.
-        return match (features.junction[a as usize], features.junction[b as usize]) {
-            (true, true) => None,
-            (true, false) => Some((b, a)),
-            (false, true) => Some((a, b)),
-            (false, false) => Some((b, a)),
+        return if junction_b {
+            Some((a, b))
+        } else {
+            Some((b, a))
         };
     }
     // A feature never collapses into an ordinary vertex, or the outline moves.
@@ -728,6 +759,10 @@ fn apply(state: &mut Collapsed, incidence: &mut Incidence<'_>, dying: u32, survi
     }
     incidence.recycle(faces);
     state.alive[dying as usize] = false;
+    // The dying vertex's border edges are the survivor's now.
+    if state.border[dying as usize] {
+        state.border[survivor as usize] = true;
+    }
 }
 
 /// Move a region's last vertex to where its own surface is best fitted.
@@ -1033,12 +1068,108 @@ mod tests {
         (positions, indices)
     }
 
+    /// A unit cube with each face cut into `side` x `side` quads, welded, so its
+    /// twelve edges are creases and its eight corners are where three meet.
+    fn subdivided_cube(side: u32) -> (Vec<f32>, Vec<u32>) {
+        subdivided_cubes(side, &[[0, 0, 0]])
+    }
+
+    /// Unit cubes as [`subdivided_cube`] builds them, each moved by a whole
+    /// number of cubes and all welded together - so two placed corner to corner
+    /// share that one vertex and nothing else.
+    fn subdivided_cubes(side: u32, offsets: &[[i64; 3]]) -> (Vec<f32>, Vec<u32>) {
+        let mut slot: HashMap<[i64; 3], u32> = HashMap::new();
+        let mut positions = Vec::new();
+        let mut indices = Vec::new();
+        let mut at = |point: [i64; 3]| -> u32 {
+            *slot.entry(point).or_insert_with(|| {
+                positions.extend(point.map(|value| value as f32 / side as f32));
+                (positions.len() / 3 - 1) as u32
+            })
+        };
+        let n = i64::from(side);
+        for offset in offsets {
+            // Each face as (fixed axis, value, the two axes it spans), wound
+            // outward.
+            for (axis, value) in [(0usize, 0i64), (0, n), (1, 0), (1, n), (2, 0), (2, n)] {
+                let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
+                for i in 0..n {
+                    for j in 0..n {
+                        let corner = |di: i64, dj: i64| {
+                            let mut point = [0i64; 3];
+                            point[axis] = value;
+                            point[u] = i + di;
+                            point[v] = j + dj;
+                            [0, 1, 2].map(|k| point[k] + offset[k] * n)
+                        };
+                        let quad = [corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1)];
+                        let quad = quad.map(&mut at);
+                        let (a, b, c, d) = (quad[0], quad[1], quad[2], quad[3]);
+                        if value == 0 {
+                            indices.extend_from_slice(&[a, c, b, a, d, c]);
+                        } else {
+                            indices.extend_from_slice(&[a, b, c, a, c, d]);
+                        }
+                    }
+                }
+            }
+        }
+        (positions, indices)
+    }
+
+    /// Where two closed parts touch at a single vertex, that vertex is kept
+    /// exactly and both parts still meet at it - end to end, over the stages the
+    /// feature and seed tests pin it in. (A cube's corner is a hard case to get
+    /// wrong even unprotected, since its own quadric solves to the corner; this
+    /// is the property, not a reproduction.)
+    #[test]
+    fn a_point_where_two_parts_touch_stays_where_it_is() {
+        let (positions, indices) = subdivided_cubes(8, &[[0, 0, 0], [1, 1, 1]]);
+        let shared = Vec3::ONE;
+
+        let run = rebuild(&positions, &indices, 120, 0.4);
+
+        assert!(run.output.validate().is_ok());
+        let kept = run
+            .output
+            .positions
+            .iter()
+            .position(|&position| position == shared)
+            .expect("the point the two cubes share is still a vertex") as u32;
+        let (mut below, mut above) = (false, false);
+        for face in 0..run.output.face_count() {
+            let corners = run.output.face(face);
+            if !corners.contains(&kept) {
+                continue;
+            }
+            let centre = corners
+                .iter()
+                .map(|&corner| run.output.positions[corner as usize])
+                .sum::<Vec3>()
+                / corners.len() as f32;
+            below |= centre.x < 1.0;
+            above |= centre.x > 1.0;
+        }
+        assert!(below && above, "both cubes still meet at the shared point");
+    }
+
     struct Run {
         output: RemeshOutput,
         stubborn: usize,
     }
 
     fn rebuild(positions: &[f32], indices: &[u32], faces: u32, size: f32) -> Run {
+        rebuild_with(positions, indices, faces, size, None, true)
+    }
+
+    fn rebuild_with(
+        positions: &[f32],
+        indices: &[u32],
+        faces: u32,
+        size: f32,
+        crease_cosine: Option<f32>,
+        borders: bool,
+    ) -> Run {
         let topology = Topology::build(indices, positions.len() / 3, 1, None);
         let sizes = vec![size; topology.vertex_count];
         let areas = size_field::dual_areas(positions, indices, &topology, 1);
@@ -1049,7 +1180,7 @@ mod tests {
             sizes: &sizes,
             areas: &areas,
         };
-        let features = features::build(surface, true, None, None);
+        let features = features::build(surface, borders, crease_cosine, None);
         let seeds = seeds::place(surface, &features, faces, None);
         let partition = partition::build(surface, &features, &seeds, 1, None);
         let quadrics = build_quadrics(surface, 1);
@@ -1124,6 +1255,61 @@ mod tests {
                 count, 2,
                 "border vertex {vertex} has {count} border edges, so the outline is torn"
             );
+        }
+    }
+
+    /// A strip `rows` quads wide and `columns` long, spaced a tenth apart: an
+    /// outline whose two long sides are one loop running a region's width
+    /// apart, which is the shape a merge across the strip pinches.
+    fn wide_strip(columns: u32, rows: u32) -> (Vec<f32>, Vec<u32>) {
+        let mut positions = Vec::new();
+        for row in 0..=rows {
+            for column in 0..=columns {
+                positions.extend_from_slice(&[column as f32 * 0.1, row as f32 * 0.1, 0.0]);
+            }
+        }
+        let width = columns + 1;
+        let mut indices = Vec::new();
+        for row in 0..rows {
+            for column in 0..columns {
+                let at = row * width + column;
+                indices.extend_from_slice(&[at, at + 1, at + width]);
+                indices.extend_from_slice(&[at + 1, at + width + 1, at + width]);
+            }
+        }
+        (positions, indices)
+    }
+
+    /// With **Align to boundaries** off a border vertex may die into an interior
+    /// one, and the outline must still come back as simple loops: every border
+    /// vertex with exactly two border edges.
+    ///
+    /// The guard against pinching a loop read the *input's* border flag, which
+    /// a vertex that had just absorbed a border vertex did not have; a later
+    /// merge between it and a point across the strip then passed.
+    #[test]
+    fn an_outline_left_free_is_never_pinched() {
+        for (rows, faces, size) in [(2, 40, 0.3), (3, 60, 0.35), (3, 40, 0.45), (4, 80, 0.4)] {
+            let (positions, indices) = wide_strip(40, rows);
+
+            let run = rebuild_with(&positions, &indices, faces, size, None, false);
+
+            assert!(run.output.validate().is_ok());
+            let mut degree: HashMap<u32, u32> = HashMap::new();
+            for (&(a, b), &uses) in &edge_uses(&run.output) {
+                assert!(uses <= 2, "edge {a}-{b} is used {uses} times");
+                if uses == 1 {
+                    *degree.entry(a).or_insert(0) += 1;
+                    *degree.entry(b).or_insert(0) += 1;
+                }
+            }
+            assert!(!degree.is_empty(), "the sheet is open");
+            for (vertex, count) in degree {
+                assert_eq!(
+                    count, 2,
+                    "border vertex {vertex} carries {count} border edges: the outline is pinched"
+                );
+            }
         }
     }
 
@@ -1202,7 +1388,7 @@ mod tests {
             &features,
             &mut seeds,
             &mut partition,
-            1,
+            &crate::remesh::nodes::ThreadBudget::fixed(1),
             None,
             |_, _, _| true,
         );
@@ -1262,6 +1448,52 @@ mod tests {
         );
     }
 
+    /// The vertex beside a corner where three creases meet can merge into the
+    /// corner along any of them.
+    ///
+    /// The corner is recorded as lying on its lowest-numbered chain only, and
+    /// the merge rule used to read that one name: along the other two creases
+    /// the neighbour could not merge into it, so every corner of a creased box
+    /// kept a vertex a hair beside it that no budget could remove.
+    #[test]
+    fn a_corner_absorbs_its_neighbours_along_every_crease_through_it() {
+        let (positions, indices) = subdivided_cube(12);
+        let crease = Some(30.0f32.to_radians().cos());
+
+        let run = rebuild_with(&positions, &indices, 150, 0.3, crease, true);
+
+        assert!(run.output.validate().is_ok());
+        // Every corner of the cube is still a vertex of the result, and no other
+        // vertex on the creases running out of it sits within one input edge of
+        // it. A crease vertex has two of its three coordinates on the box.
+        let step = 1.0 / 12.0;
+        let on_a_crease = |position: &Vec3| {
+            position
+                .to_array()
+                .iter()
+                .filter(|&&value| value == 0.0 || value == 1.0)
+                .count()
+                >= 2
+        };
+        for corner in 0..8u32 {
+            let point = Vec3::new(
+                (corner & 1) as f32,
+                ((corner >> 1) & 1) as f32,
+                ((corner >> 2) & 1) as f32,
+            );
+            let near = run
+                .output
+                .positions
+                .iter()
+                .filter(|position| on_a_crease(position) && position.distance(point) < step * 1.5)
+                .count();
+            assert_eq!(
+                near, 1,
+                "corner {point:?} has {near} crease vertices within an input edge of it"
+            );
+        }
+    }
+
     /// A hexagonal fan around one movable centre, wound the same way all over.
     fn fan() -> (Collapsed, Topology) {
         let mut positions = vec![[0.0, 0.0, 0.0]];
@@ -1277,6 +1509,7 @@ mod tests {
         let state = Collapsed {
             corners,
             alive: vec![true; positions.len()],
+            border: topology.boundary.clone(),
             positions,
             stubborn: 0,
         };

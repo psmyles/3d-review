@@ -10,7 +10,10 @@
 //!   install being intact, only images do;
 //! * where each page's images and intra-book links *sit* in that markdown, as
 //!   byte ranges, so the runtime splices in resolved image paths without parsing
-//!   markdown per frame;
+//!   markdown per frame. Measured in each language's own text: a translation is
+//!   parsed for its own spans, since the English page's byte offsets land
+//!   anywhere — mid-word, or inside a multi-byte character — in another
+//!   language's sentences;
 //! * `TOC`, the flattened `SUMMARY.md`, which is the Help window's contents list
 //!   as well as the site's sidebar.
 //!
@@ -110,7 +113,7 @@ pub fn generate(book_src: &Path, out_dir: &Path) -> Result<(), String> {
     let mut rust = String::new();
     write_header(&mut rust);
     write_enum(&mut rust, &pages, &toc);
-    write_texts(&mut rust, book_src, &locales, &pages)?;
+    write_texts(&mut rust, book_src, &locales, &pages, &ids)?;
     write_toc(&mut rust, &toc);
 
     std::fs::write(out_dir.join("docs_pages.rs"), rust).map_err(|err| err.to_string())
@@ -334,7 +337,12 @@ fn write_header(rust: &mut String) {
          /// One page's text and the two things the Help window has to resolve in it.\n\
          #[derive(Debug)]\n\
          pub struct PageText {\n\
+         \x20   /// The manual directory the text was read from (`en`, `de`). A page a\n\
+         \x20   /// locale has not translated is English text with English images, so\n\
+         \x20   /// its images are looked up here rather than under the locale asked for.\n\
+         \x20   pub locale: &'static str,\n\
          \x20   pub markdown: &'static str,\n\
+         \x20   /// Measured in *this* text, never borrowed from another language's.\n\
          \x20   pub images: &'static [ImageRef],\n\
          \x20   /// Intra-book links: the href as written, and the page it opens.\n\
          \x20   pub links: &'static [(&'static str, Page)],\n\
@@ -420,6 +428,7 @@ fn write_texts(
     book_src: &Path,
     locales: &[String],
     pages: &[PageSource],
+    ids: &BTreeMap<&str, &str>,
 ) -> Result<(), String> {
     rust.push_str(
         "impl Page {\n\
@@ -460,7 +469,7 @@ fn write_texts(
                 pages.len()
             );
             for page in pages {
-                write_page_text(rust, page, &page.path, 4)?;
+                write_page_text(rust, page, locale, 4);
             }
             rust.push_str("];\n\n");
         } else {
@@ -473,8 +482,21 @@ fn write_texts(
             for page in pages {
                 let translated = dir.join(format!("{}.md", page.id));
                 if translated.is_file() {
+                    // Parsed in its own right: its images and links sit wherever
+                    // the translation's sentences put them, which is nowhere near
+                    // where the English page's do.
+                    let translation = read_page(&dir, &translated)?;
+                    for (href, target) in &translation.links {
+                        if !ids.contains_key(target.as_str()) {
+                            return Err(format!(
+                                "{locale}/{}.md links to `{href}`, which is not a page — \
+                                 the site would 404 on it",
+                                translation.id
+                            ));
+                        }
+                    }
                     rust.push_str("    Some(");
-                    write_page_text(rust, page, &translated, 4)?;
+                    write_page_text(rust, &translation, locale, 4);
                     rust.push_str("    ),\n");
                 } else {
                     rust.push_str("    None,\n");
@@ -486,15 +508,13 @@ fn write_texts(
     Ok(())
 }
 
-fn write_page_text(
-    rust: &mut String,
-    page: &PageSource,
-    path: &Path,
-    indent: usize,
-) -> Result<(), String> {
+/// One page as a `&PageText` literal: `page`'s own markdown, read from the
+/// `locale` directory, with the spans measured in that same text.
+fn write_page_text(rust: &mut String, page: &PageSource, locale: &str, indent: usize) {
     let pad = " ".repeat(indent);
-    let include = path.to_string_lossy().replace('\\', "/");
+    let include = page.path.to_string_lossy().replace('\\', "/");
     let _ = writeln!(rust, "{pad}&PageText {{");
+    let _ = writeln!(rust, "{pad}    locale: \"{locale}\",");
     let _ = writeln!(rust, "{pad}    markdown: include_str!(\"{include}\"),");
 
     if page.images.is_empty() {
@@ -528,7 +548,6 @@ fn write_page_text(
         let _ = writeln!(rust, "{pad}    ],");
     }
     let _ = writeln!(rust, "{pad}}},");
-    Ok(())
 }
 
 fn write_toc(rust: &mut String, toc: &[(u8, String)]) {

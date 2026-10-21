@@ -298,11 +298,6 @@ static ufbx_vec4 review_import_get_vec4(const ufbx_vertex_vec4 *attr, size_t ind
     }
 }
 
-/* Game-asset DCC color comes from the material's base/diffuse color, not a
-   vertex-color layer. Prefer the PBR base color, fall back to the legacy FBX
-   diffuse color, then to white. RGB only — the viewer renders meshes opaque.
-   Returns the resolved color in *linear* space (the material table seeds a PBR
-   uniform from it directly). */
 /* `value` when it is a number at all, else `fallback`. A material value is read
    straight from the file, and NaN slips through every `< 0` / `> 1` clamp. */
 static float review_import_finite_or(double value, float fallback)
@@ -310,6 +305,11 @@ static float review_import_finite_or(double value, float fallback)
     return isfinite(value) ? (float)value : fallback;
 }
 
+/* Game-asset DCC color comes from the material's base/diffuse color, not a
+   vertex-color layer. Prefer the PBR base color, fall back to the legacy FBX
+   diffuse color, then to white. RGB only — the viewer renders meshes opaque.
+   Returns the resolved color in *linear* space (the material table seeds a PBR
+   uniform from it directly). */
 static void review_import_material_base_color_linear(const ufbx_material *material, float out_color[3])
 {
     out_color[0] = 1.0f;
@@ -815,15 +815,33 @@ static int review_import_alloc_geometry(
     return 1;
 }
 
+/* The handedness a tangent layer without a bitangent layer gets: +1 in the
+   geometry's own space, which is -1 in the baked world space when the node's
+   transform mirrors (a negative determinant flips which way `normal x tangent`
+   points relative to the surface it was authored on). */
+static float review_import_unauthored_handedness(const ufbx_matrix *geometry_to_world)
+{
+    return ufbx_matrix_determinant(geometry_to_world) < 0.0 ? -1.0f : 1.0f;
+}
+
 /* Fill one expanded corner vertex (position / normal / uv / tangent /
    vertex-color, plus the multi-set UV channels) from mesh attribute index
    `mesh_index`. Returns 1 on success, 0 when the face references out-of-range
-   attribute data (a malformed file). */
+   attribute data (a malformed file).
+
+   Normals ride `normal_matrix` (the inverse transpose of the node's linear map,
+   from `ufbx_matrix_for_normals`); tangents and bitangents are directions *along*
+   the surface, so they ride the same linear map the positions do. That is the
+   map that keeps a tangent pointing along the UV direction it was authored
+   along under a non-uniform scale, and it keeps an orthogonal authored basis
+   orthogonal: `(L t) . (L^-T n) = t . n`. `unauthored_handedness` is
+   `review_import_unauthored_handedness` of the node. */
 static int review_import_fill_vertex(
     review_import_scene *out_scene,
     const ufbx_mesh *mesh,
     const ufbx_matrix *geometry_to_world,
     const ufbx_matrix *normal_matrix,
+    float unauthored_handedness,
     size_t mesh_index,
     size_t vertex_offset
 )
@@ -841,7 +859,7 @@ static int review_import_fill_vertex(
         ? review_import_get_vec2(&mesh->vertex_uv, mesh_index, &ok)
         : ufbx_zero_vec2;
     ufbx_vec3 tangent = mesh->vertex_tangent.exists
-        ? ufbx_transform_direction(normal_matrix, review_import_get_vec3(&mesh->vertex_tangent, mesh_index, &ok))
+        ? ufbx_transform_direction(geometry_to_world, review_import_get_vec3(&mesh->vertex_tangent, mesh_index, &ok))
         : ufbx_zero_vec3;
     ufbx_vec4 vertex_color;
     const float fallback_normal[3] = { 0.0f, 1.0f, 0.0f };
@@ -878,20 +896,21 @@ static int review_import_fill_vertex(
     if (mesh->vertex_tangent.exists) {
         review_import_normalize3(dst->tangent, fallback_tangent);
         /* Handedness: the sign of the authored bitangent against the
-           right-handed `normal × tangent`, so a mirrored UV island keeps its
-           authored basis and a re-export writes the same binormal back. +1
-           when the file carries no bitangent layer. */
-        dst->tangent[3] = 1.0f;
+           right-handed `normal × tangent`, both in the baked world space the
+           renderer reads them in, so a mirrored UV island keeps its authored
+           basis and a re-export writes the same binormal back. Without a
+           bitangent layer the basis is right-handed in the geometry's own
+           space, which a mirroring node turns left-handed in world space. */
+        dst->tangent[3] = unauthored_handedness;
         if (mesh->vertex_bitangent.exists) {
             ufbx_vec3 bitangent = ufbx_transform_direction(
-                normal_matrix, review_import_get_vec3(&mesh->vertex_bitangent, mesh_index, &ok));
+                geometry_to_world, review_import_get_vec3(&mesh->vertex_bitangent, mesh_index, &ok));
             float cross[3];
             cross[0] = dst->normal[1] * dst->tangent[2] - dst->normal[2] * dst->tangent[1];
             cross[1] = dst->normal[2] * dst->tangent[0] - dst->normal[0] * dst->tangent[2];
             cross[2] = dst->normal[0] * dst->tangent[1] - dst->normal[1] * dst->tangent[0];
-            if (cross[0] * bitangent.x + cross[1] * bitangent.y + cross[2] * bitangent.z < 0.0) {
-                dst->tangent[3] = -1.0f;
-            }
+            dst->tangent[3] =
+                cross[0] * bitangent.x + cross[1] * bitangent.y + cross[2] * bitangent.z < 0.0 ? -1.0f : 1.0f;
         }
     } else {
         /* No tangent layer in the file: leave a zero tangent (skip the
@@ -960,6 +979,7 @@ static int review_import_fill_pass(
         ufbx_node *node = scene->nodes.data[node_index];
         ufbx_mesh *mesh = node ? node->mesh : NULL;
         ufbx_matrix normal_matrix;
+        float unauthored_handedness;
         uint32_t *triangle_buffer = NULL;
         size_t triangle_buffer_size = 0;
         size_t triangle_buffer_bytes = 0;
@@ -970,6 +990,7 @@ static int review_import_fill_pass(
         }
 
         normal_matrix = ufbx_matrix_for_normals(&node->geometry_to_world);
+        unauthored_handedness = review_import_unauthored_handedness(&node->geometry_to_world);
         if (review_import_mul_overflows(mesh->max_face_triangles > 0 ? mesh->max_face_triangles : 1, 3, &triangle_buffer_size) ||
             review_import_mul_overflows(triangle_buffer_size, sizeof(uint32_t), &triangle_buffer_bytes)) {
             review_import_set_error(out_error, "FBX face is too large to triangulate");
@@ -1006,7 +1027,7 @@ static int review_import_fill_pass(
                 uint32_t logical_vertex;
                 if (!review_import_fill_vertex(
                         out_scene, mesh, &node->geometry_to_world, &normal_matrix,
-                        mesh_index, vertex_offset)) {
+                        unauthored_handedness, mesh_index, vertex_offset)) {
                     review_import_set_error(out_error, "malformed FBX: face references out-of-range vertex data");
                     free(triangle_buffer);
                     return 0;
@@ -1240,13 +1261,55 @@ static int review_import_fill_skin(
     return 1;
 }
 
+/* The matrix a blend shape's normal *delta* rides into baked world space: the
+   normal matrix with the node's scale divided back out.
+
+   The base normal and the delta are not transformed alike, and cannot be. The
+   base normal goes through `ufbx_matrix_for_normals` (`|det L| L^-T` for the
+   node's linear map `L`) and is then *renormalized*; a delta is a difference of
+   normals whose length is the shape's own, and it is added to that renormalized
+   base before the sum is normalized (`review.glsl`'s morph stage, and
+   `review_model::anim::deform_corner`). What makes the sum point where the
+   file's `normalize(L^-T (n + d))` points is a delta taken through `L^-T` and
+   divided by the same factor the base normal was: `L^-T d / |L^-T n|`. That
+   factor depends on the base normal unless the scale is uniform, so this takes
+   the per-node version of it - the cube root of `L^-T`'s determinant - which is
+   exact for a uniform scale (`c I` divides to exactly the rotation) and the
+   geometric mean of the axes for a non-uniform one.
+
+   Taken through `ufbx_matrix_for_normals` unscaled instead, a uniform scale `s`
+   scaled every delta by `s^2`: a centimeter file, whose 0.01 import parks in the
+   node transforms, kept 1/10000 of its normal deltas, so a facial rig moved its
+   vertices and never changed its shading. The exporter undoes exactly this
+   (`export/deform.rs`). */
+static ufbx_matrix review_import_normal_delta_matrix(const ufbx_matrix *geometry_to_world)
+{
+    ufbx_matrix matrix = ufbx_matrix_for_normals(geometry_to_world);
+    double determinant = fabs(ufbx_matrix_determinant(geometry_to_world));
+    size_t col;
+    /* `matrix` is `|det| L^-T`; `|det|^(1/3) L^-T` is it times `|det|^(-2/3)`. */
+    double scale = (determinant > 1e-300 && isfinite(determinant))
+        ? 1.0 / cbrt(determinant * determinant)
+        : 1.0;
+    if (!isfinite(scale)) {
+        scale = 1.0;
+    }
+    for (col = 0; col < 3; col++) {
+        matrix.cols[col].x *= scale;
+        matrix.cols[col].y *= scale;
+        matrix.cols[col].z *= scale;
+    }
+    return matrix;
+}
+
 /* Blend shapes: one pass over the mesh-bearing nodes counting channels /
    keyframes / shapes / sparse offsets, an allocation, then the fill — the same
    count->fill discipline as the geometry. Shapes are published once per
    (node, shape) pair: an instanced mesh under two nodes has two logical-vertex
    blocks, so its offsets have to be emitted twice against different bases.
-   Position / normal offsets are rotated into the node's baked world orientation
-   here, so the GPU adds them to the baked vertex directly. `channel_of_element`
+   Position offsets ride the node's linear map and normal deltas
+   `review_import_normal_delta_matrix` here, so the GPU adds them to the baked
+   vertex directly. `channel_of_element`
    (sized `scene->elements.count`, UINT32_MAX = none) records which output
    channel each ufbx blend channel became, for the animation pass; an instanced
    channel maps to its first occurrence. Returns 1 on success, 0 with
@@ -1279,7 +1342,7 @@ static int review_import_capture_morphs(
             }
             node_base = logical_base;
             logical_base += mesh->num_vertices;
-            normal_matrix = ufbx_matrix_for_normals(&node->geometry_to_world);
+            normal_matrix = review_import_normal_delta_matrix(&node->geometry_to_world);
 
             for (deformer_index = 0; deformer_index < mesh->blend_deformers.count; deformer_index++) {
                 const ufbx_blend_deformer *deformer = mesh->blend_deformers.data[deformer_index];
@@ -1741,13 +1804,19 @@ static int review_import_capture_nodes(
            walk must agree with them, or a scene they load leaves the Outliner
            dereferencing nothing. The row stays as calloc left it — no name, no
            parent, no mesh part, kind `OTHER` — apart from an identity transform,
-           since an all-zero matrix is not one anything can be placed by. */
+           world and local both, since an all-zero matrix is not one anything can
+           be placed by and an all-zero rotation is not a rotation at all (the
+           Rust side normalizes it, and a zero quaternion normalizes to NaN). */
         if (!node) {
             dst->parent = -1;
             dst->mesh_part_index = -1;
             for (col = 0; col < 4; col++) {
                 dst->transform[col * 4 + col] = 1.0f;
             }
+            dst->local_rotation[3] = 1.0f;
+            dst->local_scale[0] = 1.0f;
+            dst->local_scale[1] = 1.0f;
+            dst->local_scale[2] = 1.0f;
             continue;
         }
 

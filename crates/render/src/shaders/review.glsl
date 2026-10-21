@@ -313,14 +313,18 @@ void main() {
 @end
 
 // ===========================================================================
-// Scene — the full per-material shaded / unlit / checker / vertex-color path
+// Scene — the material's coverage, and the alpha-clip cutout
 // ===========================================================================
 
-@fs fs_main
-@include_block scene_uniforms_fs
-@include_block scene_varyings_in
-@include_block srgb
-
+// The material block and the cutout test, shared by `fs_main` and the two passes that
+// redraw its surface without shading it: the GTAO G-buffer and the line pass's
+// depth-only prepass. One copy, so a cut-out texel is cut out of all three. Drawn
+// solid into either of the others, an alpha-clipped leaf card occludes as the quad it
+// is modelled on: a dark halo round every leaf in the ambient occlusion, and a line
+// hidden behind nothing at 2x MSAA that shows at 1x.
+//
+// Needs `scene_uniforms_fs` and `scene_varyings_in` included before it.
+@block material_alpha
 // Per-material parameters. `params` = (metallic, roughness, slot_flags bitfield,
 // alpha mode). `channels0` selects the channel (0 R … 3 A) feeding slots 0..3;
 // `channels1` does the same for slots 4..6 with `w` the alpha cutoff. `flags.x` is
@@ -334,6 +338,75 @@ layout(binding=2) uniform material {
     vec4 mat_flags;
 };
 
+layout(binding=11) uniform texture2D opacity_tex;
+layout(binding=2) uniform sampler material_sampler;
+
+// Select one channel of a sampled texel by index (0 R, 1 G, 2 B, 3 A), so a packed
+// map can route any channel into a scalar property.
+float select_channel(vec4 texel, float index) {
+    if (index < 0.5) { return texel.r; }
+    if (index < 1.5) { return texel.g; }
+    if (index < 2.5) { return texel.b; }
+    return texel.a;
+}
+
+// FBX authors UVs bottom-left (V up); texture sampling is top-left (V down), so V is
+// flipped once, at the single UV→texel boundary, for the checker and every slot.
+vec2 material_uv(vec2 uv) {
+    return vec2(uv.x, 1.0 - uv.y);
+}
+
+// The material's own coverage: the base-colour alpha, times the channel-routed
+// opacity map when one is bound (slot-flags bit 64).
+float material_alpha(vec4 tex_opacity) {
+    float alpha = mat_base_color.a;
+    if ((uint(mat_params.z) & 64u) != 0u) {
+        alpha = alpha * select_channel(tex_opacity, mat_channels1.z);
+    }
+    return alpha;
+}
+
+// What the vertex-colour view leaves of it: the RGB and Alpha views draw opaque, and
+// RGB+A shows the vertex alpha in its place (`render_options.w`: -1 off, else 0 RGB,
+// 1 Alpha, 2 RGB+A).
+float vertex_color_alpha(float alpha) {
+    float mode = sc.render_options.w;
+    float result = alpha;
+    if (mode >= 0.0) {
+        result = (mode < 1.5) ? 1.0 : v_color.a;
+    }
+    return result;
+}
+
+// Whether the alpha-clip cutout (alpha mode 2) drops a fragment of this coverage.
+// Blend mode keeps every fragment and lets the MRT alpha-blend it.
+bool alpha_clipped(float alpha) {
+    return mat_params.w > 1.5 && alpha < mat_channels1.w;
+}
+
+// The whole of `fs_main`'s cutout decision, for a pass that draws the same surface
+// but none of its shading. `fs_main` returns before it reaches its clip for an overlay
+// vertex (a zero normal), a buffer-inspection view (`projection_params.z`) and the
+// skin-weight heat map (`projection_params.w`), so none of those is ever cut here
+// either.
+bool surface_cut_out(vec4 tex_opacity) {
+    bool reaches_clip = dot(v_normal, v_normal) >= 1e-6
+        && sc.projection_params.z < 0.0
+        && sc.projection_params.w <= 0.5;
+    return reaches_clip && alpha_clipped(vertex_color_alpha(material_alpha(tex_opacity)));
+}
+@end
+
+// ===========================================================================
+// Scene — the full per-material shaded / unlit / checker / vertex-color path
+// ===========================================================================
+
+@fs fs_main
+@include_block scene_uniforms_fs
+@include_block scene_varyings_in
+@include_block srgb
+@include_block material_alpha
+
 layout(binding=0) uniform texture2D checker_texture;
 layout(binding=1) uniform textureCube irradiance_cube;
 layout(binding=2) uniform textureCube prefilter_cube;
@@ -345,11 +418,10 @@ layout(binding=7) uniform texture2D roughness_tex;
 layout(binding=8) uniform texture2D metallic_tex;
 layout(binding=9) uniform texture2D ao_tex;
 layout(binding=10) uniform texture2D emissive_tex;
-layout(binding=11) uniform texture2D opacity_tex;
+// Slot 11 (opacity) and the material sampler are `material_alpha`'s.
 
 layout(binding=0) uniform sampler checker_sampler;
 layout(binding=1) uniform sampler ibl_sampler;
-layout(binding=2) uniform sampler material_sampler;
 
 // MRT: location 0 is the linear-HDR radiance the composite tone-maps; location 1
 // is the AO-eligible diffuse ambient radiance GTAO may attenuate. Overlays write a
@@ -364,28 +436,31 @@ layout(location=1) out vec4 frag_ambient;
 const vec3 SKIN_WEIGHT_BASE = vec3(0.047, 0.047, 0.052);
 const float SKIN_WEIGHT_AMBIENT = 0.28;
 
-// Select one channel of a sampled texel by index (0 R, 1 G, 2 B, 3 A), so a packed
-// map can route any channel into a scalar property.
-float select_channel(vec4 texel, float index) {
-    if (index < 0.5) { return texel.r; }
-    if (index < 1.5) { return texel.g; }
-    if (index < 2.5) { return texel.b; }
-    return texel.a;
-}
-
 // Perturb the geometric normal `n` by a tangent-space normal-map sample, using the
 // vertex tangent (xyz) + handedness (w) to build the TBN basis. Geometry is
 // world-baked, so the tangent is already world-space (no model matrix).
+//
+// Both lengths are tested *before* anything divides by them. `normalize` of a zero
+// vector is NaN, and NaN fails every comparison, so a guard written after the
+// normalize — as this one once was — never fires: a corner with no tangent (or one
+// parallel to its normal) turned the whole shading NaN, which reads as black and
+// which the MSAA resolve then spreads into its neighbours.
 vec3 apply_normal_map(vec3 n, vec4 tangent, vec3 sample_rgb) {
     vec3 geo_n = normalize(n);
     // Gram-Schmidt orthonormalize the tangent against the normal.
-    vec3 t = normalize(tangent.xyz - geo_n * dot(geo_n, tangent.xyz));
-    if (dot(t, t) < 1e-8) {
+    vec3 t_raw = tangent.xyz - geo_n * dot(geo_n, tangent.xyz);
+    float t_length_sq = dot(t_raw, t_raw);
+    if (t_length_sq < 1e-8) {
         return geo_n;
     }
+    vec3 t = t_raw * inversesqrt(t_length_sq);
     vec3 b = cross(geo_n, t) * tangent.w;
     vec3 m = sample_rgb * 2.0 - 1.0;
-    return normalize(t * m.x + b * m.y + geo_n * m.z);
+    // A texel of exactly mid-grey maps to the zero vector, which has no direction
+    // either; the unperturbed normal is the only honest answer for it.
+    vec3 mapped = t * m.x + b * m.y + geo_n * m.z;
+    float mapped_length_sq = dot(mapped, mapped);
+    return (mapped_length_sq > 1e-12) ? mapped * inversesqrt(mapped_length_sq) : geo_n;
 }
 
 // Rotate an environment sample direction about the world Y axis by the negative of
@@ -450,9 +525,7 @@ void main() {
     float tiling = max(sc.render_options.z, 1.0);
     // Vertex-color view: -1 off, else mode (0 RGB, 1 Alpha, 2 RGB+A).
     float vertex_color_mode = sc.render_options.w;
-    // FBX authors UVs bottom-left (V up); texture sampling is top-left (V down), so
-    // flip V once here at the single UV→texel boundary for the checker + every slot.
-    vec2 tex_uv = vec2(v_uv.x, 1.0 - v_uv.y);
+    vec2 tex_uv = material_uv(v_uv);
     vec4 checker = texture(sampler2D(checker_texture, checker_sampler), tex_uv * tiling);
     // Sample every material slot at the top, under uniform control flow — see the
     // derivative rule in the header.
@@ -506,7 +579,6 @@ void main() {
     bool has_metallic = (slot_flags & 8u) != 0u;
     bool has_ao = (slot_flags & 16u) != 0u;
     bool has_emissive = (slot_flags & 32u) != 0u;
-    bool has_opacity = (slot_flags & 64u) != 0u;
 
     // Work in linear space. The material base color is stored linear in the uniform;
     // the base-color texture (sRGB format → already linear here) modulates it. The
@@ -519,10 +591,7 @@ void main() {
             base_color = base_color * select_channel(tex_base, mat_channels0.x);
         }
     }
-    float out_alpha = mat_base_color.a;
-    if (has_opacity) {
-        out_alpha = out_alpha * select_channel(tex_opacity, mat_channels1.z);
-    }
+    float out_alpha = material_alpha(tex_opacity);
 
     // --- Buffer-inspection view: show one shading input flat for data inspection.
     // `projection_params.z` is the buffer index (-1 when off). Bypasses lighting and
@@ -617,24 +686,21 @@ void main() {
     }
     // The vertex-color view replaces the surface material (overriding the checker if
     // both are on). RGB is gamma-space like the material color; alpha is a raw 0..1
-    // scalar shown as linear grey.
+    // scalar shown as linear grey. What it does to the coverage is
+    // `vertex_color_alpha`'s, so the passes that only clip agree with this one.
     if (vertex_color_mode >= 0.0) {
-        if (vertex_color_mode < 0.5) {
-            base_color = srgb_to_linear(v_color.rgb);
-            out_alpha = 1.0;
-        } else if (vertex_color_mode < 1.5) {
+        if (vertex_color_mode > 0.5 && vertex_color_mode < 1.5) {
             base_color = vec3(v_color.a);
-            out_alpha = 1.0;
         } else {
             base_color = srgb_to_linear(v_color.rgb);
-            out_alpha = v_color.a;
         }
     }
+    out_alpha = vertex_color_alpha(out_alpha);
 
     // Alpha-clip cutout (material flag): drop fully-transparent fragments before any
-    // shading. Blend mode keeps the fragment and lets the MRT alpha-blend it.
-    float alpha_mode = mat_params.w;
-    if (alpha_mode > 1.5 && out_alpha < mat_channels1.w) {
+    // shading. `surface_cut_out` is this same test for the passes that redraw the
+    // surface unshaded.
+    if (alpha_clipped(out_alpha)) {
         discard;
     }
 
@@ -1020,15 +1086,27 @@ void main() {
 // here rather than copied out afterwards because this pass already has it, and a
 // second fullscreen pass to move it would cost a full-resolution read and write for
 // nothing.
+//
+// It applies the shaded mesh's alpha clip (`surface_cut_out`), and its pipelines cull
+// exactly as the mesh's do, so the G-buffer holds the surface the scene pass actually
+// drew and not the polygons under it. The line pass's depth-only prepass runs through
+// this same program for the same reason, with its colour writes off.
 @fs fs_gtao_gbuffer
 @include_block scene_uniforms_fs
 @include_block scene_varyings_in
 @include_block gtao_depth_encoding
+@include_block material_alpha
 
 layout(location=0) out vec4 frag_gbuffer;
 layout(location=1) out float frag_depth;
 
 void main() {
+    // Sampled first, under uniform control flow — see the derivative rule in the
+    // header.
+    vec4 tex_opacity = texture(sampler2D(opacity_tex, material_sampler), material_uv(v_uv));
+    if (surface_cut_out(tex_opacity)) {
+        discard;
+    }
     float normal_length_sq = dot(v_normal, v_normal);
     // Overlays / lines (zero normal) write a zero G-buffer entry → GTAO treats them
     // as background and applies no occlusion there.
@@ -1293,13 +1371,19 @@ float sample_depth_mip(vec2 uv, int level) {
 void main() {
     vec4 g = textureLod(sampler2D(gbuffer, gtao_sampler), v_uv, 0.0);
     vec3 raw_normal = g.xyz;
-    float view_z = g.w;
+    // The centre's depth comes from the same full-precision `R32F` level every tap
+    // below reads, not from the G-buffer's half-float `w`. The two describe the same
+    // fragment, but a half-float step is ~8 mm at 10 m — enough on its own to put a
+    // tap on a flat surface above or below the centre's horizon, which is exactly
+    // the comparison this pass makes.
+    float depth = textureLod(sampler2D(depth_mip0, gtao_sampler), v_uv, 0.0).r;
     // Background (overlays / skybox / cleared frame write 0): no occlusion, and no
     // history blend either — an unoccluded pixel is unoccluded on every frame.
-    if (dot(raw_normal, raw_normal) < 0.25 || view_z >= -1e-4) {
+    if (dot(raw_normal, raw_normal) < 0.25 || is_background_depth(depth) || depth <= 1e-4) {
         frag_ao = 1.0;
         return;
     }
+    float view_z = -depth;
 
     vec3 n = normalize(raw_normal);
     vec3 p = reconstruct_view_pos(v_uv, view_z);

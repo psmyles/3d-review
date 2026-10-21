@@ -120,6 +120,7 @@ pub(crate) fn write_scene(
             shader: material.shader,
             shading_model: material.shading_model.as_ptr(),
             props: range(material.props),
+            authored: i32::from(material.authored),
             base_color: material.base_color,
             emissive: material.emissive,
             shininess_exponent: material.shininess_exponent,

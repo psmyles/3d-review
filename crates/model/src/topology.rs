@@ -56,11 +56,16 @@ pub fn logical_ids(model: &ModelData) -> Cow<'_, [u32]> {
 /// source vertices left to map back to. Two corners get the same id when they
 /// sit at the **same position on the same object**.
 ///
-/// This is exact rather than tolerant, and that is not a simplification:
-/// `optimize` never synthesizes a position — every operation either drops
-/// vertices or copies whole ones through a remap — so a processed vertex's
-/// position is bit for bit one the source mesh had. Welding within a tolerance
-/// instead would risk merging genuinely separate surfaces that pass close by.
+/// This is exact rather than tolerant, and that is not a simplification. What
+/// it needs is not that every position is one the source had — Remesh and
+/// Shrinkwrap rebuild whole objects, and the attribute-preserving simplify
+/// refits the vertices it keeps — but that the copies of one processed point
+/// agree bit for bit, and they do. The refit moves a vertex together with every
+/// vertex at its position, writing the same bits to each; every corner of a
+/// rebuilt object reads its output vertex's one position, so the corners a seam
+/// keeps apart still agree on it; every other operation drops vertices or copies
+/// whole ones through a remap. Welding within a tolerance instead would risk
+/// merging genuinely separate surfaces that pass close by.
 ///
 /// The owning node is part of the key because a weld is otherwise happy to join
 /// two objects that touch, which would hide the border each of them really has

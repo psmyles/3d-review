@@ -29,7 +29,8 @@ These rules hold for every command, and they are what a tool calling it can rely
   answer.
 - **Exit status 2**: the command line could not be followed (an unknown option, an
   option with no value, a value it does not take, no models given). Nothing ran
-  and no report was written.
+  and no report was written, and a report an earlier run left at the line's
+  `--report` path is deleted.
 - **Exit status 0**: everything worked. Skipping a model under `--if-exists skip`
   counts as working.
 - **Exit status 1**: anything else. A model that could not be read or written, a
@@ -39,8 +40,9 @@ These rules hold for every command, and they are what a tool calling it can rely
   recorded, and the exit status gives the verdict at the end.
 - **`--report <file.json>`** writes an account of the run (below). It is written
   whenever the command line was accepted, even when the run stopped before the
-  first model, and a report left at that path by an earlier run is deleted first.
-  So after any run, the file is this run's or is not there.
+  first model, and a report left at that path by an earlier run is deleted first,
+  on a refused command line too. So after any run, the file is this run's or is
+  not there.
 - **Plain lines.** Results go to standard output, problems to standard error,
   each a whole line in the reader's language. A line that reports a problem keeps
   its wording from one release to the next, so a tool can match on it. Writes to a
@@ -107,7 +109,12 @@ changes the triangles after it.
 Two checks run before a model is loaded, whatever `--if-exists` says. A model
 never writes over a file another model of the same run is writing, and never over
 a model the run is reading, so `--out` can be the source folder when a `--suffix`
-keeps the names apart.
+keeps the names apart. Both compare files rather than spellings: links and `..`
+are resolved, a folder `--out` creates during the run makes no difference, and on
+Windows and macOS, whose file systems ignore case, names differing only in case
+are one file. The output is always `.fbx` in lower case, so `Rock.FBX` written
+into its own folder without a suffix is refused, as are `a/Body.fbx` and
+`b/body.fbx` written to one folder.
 
 Nothing is hidden as it can be in the viewer's Outliner. To keep an object out of
 an AO bake, exclude it in the preset.
@@ -201,7 +208,8 @@ Each entry, when `done`: `flagged`, `worst` (the worst severity found, or `null`
 `errors`, `warnings`, `infos` (this model's failing checks of each severity),
 `passed`, `not_evaluated`, and `audit`, the full `3d-review.audit-report` document
 the Aud workspace's **Save report** writes, with every finding's objects, faces and
-points numbered as the modelling program numbers them.
+points numbered as the modelling program numbers them. Its `source.unit_meters` and
+`source.up_axis` are written as `info`'s `unit_meters` and `up_axis` are.
 
 ### info
 
@@ -210,4 +218,7 @@ model, so a single-model run's are that model's.
 
 Each entry, when `done`: `counts` (`polygons`, `triangles`, `vertices`,
 `gpu_vertices`, `draws`, `materials`, `uv_sets`, `bones`, `clips`, `nodes`),
-`unit_meters` (the file's unit in meters, `0` when it declares none) and `up_axis`.
+`unit_meters` (the file's unit in meters, `0` when it declares none, written as the
+shortest number that is it: `0.01` for centimeters) and `up_axis` (`positive_x`,
+`negative_x`, `positive_y`, `negative_y`, `positive_z` or `negative_z`, the words
+an audit profile's up-axis target uses, or `null` when the file names none).

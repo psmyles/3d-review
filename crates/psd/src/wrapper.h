@@ -53,7 +53,9 @@ typedef struct fire_psd_info {
 #define FIRE_PSD_BUFFER_TOO_SMALL 7
 
 /* Open a PSD from an in-memory buffer, parsing its header and section table only.
- * Returns NULL on failure. Nothing is allocated from the header's dimensions yet. */
+ * Returns NULL on failure. Nothing is allocated from the header's dimensions yet.
+ * The buffer is BORROWED, not copied: every later call on the returned document reads
+ * it in place, so it must stay valid and unmodified until fire_psd_free. */
 fire_psd* fire_psd_open(const uint8_t* bytes, size_t len);
 
 /* Populate *out_info from the header. Returns 0 on success, non-zero on error. */

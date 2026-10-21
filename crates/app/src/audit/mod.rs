@@ -197,10 +197,18 @@ impl App {
         self.persist_audit_profile_when_settled();
     }
 
+    /// Start a worker for the model and profile on screen.
+    ///
+    /// When none can be started the pair stays covered, as Opt's does: the
+    /// failure is reported once, and the next profile edit or the next model is
+    /// a new pair that tries again. Leaving it uncovered would retry, and
+    /// report, on every frame.
     fn spawn_audit(&mut self) {
         let Some(proxy) = self.textures.proxy.clone() else {
             log::error!("no event-loop proxy; cannot audit off-thread");
             self.audit.dirty = false;
+            self.notifications
+                .error(review_localization::tr(keys::app_audit::START_FAILED).into_owned());
             return;
         };
         let model: Arc<ModelData> = Arc::clone(&self.scene_model);
@@ -242,8 +250,13 @@ impl App {
                 })));
             });
         if let Err(error) = spawned {
+            // No worker: the run never started, so it is not in flight and no
+            // "still checking" card may be raised for it.
             log::error!("could not start the audit thread: {error}");
             self.audit.in_flight = None;
+            self.audit.started_at = None;
+            self.notifications
+                .error(review_localization::tr(keys::app_audit::START_FAILED).into_owned());
         }
     }
 

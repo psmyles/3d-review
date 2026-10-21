@@ -5,8 +5,10 @@
 //! numbers, so "the parts add up to the whole" is the property that makes them
 //! faithful (invariant 5). The demo cube cannot test it: it has one node, one
 //! material and no seams. These run over assets with real hierarchies — a
-//! multi-part prop, a skinned character, a scan — where a drifted attribution
-//! would actually show.
+//! twelve-part, three-material plant, a two-part prop, a single-mesh column and
+//! a scan — where a drifted attribution would actually show. (A skinned
+//! character and an animation file used to be in the set; both were proprietary
+//! and left the repository in a9c6db3, and nothing here depends on a skin.)
 //!
 //! Each test skips itself when its fixture is absent or the build carries no
 //! vendored ufbx, so a bare checkout still passes.
@@ -29,10 +31,10 @@ fn skipping(reason: impl std::fmt::Display) {
 /// [`every_fixture_the_suite_loads_exists`], so a rename cannot quietly turn the
 /// whole suite green.
 const FIXTURES: [&str; 4] = [
-    "SK_Player_01.fbx",
+    "stylized_palm_plant_04.fbx",
     "SM_column04.fbx",
     "lucy.fbx",
-    "AN_ZombiedogLocomotion.fbx",
+    "crystal_cluster_02.fbx",
 ];
 
 fn fixture_path(name: &str) -> PathBuf {

@@ -24,7 +24,7 @@
 
 use crate::rhi::{Bindings, ColorTarget, Frame, Zone};
 use crate::shaders::generated;
-use crate::{CameraProjection, GtaoSettings, OrbitCamera, SceneFrame};
+use crate::{GtaoSettings, OrbitCamera, SceneFrame};
 
 use super::gpu_types::SceneUniforms;
 
@@ -38,9 +38,20 @@ use super::uniforms::{
 
 impl SceneGpu {
     /// Whether GTAO should run for this frame: enabled, a mesh is present, and the
-    /// view isn't one of the flat data-inspection ones.
+    /// view is neither one of the flat data-inspection ones nor an overdraw view.
+    ///
+    /// The overdraw views replace the whole view with a layer count
+    /// ([`Self::record_overdraw`]), so nothing would draw the occlusion or read it.
+    /// Leaving them out of this test did not run the passes either — the view returns
+    /// before them — but it did let [`Self::sync_ao_history`] count each such frame as
+    /// an accumulated sample, so the average "converged" on frames that wrote nothing:
+    /// turning the view off showed the occlusion from before the camera last moved,
+    /// and after a resize, targets nothing had ever written.
     pub(super) fn gtao_active(&self, scene: &SceneFrame<'_>) -> bool {
-        scene.gtao.enabled && self.active.has_mesh() && !flat_display(scene)
+        scene.gtao.enabled
+            && self.active.has_mesh()
+            && !flat_display(scene)
+            && !scene.debug.overdraw.is_active()
     }
 
     /// Decide what this frame's occlusion should do — average another sample into the
@@ -83,11 +94,11 @@ impl SceneGpu {
         &self,
         frame: &mut Frame<'_>,
         camera: OrbitCamera,
-        projection: CameraProjection,
-        gtao: GtaoSettings,
+        scene: &SceneFrame<'_>,
         targets: &'t TargetSet,
         scene_uniforms: &SceneUniforms,
     ) -> &'t ColorTarget {
+        let gtao = scene.gtao;
         let plan = targets.ao_plan;
         let output = targets.ao_output(gtao.quality);
         if !plan.run {
@@ -96,9 +107,15 @@ impl SceneGpu {
             return output;
         }
 
-        let uniforms = build_gtao_uniforms(camera, projection, gtao, targets.gtao_raw_size(), plan);
+        let uniforms = build_gtao_uniforms(
+            camera,
+            scene.projection,
+            gtao,
+            targets.gtao_raw_size(),
+            plan,
+        );
 
-        self.record_gtao_gbuffer(frame, targets, scene_uniforms);
+        self.record_gtao_gbuffer(frame, scene, targets, scene_uniforms);
         self.record_depth_mips(frame, targets, gtao_view_radius(camera, gtao));
         self.record_occlusion(frame, targets, &uniforms, plan);
         self.record_denoise(frame, targets, &uniforms, gtao);
@@ -107,13 +124,19 @@ impl SceneGpu {
 
     /// The mesh again, into the single-sample normal/Z target and the full-resolution
     /// level of the depth chain beside it, clearing both and its own depth.
+    ///
+    /// The surface it writes is the one the scene pass drew: the same culling, and
+    /// the same alpha clip — which is why it draws one range per material, binding
+    /// each range's material as the shaded mesh does. A leaf card drawn here as the
+    /// quad under its cutout occluded the surface behind it as a solid sheet.
     fn record_gtao_gbuffer(
         &self,
         frame: &mut Frame<'_>,
+        scene: &SceneFrame<'_>,
         targets: &TargetSet,
         scene_uniforms: &SceneUniforms,
     ) {
-        frame.zone_begin(Zone::GtaoGbuffer);
+        frame.zone_begin(targets.zone(Zone::GtaoGbuffer));
         frame.begin_offscreen_pass(
             &[&targets.gtao_gbuffer, &targets.gtao_depth_mips[0]],
             Some(&targets.scratch_depth),
@@ -124,30 +147,34 @@ impl SceneGpu {
             // Match the shaded mesh's visibility so a hidden mesh casts no AO; solo is
             // deliberately left out, so only the per-mesh hide filters the occlusion.
             // `None` while the filter is active means every mesh is hidden.
-            let index = if self.active.visible_active {
-                self.active.visible_index.as_ref()
+            let list = if self.active.visible_active {
+                self.active
+                    .visible_index
+                    .as_ref()
+                    .map(|index| (index, self.active.visible_ranges.as_slice()))
             } else {
-                Some(&mesh.indices)
+                Some((&mesh.indices, mesh.ranges.as_slice()))
             };
-            if let Some(index) = index {
-                let mut bindings = self.line_bindings();
-                bindings.mesh_vertices(&mesh.vertices);
-                bindings.mesh_indices(index);
-                frame.apply_pipeline(&self.gtao_gbuffer_pipeline);
-                frame.apply_bindings(&bindings);
+            if let Some((index, ranges)) = list {
+                let pipeline = if scene.debug.render_backfaces {
+                    &self.gtao_gbuffer_double_sided
+                } else {
+                    &self.gtao_gbuffer_pipeline
+                };
+                frame.apply_pipeline(pipeline);
                 frame.apply_uniforms(generated::UB_SCENE_VS, scene_uniforms);
                 frame.apply_uniforms(generated::UB_SCENE_FS, scene_uniforms);
-                frame.draw(0, index.count());
+                self.draw_clipped_ranges(frame, &mesh.vertices, index, ranges);
             }
         }
         frame.end_pass();
-        frame.zone_end(Zone::GtaoGbuffer);
+        frame.zone_end(targets.zone(Zone::GtaoGbuffer));
     }
 
     /// Reduce the depth chain, one level per pass. Level 0 already holds the
     /// G-buffer pass's output, so this starts at 1.
     fn record_depth_mips(&self, frame: &mut Frame<'_>, targets: &TargetSet, radius: f32) {
-        frame.zone_begin(Zone::GtaoDepthMips);
+        frame.zone_begin(targets.zone(Zone::GtaoDepthMips));
         for level in 1..DEPTH_MIP_LEVELS {
             let source = &targets.gtao_depth_mips[level - 1];
             let uniforms = build_gtao_mip_uniforms(source.size(), radius);
@@ -166,7 +193,7 @@ impl SceneGpu {
             frame.draw(0, FULLSCREEN_VERTICES);
             frame.end_pass();
         }
-        frame.zone_end(Zone::GtaoDepthMips);
+        frame.zone_end(targets.zone(Zone::GtaoDepthMips));
     }
 
     /// The horizon search over the G-buffer + depth chain, blended into the running
@@ -178,7 +205,7 @@ impl SceneGpu {
         uniforms: &super::gpu_types::GtaoUniforms,
         plan: AoPlan,
     ) {
-        frame.zone_begin(Zone::Gtao);
+        frame.zone_begin(targets.zone(Zone::Gtao));
         frame.begin_offscreen_pass(&[&targets.ao_history[plan.write]], None, [0.0; 4], c"gtao");
         let mut bindings = Bindings::new();
         bindings.target(generated::VIEW_GBUFFER, &targets.gtao_gbuffer);
@@ -196,7 +223,7 @@ impl SceneGpu {
         frame.apply_uniforms(generated::UB_GTAO_PARAMS, uniforms);
         frame.draw(0, FULLSCREEN_VERTICES);
         frame.end_pass();
-        frame.zone_end(Zone::Gtao);
+        frame.zone_end(targets.zone(Zone::Gtao));
     }
 
     /// The edge-aware denoise, one to three passes by quality, ping-ponging between
@@ -211,7 +238,7 @@ impl SceneGpu {
     ) {
         let passes = gtao.quality.denoise_passes().max(1) as usize;
         let plan = targets.ao_plan;
-        frame.zone_begin(Zone::GtaoDenoise);
+        frame.zone_begin(targets.zone(Zone::GtaoDenoise));
         for pass in 0..passes {
             let source = if pass == 0 {
                 &targets.ao_history[plan.write]
@@ -234,7 +261,7 @@ impl SceneGpu {
             frame.draw(0, FULLSCREEN_VERTICES);
             frame.end_pass();
         }
-        frame.zone_end(Zone::GtaoDenoise);
+        frame.zone_end(targets.zone(Zone::GtaoDenoise));
     }
 
     /// Whether any view's occlusion would still improve with another frame. The app

@@ -10,14 +10,17 @@
 
 use review_model::ModelData;
 use review_optimize::{
-    AoQuality, AoTarget, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode, LodLevel,
-    LodPackaging, LodParams, OpKind, OptStack, SimplifyAlgorithm, SimplifySettings, WeldParams,
-    export_fbx,
+    AoQuality, AoTarget, BakeAoParams, ExportNote, ExportOptions, FbxFormat, HierarchyMode,
+    LodLevel, LodPackaging, LodParams, OpKind, OptStack, SimplifyAlgorithm, SimplifySettings,
+    WeldParams, export_fbx,
 };
 
 mod common;
 
-use common::{array_size, fixture, reimport, run, scene_property, temp_dir};
+use common::{
+    array_size, fixture, fixture_full, reimport, reload_full, run, run_with_extras, scene_property,
+    temp_dir,
+};
 
 /// The smallest stack that still produces a chain to export: a run with nothing
 /// enabled measures the source and produces no levels, so the export tests need
@@ -211,8 +214,9 @@ fn rebuilt_and_flat_hierarchies_place_the_geometry_identically() {
     // into the vertices — so a correctly written file puts the geometry in the
     // same world position either way. This is the check that catches un-baking
     // applied in the wrong direction, which is otherwise invisible until an
-    // artist opens the file.
-    let Some(model) = fixture("SK_Player_01.fbx") else {
+    // artist opens the file. A twelve-object plant under a group node, so there
+    // is a hierarchy for the two modes to differ over.
+    let Some(model) = fixture("stylized_palm_plant_04.fbx") else {
         return;
     };
     let result = run(&model, &passthrough());
@@ -251,7 +255,7 @@ fn rebuilt_and_flat_hierarchies_place_the_geometry_identically() {
 
 #[test]
 fn a_multi_material_mesh_keeps_its_materials() {
-    let Some(model) = fixture("SK_Player_01.fbx") else {
+    let Some(model) = fixture("stylized_palm_plant_04.fbx") else {
         return;
     };
     assert!(model.materials.len() > 1);
@@ -282,7 +286,7 @@ fn a_multi_material_mesh_keeps_its_materials() {
 /// one material where the file had several.
 #[test]
 fn materials_that_share_a_name_stay_separate() {
-    let Some(mut model) = fixture("SK_Player_01.fbx") else {
+    let Some(mut model) = fixture("stylized_palm_plant_04.fbx") else {
         return;
     };
     assert!(model.materials.len() > 1);
@@ -356,8 +360,13 @@ fn ascii_output_reads_back_too() {
 /// coordinates nor an unreadable-but-well-formed layer shape shows up in the
 /// model that comes back.
 fn ascii_export(name: &str, dir_name: &str) -> Option<String> {
+    ascii_export_after(name, dir_name, &passthrough())
+}
+
+/// [`ascii_export`] after running `stack` rather than the passthrough.
+fn ascii_export_after(name: &str, dir_name: &str, stack: &OptStack) -> Option<String> {
     let model = fixture(name)?;
-    let result = run(&model, &passthrough());
+    let result = run(&model, stack);
     let dir = temp_dir(dir_name);
     let path = dir.join("out.fbx");
     export_fbx(
@@ -381,7 +390,7 @@ fn the_written_file_declares_the_sources_own_unit() {
     // in. Writing the source's own unit is what keeps a centimeter asset a
     // centimeter asset through the tool. Both fixtures are checked: a wrong
     // hard-coded factor would still pass over one of them.
-    for (name, expected) in [("SM_Ammo_Crate_01a.fbx", "1"), ("SM_column04.fbx", "2.54")] {
+    for (name, expected) in [("rock_pillar_03.fbx", "1"), ("SM_column04.fbx", "2.54")] {
         let Some(text) = ascii_export(name, "round_trip_unit") else {
             continue;
         };
@@ -405,8 +414,16 @@ fn uv_and_color_layers_are_polygon_vertex_indexed() {
     // per-polygon-vertex index cannot load. Unity is one: it rejects the mesh
     // with "has invalid UV coordinates" and blames the exporting tool. Assert
     // the shape every DCC writes instead, including the index array length that
-    // makes it unambiguous.
-    let Some(text) = ascii_export("SM_Ammo_Crate_01a.fbx", "round_trip_layers") else {
+    // makes it unambiguous. The fixture carries no colours of its own and a
+    // colour layer is written only for a mesh that has one, so an AO bake
+    // gives it one.
+    let mut stack = OptStack::default();
+    stack.push_op(OpKind::BakeAo(BakeAoParams {
+        quality: AoQuality::Low,
+        target: AoTarget::Rgb,
+        ..BakeAoParams::default()
+    }));
+    let Some(text) = ascii_export_after("rock_pillar_03.fbx", "round_trip_layers", &stack) else {
         return;
     };
 
@@ -695,4 +712,144 @@ fn a_chain_that_cannot_replace_a_later_file_reports_what_it_did_replace() {
         leftovers.is_empty(),
         "an abandoned level's staging file must not survive: {leftovers:?}"
     );
+}
+
+/// An animation layer's weight is a percent in the file and a fraction in the
+/// capture, and the export has to convert back. It did not: every
+/// full-strength layer went out with `Weight: 1`, i.e. 1 %. ufbx ignores the
+/// *base* layer's weight when it evaluates, which is why playback never showed
+/// it — but its reading of the property does not ignore it, so the capture of
+/// the written file is where it shows.
+#[test]
+fn an_animation_layer_keeps_its_weight() {
+    let Some((model, extras)) = fixture_full("SM_Wall_Break_4x3m.fbx") else {
+        return;
+    };
+    assert!(
+        !extras.anim_layers.is_empty(),
+        "the fixture carries an animation layer"
+    );
+    let result = run_with_extras(&model, &extras, &passthrough());
+    let dir = temp_dir("round_trip_layer_weight");
+    let path = dir.join("weights.fbx");
+    export_fbx(
+        &result.lods,
+        &model,
+        Some(&extras),
+        &path,
+        &ExportOptions::default(),
+    )
+    .expect("export succeeds");
+
+    let (_, written) = reload_full(&path);
+    assert_eq!(written.anim_layers.len(), extras.anim_layers.len());
+    for (source, back) in extras.anim_layers.iter().zip(&written.anim_layers) {
+        assert!(
+            (source.weight - back.weight).abs() < 1e-6,
+            "layer {:?} went in at {} and came back at {}",
+            source.name,
+            source.weight,
+            back.weight
+        );
+    }
+}
+
+/// One file per LOD, with the capture: each file holds one level, on the source
+/// node itself and under its own name. The authored graph goes out first and
+/// used to be followed by a suffixed *copy* of each mesh node carrying the
+/// level, so `asset_LOD1.fbx` held an empty `Suzanne` beside `Suzanne_LOD1` —
+/// with every display layer, pose and set bound to the empty one.
+#[test]
+fn one_file_per_lod_with_the_capture_puts_each_level_on_its_own_node() {
+    let Some((model, extras)) = fixture_full("monkey.fbx") else {
+        return;
+    };
+    let result = run_with_extras(&model, &extras, &weld_and_halve());
+    assert_eq!(result.lods.len(), 2);
+    let source_meshes: Vec<&str> = model
+        .nodes
+        .iter()
+        .filter(|node| node.mesh_part.is_some())
+        .map(|node| node.name.as_str())
+        .collect();
+
+    let dir = temp_dir("round_trip_per_lod_extras");
+    let report = export_fbx(
+        &result.lods,
+        &model,
+        Some(&extras),
+        &dir.join("asset.fbx"),
+        &ExportOptions {
+            packaging: LodPackaging::FilePerLod,
+            ..ExportOptions::default()
+        },
+    )
+    .expect("export succeeds");
+    assert_eq!(report.files.len(), 2);
+
+    for (level, file) in report.files.iter().enumerate() {
+        let (loaded, _) = reload_full(file);
+        let names: Vec<&str> = loaded.nodes.iter().map(|node| node.name.as_str()).collect();
+        let meshes: Vec<&str> = loaded
+            .nodes
+            .iter()
+            .filter(|node| node.mesh_part.is_some())
+            .map(|node| node.name.as_str())
+            .collect();
+        assert_eq!(
+            meshes,
+            source_meshes,
+            "{}: the level is on the source's own mesh nodes: {names:?}",
+            file.display()
+        );
+        for name in &source_meshes {
+            assert_eq!(
+                names.iter().filter(|node| *node == name).count(),
+                1,
+                "{}: exactly one {name}, carrying the mesh: {names:?}",
+                file.display()
+            );
+        }
+        assert_eq!(
+            loaded.indices.len() / 3,
+            result.lods[level].model.stats.triangle_count,
+            "{} holds its own level",
+            file.display()
+        );
+    }
+}
+
+/// "Written as triangles" names a genuine loss — a source's quads and n-gons
+/// that a simplify turned into triangles. Most game assets are triangles
+/// already, and the note used to fire on them too, for every mesh of every
+/// simplified export.
+#[test]
+fn only_a_source_with_polygons_is_said_to_lose_them() {
+    let written_as_triangles = |name: &str| -> Option<bool> {
+        let (model, extras) = fixture_full(name)?;
+        let result = run_with_extras(&model, &extras, &weld_and_halve());
+        let dir = temp_dir(&format!("round_trip_triangle_note_{name}"));
+        let report = export_fbx(
+            &result.lods,
+            &model,
+            Some(&extras),
+            &dir.join("out.fbx"),
+            &ExportOptions::default(),
+        )
+        .expect("export succeeds");
+        Some(
+            report
+                .notes
+                .iter()
+                .any(|note| matches!(note, ExportNote::WrittenAsTriangles { .. })),
+        )
+    };
+    // A source of triangles only: nothing was lost.
+    if let Some(noted) = written_as_triangles("SM_column04.fbx") {
+        assert!(!noted, "an all-triangle source loses no polygons");
+    }
+    // A source of quads: the simplified level genuinely went out as triangles.
+    if let Some(noted) = written_as_triangles("monkey.fbx") {
+        assert!(noted, "a quad source's simplified level is reported");
+    }
 }

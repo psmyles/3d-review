@@ -142,16 +142,21 @@ impl ModelData {
     /// layout), so `vertices.len()` describes this viewer's internal buffer, not
     /// the asset. What the asset actually *costs* is what any engine importer's
     /// lossless indexing produces: one vertex per distinct
-    /// (position, normal, UVs, color) tuple, per (node, material) draw group —
+    /// (position, normal, UVs, color, handedness) tuple, per (node, material) draw
+    /// group —
     /// duplicates across groups stay separate, exactly as separate draws keep
     /// separate buffers. This is the figure the stats panel reports as the GPU
     /// vertex count, and it matches the Opt workspace's post-index baseline.
     ///
     /// Equality is bit-exact after folding `-0.0` to `+0.0` and every NaN to one
     /// pattern — the same canonical form the Opt weld uses, so the two counts
-    /// can never disagree. The tangent is deliberately excluded: it is derived
-    /// from position/normal/UV, so identical inputs carry identical tangents and
-    /// including it would only let floating-point noise split a vertex.
+    /// can never disagree. Of the tangent only the sign of `w` is compared. Its
+    /// direction is left out: import synthesizes a missing tangent on the
+    /// corner-split buffer, where each corner sees only its own polygon, so the
+    /// direction is faceted and comparing it would split every corner. The sign is
+    /// the UV winding, which flips only across a mirror seam - and an engine splits
+    /// a vertex there, since its two sides share a position, a normal and a UV but
+    /// not a basis.
     pub fn count_gpu_vertices(&self) -> usize {
         self.mesh_group_stats()
             .iter()
@@ -270,6 +275,9 @@ impl ModelData {
                 ] {
                     key.extend_from_slice(&canonical(component));
                 }
+                // The tangent's handedness, not its direction - see
+                // `count_gpu_vertices`.
+                key.push(u8::from(vertex.tangent.w < 0.0));
                 if unique.insert((node, material, key)) {
                     group.gpu_vertex_count += 1;
                 }
@@ -622,6 +630,40 @@ mod tests {
             model.count_gpu_vertices(),
             26,
             "the two shared corners are uploaded once per group"
+        );
+    }
+
+    /// A tangent's handedness splits a vertex and its direction does not: two
+    /// corners alike in everything but the sign of `w` are a mirror seam, which an
+    /// engine uploads twice, while a faceted direction (what import synthesizes on
+    /// the corner-split buffer) costs nothing.
+    #[test]
+    fn gpu_vertex_count_splits_a_mirror_seam_but_not_a_faceted_tangent() {
+        let mut model = demo_cube_model();
+        let corners: Vec<Vertex> = model.indices[..3]
+            .iter()
+            .map(|&index| model.vertices[index as usize])
+            .collect();
+        let base = model.vertices.len() as u32;
+        model.vertices.extend(corners.iter().map(|corner| Vertex {
+            tangent: corner.tangent.truncate().extend(-corner.tangent.w.signum()),
+            ..*corner
+        }));
+        model.indices.extend_from_slice(&[base, base + 1, base + 2]);
+        model.triangles.to_face.push(0);
+        model.triangles.material.push(0);
+        model.triangles.node.push(0);
+        assert_eq!(model.count_gpu_vertices(), 27, "the mirrored copies split");
+
+        let faceted = model.vertices.len() - 3;
+        for vertex in &mut model.vertices[faceted..] {
+            vertex.tangent.w = -vertex.tangent.w;
+            vertex.tangent.y += 0.25;
+        }
+        assert_eq!(
+            model.count_gpu_vertices(),
+            24,
+            "a different direction with the same handedness does not"
         );
     }
 }

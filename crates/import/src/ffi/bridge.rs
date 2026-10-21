@@ -33,7 +33,7 @@ const CANCELLED: c_int = -1;
 const LOADED_WITHOUT_EXTRAS: c_int = 2;
 
 use super::marshal_model::model_from_bridge_scene;
-use super::raw::read_error_message;
+use super::raw::{BridgeExtras, BridgeScene, Bridged, read_error_message};
 use super::raw_extras::ReviewImportExtras;
 use super::raw_scene::{ReviewImportError, ReviewImportScene};
 
@@ -46,7 +46,7 @@ use super::raw_scene::{ReviewImportError, ReviewImportScene};
 /// this shape, as does `review-psd`'s document handle; the scene was the one
 /// bridge resource still freed by hand.
 struct SceneHandle {
-    raw: ReviewImportScene,
+    raw: BridgeScene,
 }
 
 impl Drop for SceneHandle {
@@ -56,7 +56,7 @@ impl Drop for SceneHandle {
         // partial parse may leave, and nothing reads the scene afterwards —
         // every slice taken from it borrows this handle.
         unsafe {
-            review_import_free_scene(&mut self.raw);
+            review_import_free_scene(self.raw.as_mut_ptr());
         }
     }
 }
@@ -65,7 +65,7 @@ impl Drop for SceneHandle {
 /// the bridge allocated for this call — nothing borrowed from ufbx, whose
 /// scene is already freed — so moving it to another thread is sound.
 pub(crate) struct ExtrasHandle {
-    pub(super) raw: Box<ReviewImportExtras>,
+    pub(super) raw: Box<BridgeExtras>,
 }
 
 // SAFETY: the handle exclusively owns C heap allocations that no other
@@ -78,7 +78,7 @@ impl Drop for ExtrasHandle {
         // SAFETY: `raw` was filled by `review_import_load_fbx` and is freed
         // exactly once, here; the bridge's free tolerates a zeroed struct.
         unsafe {
-            review_import_free_extras(&mut *self.raw);
+            review_import_free_extras(self.raw.as_mut_ptr());
         }
     }
 }
@@ -158,10 +158,14 @@ pub(crate) fn load_fbx(
     // Boxed so the handle that outlives this call never moves the struct
     // the bridge wrote pointers into. Zeroed is a valid "nothing captured"
     // value the free tolerates.
-    // SAFETY: `ReviewImportExtras` is all raw pointers and integers, for
-    // which the all-zero bit pattern is a valid value.
-    let mut extras: Option<Box<ReviewImportExtras>> =
-        capture_extras.then(|| Box::new(unsafe { std::mem::zeroed() }));
+    let mut extras: Option<Box<BridgeExtras>> = capture_extras.then(|| {
+        // SAFETY: `ReviewImportExtras` is all raw pointers and integers, for
+        // which the all-zero bit pattern is a valid value; zeroed, it points at
+        // nothing, so vouching for it promises nothing until the bridge fills it
+        // — and what the bridge fills it with is exactly `Bridged::new`'s
+        // contract.
+        Box::new(unsafe { Bridged::new(std::mem::zeroed::<ReviewImportExtras>()) })
+    });
 
     let loaded = {
         // The ufbx C parse + the bridge's two-pass extraction (the bulk of a
@@ -173,9 +177,7 @@ pub(crate) fn load_fbx(
         };
         let extras_ptr = extras
             .as_deref_mut()
-            .map_or(std::ptr::null_mut(), |extras| {
-                extras as *mut ReviewImportExtras
-            });
+            .map_or(std::ptr::null_mut(), Bridged::as_mut_ptr);
         // SAFETY: `c_path` is a valid NUL-terminated C string that outlives the
         // call; `error` is a live stack value; `scene` is a zeroed,
         // correctly-sized `ReviewImportScene` the bridge fully writes on
@@ -219,26 +221,40 @@ pub(crate) fn load_fbx(
         Some(_) => None,
         None => extras.map(|raw| ExtrasHandle { raw }),
     };
+    let skipped_layers = extras
+        .as_ref()
+        .map_or(0, |handle| handle.raw.skipped_layer_count);
 
     // From here the scene is owned by a handle that frees it on drop — including
     // on an unwind out of the marshal below, which the old manual free could not
     // cover.
     // SAFETY: `loaded != 0` means the bridge fully initialized `scene`, so the
-    // `MaybeUninit` now holds a valid `ReviewImportScene`.
-    let raw = unsafe { scene.assume_init() };
+    // `MaybeUninit` now holds a valid `ReviewImportScene` — every pointer the
+    // bridge's count paired with it, every string NUL-terminated, all owned by
+    // the C side until `review_import_free_scene`, which only the handle's
+    // `Drop` calls. That is `Bridged::new`'s contract.
+    let raw = unsafe { Bridged::new(scene.assume_init()) };
     let scene = SceneHandle { raw };
-    let model = {
+    let built = {
         // Walk the flat bridge arrays into our `ModelData` (slices, bounds, BVH).
         let _z = crate::prof::zone!("Build ModelData");
         model_from_bridge_scene(path, &scene.raw, progress)
     };
     // The scene's buffers are freed when `scene` drops at the end of this
     // function — after the marshal has finished reading them, on every path.
+    let (model, mut warnings) = built?;
+    if skipped_layers > 0 {
+        warnings.push(format!(
+            "{skipped_layers} optional mesh layer(s) (an extra color set or a vertex crease \
+             layer) could not be read and will not be exported"
+        ));
+    }
     Ok(StagedImport {
-        model: model?,
+        model,
         extras: PendingExtras {
             handle: extras,
             dropped,
+            warnings,
         },
     })
 }

@@ -8,12 +8,15 @@
 //! 16 million points. Storing the rest costs hundreds of megabytes to hold the
 //! same two numbers everywhere (`+band`, and a sign nothing reads).
 //!
-//! So the lattice is cut into 8×8×8 **blocks**, and a block exists only where
-//! some triangle's bounding box — dilated by the band, so the surface's whole
-//! neighbourhood is covered — reaches it. Everything outside is *implicitly*
-//! farther than the band, which is all the extraction needs to know: a cell that
-//! crosses the surface has all eight corners within a voxel diagonal of it, and
-//! the band is wider than that, so such a cell is always fully allocated.
+//! So the lattice is cut into 8×8×8 **blocks**, and a block's values are stored
+//! only where some triangle's bounding box — dilated by the band, so the
+//! surface's whole neighbourhood is covered — reaches it, or where the field's
+//! sign changes away from the geometry, across an opening (see [`super::sdf`]).
+//! Every other block is farther than the band from everything and on one side of
+//! the surface throughout, so its value is the same at every point — the band,
+//! signed — and it is held as that one number ([`Field::set_uniform`]). The
+//! extraction then has a value at every corner of every cell, which is what
+//! makes the shell it pulls out closed.
 
 use glam::{IVec3, Vec3};
 use review_model::Bounds;
@@ -105,12 +108,19 @@ impl GridDesc {
     }
 }
 
+/// [`Field::blocks`]: no value has been given for this block at all.
+const UNSAMPLED: u32 = u32::MAX;
+/// [`Field::blocks`]: every point of this block is outside, a band away.
+const UNIFORM_OUTSIDE: u32 = u32::MAX - 1;
+/// [`Field::blocks`]: every point of this block is inside, a band away.
+const UNIFORM_INSIDE: u32 = u32::MAX - 2;
+
 /// The signed distances, held one block at a time.
 ///
 /// A block is `BLOCK³` values in x-fastest order. `blocks` is dense over the
-/// block lattice and holds an index into `values`, or [`u32::MAX`] where no
-/// block was allocated — one `u32` per 512 points, which is small enough to keep
-/// dense even at the maximum resolution.
+/// block lattice and holds an index into `values`, or one of the markers above
+/// where no block was allocated — one `u32` per 512 points, which is small
+/// enough to keep dense even at the maximum resolution.
 pub(super) struct Field {
     pub(super) desc: GridDesc,
     block_dims: IVec3,
@@ -128,7 +138,7 @@ impl Field {
     /// plausible zero.
     pub(super) fn new(desc: GridDesc, touched: &[bool]) -> Self {
         let block_dims = desc.block_dims();
-        let mut blocks = vec![u32::MAX; touched.len()];
+        let mut blocks = vec![UNSAMPLED; touched.len()];
         let mut allocated = 0u32;
         for (index, &touch) in touched.iter().enumerate() {
             if touch {
@@ -149,6 +159,21 @@ impl Field {
         self.values.len() / (BLOCK * BLOCK * BLOCK) as usize
     }
 
+    /// Give an unallocated block one value throughout: the band, negative when
+    /// `inside`. An allocated block is left as it is, since its own samples are
+    /// what it holds.
+    pub(super) fn set_uniform(&mut self, block_index: usize, inside: bool) {
+        if let Some(slot) = self.blocks.get_mut(block_index)
+            && *slot == UNSAMPLED
+        {
+            *slot = if inside {
+                UNIFORM_INSIDE
+            } else {
+                UNIFORM_OUTSIDE
+            };
+        }
+    }
+
     /// The block-lattice index of `block`, or `None` when it is off the lattice.
     pub(super) fn block_index(&self, block: IVec3) -> Option<usize> {
         if block.cmplt(IVec3::ZERO).any() || block.cmpge(self.block_dims).any() {
@@ -161,26 +186,39 @@ impl Field {
         )
     }
 
-    /// Where point `point`'s value lives, or `None` when its block is not
-    /// allocated.
-    fn slot(&self, point: IVec3) -> Option<usize> {
+    /// Whether `point`'s block holds no samples of its own - one value
+    /// throughout, or none - so a cell lying wholly inside it has no surface
+    /// in it and need not be read corner by corner.
+    pub(super) fn is_flat_at(&self, point: IVec3) -> bool {
+        let block = IVec3::new(point.x / BLOCK, point.y / BLOCK, point.z / BLOCK);
+        self.block_index(block).is_none_or(|index| {
+            matches!(
+                self.blocks[index],
+                UNSAMPLED | UNIFORM_OUTSIDE | UNIFORM_INSIDE
+            )
+        })
+    }
+
+    /// The signed distance at `point`: its sample in an allocated block, the
+    /// block's one value in a uniform one, and `None` off the lattice or in a
+    /// block given no value at all.
+    pub(super) fn get(&self, point: IVec3) -> Option<f32> {
         if point.cmplt(IVec3::ZERO).any() || point.cmpge(self.desc.dims).any() {
             return None;
         }
         let block = IVec3::new(point.x / BLOCK, point.y / BLOCK, point.z / BLOCK);
-        let base = self.blocks[self.block_index(block)?];
-        if base == u32::MAX {
-            return None;
+        match self.blocks[self.block_index(block)?] {
+            UNSAMPLED => None,
+            UNIFORM_OUTSIDE => Some(self.desc.band()),
+            UNIFORM_INSIDE => Some(-self.desc.band()),
+            base => {
+                let inside = point - block * BLOCK;
+                let offset = (inside.z * BLOCK + inside.y) * BLOCK + inside.x;
+                let value =
+                    self.values[base as usize * (BLOCK * BLOCK * BLOCK) as usize + offset as usize];
+                (!value.is_nan()).then_some(value)
+            }
         }
-        let inside = point - block * BLOCK;
-        let offset = (inside.z * BLOCK + inside.y) * BLOCK + inside.x;
-        Some(base as usize * (BLOCK * BLOCK * BLOCK) as usize + offset as usize)
-    }
-
-    /// The signed distance at `point`, or `None` outside the allocated blocks.
-    pub(super) fn get(&self, point: IVec3) -> Option<f32> {
-        let value = self.values[self.slot(point)?];
-        (!value.is_nan()).then_some(value)
     }
 
     /// Every allocated block's lattice coordinate, in allocation order — which
@@ -189,7 +227,7 @@ impl Field {
     pub(super) fn block_coords(&self) -> Vec<IVec3> {
         let mut coords = vec![IVec3::ZERO; self.allocated_blocks()];
         for (index, &base) in self.blocks.iter().enumerate() {
-            if base == u32::MAX {
+            if matches!(base, UNSAMPLED | UNIFORM_OUTSIDE | UNIFORM_INSIDE) {
                 continue;
             }
             let x = index % self.block_dims.x as usize;

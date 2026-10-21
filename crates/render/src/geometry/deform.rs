@@ -91,7 +91,9 @@ impl DeformLayout {
         // Skin runs are emitted once per logical vertex and shared by every
         // corner expanded from it.
         let logical_count = model.stats.vertex_count;
-        let mut logical_run: Vec<Option<(u32, u32)>> = vec![None; logical_count];
+        // Per logical vertex: its influence run, and whether that run carries any
+        // weight - shared by every corner of the vertex.
+        let mut logical_run: Vec<Option<(u32, u32, bool)>> = vec![None; logical_count];
         let skin = model.skin.as_ref();
         let morph = model.morph.as_ref();
 
@@ -105,11 +107,13 @@ impl DeformLayout {
                     if let Some(Some(run)) = logical_run.get(logical) {
                         lane[0] = run.0;
                         lane[1] = run.1;
-                        skinned = run.1 > 0;
+                        skinned = run.2;
                     } else {
                         let range = skin.influence_range(logical);
                         let first = influences.len() as u32;
+                        let mut total = 0.0_f32;
                         for influence in range {
+                            total += skin.weights[influence];
                             influences.push(InfluenceEntry {
                                 entry: (node_count + skin.influence_cluster[influence] as usize)
                                     as u32,
@@ -117,17 +121,21 @@ impl DeformLayout {
                             });
                         }
                         let count = influences.len() as u32 - first;
+                        // The shader has nothing to normalise a weightless row by,
+                        // so it is not a skin: `review_model::anim::deform_corner`
+                        // makes the same call on the same sum.
+                        let weighted = count > 0 && total > 0.0;
                         if let Some(slot) = logical_run.get_mut(logical) {
-                            *slot = Some((first, count));
+                            *slot = Some((first, count, weighted));
                         }
                         lane[0] = first;
                         lane[1] = count;
-                        skinned = count > 0;
+                        skinned = weighted;
                     }
                 }
                 if !skinned {
-                    // Unskinned (or a skinned vertex with an empty row): ride the
-                    // owning node rigidly, when there is one.
+                    // Unskinned (or a skinned vertex whose row carries no weight):
+                    // ride the owning node rigidly, when there is one.
                     let node = corner_node[index];
                     if (node as usize) < node_count {
                         lane[0] = node;

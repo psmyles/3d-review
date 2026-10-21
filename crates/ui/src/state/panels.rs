@@ -1,8 +1,9 @@
 //! One state struct per option tool, and the defaults a reset returns to.
 //!
-//! Each of these pairs with a file in `panels/`, and carries the *uncommitted*
-//! slider values that tool is editing; `sync_debug_state` funnels the committed
-//! ones into the `SceneDebugOptions` the renderer reads.
+//! Each of these pairs with a file in `panels/`, and carries the values that tool
+//! edits. The widgets write them in place — there is no separate commit step —
+//! and `sync_debug_state` copies them each frame into the `SceneDebugOptions` the
+//! renderer reads.
 
 use review_render::{CheckerTexture, TrajectoryStyle, VertexColorMode};
 

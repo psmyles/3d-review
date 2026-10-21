@@ -214,16 +214,26 @@ impl ModelData {
         self.bounds = (!bounds.is_empty()).then_some(bounds);
     }
 
-    /// True when the mesh carries no usable per-vertex tangent basis — every
-    /// vertex tangent is degenerate (zero length). The importer leaves a zero
-    /// tangent when the source FBX has UVs but no tangent layer (common for Maya
+    /// True when some vertex carries no usable tangent — a degenerate (zero
+    /// length, or not a number) one. The importer leaves a zero tangent on every
+    /// corner of a mesh whose file had no tangent layer (common for Maya
     /// exports), which is the signal to synthesize one before normal mapping.
+    ///
+    /// *Some*, not *every*: a scene whose meshes disagree — one exported with a
+    /// tangent layer, one without — has zero tangents on the second mesh only,
+    /// and asking whether all of them were zero left that mesh with no basis at
+    /// all, which a normal map shades as NaN.
     pub fn has_degenerate_tangents(&self) -> bool {
-        !self.vertices.is_empty()
-            && self
-                .vertices
-                .iter()
-                .all(|vertex| vertex.tangent.truncate().length_squared() < 1e-12)
+        self.vertices
+            .iter()
+            .any(|vertex| Self::tangent_is_degenerate(vertex.tangent))
+    }
+
+    /// Whether `tangent` is no basis at all: zero length, or not a number.
+    fn tangent_is_degenerate(tangent: glam::Vec4) -> bool {
+        let length_squared = tangent.truncate().length_squared();
+        let usable = length_squared.is_finite() && length_squared >= 1e-12;
+        !usable
     }
 
     /// Recompute per-vertex normals as the area-weighted average of the faces
@@ -255,9 +265,37 @@ impl ModelData {
     /// index-less mesh. Uses the primary UV set ([`Vertex::uv`]); a vertex whose
     /// accumulated tangent is degenerate (no UV area) falls back to an arbitrary
     /// orthonormal vector so the basis is never zero.
+    ///
+    /// Every vertex is overwritten, authored tangent or not — what a caller
+    /// that has invalidated the whole basis wants (a reference build, a mesh
+    /// whose geometry changed under it). The import funnel wants
+    /// [`ModelData::generate_missing_tangents`] instead.
     pub fn generate_tangents(&mut self) {
+        self.synthesize_tangents(false);
+    }
+
+    /// [`ModelData::generate_tangents`] for only the vertices that have no
+    /// usable tangent (see [`ModelData::has_degenerate_tangents`]), leaving every
+    /// authored one exactly as the file wrote it. What import runs: a scene in
+    /// which one mesh carries a tangent layer and another does not keeps the
+    /// first mesh's authored basis and gains one for the second.
+    pub fn generate_missing_tangents(&mut self) {
+        self.synthesize_tangents(true);
+    }
+
+    /// The body of both tangent generators; `only_missing` limits which vertices
+    /// are written, and which triangles are worth accumulating.
+    fn synthesize_tangents(&mut self, only_missing: bool) {
         let vertex_count = self.vertices.len();
         if vertex_count == 0 || self.indices.len() < 3 {
+            return;
+        }
+        let wanted: Vec<bool> = self
+            .vertices
+            .iter()
+            .map(|vertex| !only_missing || Self::tangent_is_degenerate(vertex.tangent))
+            .collect();
+        if !wanted.iter().any(|&wanted| wanted) {
             return;
         }
 
@@ -276,6 +314,11 @@ impl ModelData {
             ) else {
                 continue;
             };
+            // A triangle none of whose corners is being written contributes to
+            // nothing that is kept.
+            if !(wanted[i0] || wanted[i1] || wanted[i2]) {
+                continue;
+            }
             let edge1 = v1.position - v0.position;
             let edge2 = v2.position - v0.position;
             let delta_uv1 = v1.uv - v0.uv;
@@ -296,6 +339,9 @@ impl ModelData {
         }
 
         for (index, vertex) in self.vertices.iter_mut().enumerate() {
+            if !wanted[index] {
+                continue;
+            }
             let normal = vertex.normal;
             // Gram-Schmidt: project the accumulated tangent off the normal so the
             // stored tangent is exactly perpendicular to it.
@@ -322,6 +368,13 @@ impl ModelData {
     /// per-triangle node info (so visibility can't be resolved), or it has no
     /// mesh at all (a skeleton is framed whole). `None` when no visible geometry
     /// remains (every mesh hidden, or an empty model).
+    ///
+    /// Measured in the pose [`ModelData::bounds`] is: the vertex buffer for a
+    /// static model, the file's default pose for one that deforms
+    /// ([`anim::visible_rest_bounds`]) — reading a skinned model's bind-pose
+    /// buffer instead made the box jump the moment any mesh was hidden. A
+    /// selected clip's envelope is the caller's to ask for, through
+    /// [`anim::visible_clip_bounds_over`], since it costs a pose per frame.
     pub fn visible_bounds(&self, hidden_nodes: &[u32]) -> Option<Bounds> {
         let triangle_count = self.indices.len() / 3;
         if hidden_nodes.is_empty()
@@ -329,6 +382,10 @@ impl ModelData {
             || self.triangles.node.len() != triangle_count
         {
             return self.bounds;
+        }
+        if self.needs_deform() {
+            let ctx = AnimContext::new(self);
+            return anim::visible_rest_bounds(self, &ctx, hidden_nodes);
         }
         let hidden: std::collections::HashSet<u32> = hidden_nodes.iter().copied().collect();
         let mut bounds = Bounds::EMPTY;

@@ -10,8 +10,9 @@
 //!
 //! Dispatch is by magic bytes first (robust to mislabeled extensions — common in
 //! game-asset exports), with the file extension as a fallback for formats that carry
-//! no signature (e.g. TGA). Only the `review_psd` path is `unsafe`/FFI, and it is
-//! confined to that crate (invariant 9); the decode code here stays safe.
+//! no signature (e.g. TGA) — never the other way round, so a PNG saved as `.psd`
+//! still reaches the PNG decoder. Only the `review_psd` path is `unsafe`/FFI, and it
+//! is confined to that crate (invariant 9); the decode code here stays safe.
 //!
 //! [`decode_image`] runs on a worker thread `app`'s texture manager spawns per decode
 //! (a file imported into the scene texture pool, or a reload after it changes on
@@ -173,7 +174,11 @@ pub struct DecodedImage {
     pub height: u32,
     /// Tightly-packed RGBA8 rows, `width * height * 4` bytes.
     pub rgba: Vec<u8>,
-    /// Channel count of the source file (1 grey, 2 grey+alpha, 3 RGB, 4 RGBA).
+    /// Channel count of the source file as the decode reads it (1 grey, 2
+    /// grey+alpha, 3 RGB, 4 RGBA): what the file's pixels carry, not how they are
+    /// stored. A CMYK JPEG is colour without transparency, so it is 3; a PSD's
+    /// extra channels beyond its transparency are not drawn, so they do not count.
+    /// `2 | 4` is what tells a consumer the image has an alpha channel.
     pub source_channels: u8,
     /// Bits per channel of the source file (e.g. 8, 16), before the RGBA8 decode.
     pub source_bit_depth: u8,
@@ -191,23 +196,31 @@ pub fn decode_image(path: &Path) -> Result<DecodedImage, String> {
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase())
         .unwrap_or_default();
+    decode_bytes(&bytes, &extension, path)
+}
 
+/// [`decode_image`] over bytes already read, with `extension` (lower case) as the
+/// hint for a signature-less format; `path` only names the file in an error.
+fn decode_bytes(bytes: &[u8], extension: &str, path: &Path) -> Result<DecodedImage, String> {
     // PSD: layered source art. psd_sdk reads the merged/composited image (present
     // when saved with "Maximize Compatibility"), the thing the viewer displays.
-    if bytes.starts_with(b"8BPS") || extension == "psd" {
-        return decode_psd(&bytes, path);
+    // Every PSD (and PSB) opens with this signature, so the extension adds nothing
+    // here — and routing a `.psd` by name alone sent a PNG or TIFF that had been
+    // saved under it to a decoder that could only refuse it.
+    if bytes.starts_with(b"8BPS") {
+        return decode_psd(bytes, path);
     }
 
     // JPEG: the fast path. If zune rejects it (e.g. a truncated/odd variant), fall
     // through to the `image` crate rather than failing outright.
-    if (bytes.starts_with(&[0xFF, 0xD8, 0xFF]) || matches!(extension.as_str(), "jpg" | "jpeg"))
-        && let Ok(image) = decode_jpeg_zune(&bytes)
+    if (bytes.starts_with(&[0xFF, 0xD8, 0xFF]) || matches!(extension, "jpg" | "jpeg"))
+        && let Ok(image) = decode_jpeg_zune(bytes)
     {
         return Ok(image);
     }
 
     // Everything else (PNG/TGA/TIFF/HDR/BMP/GIF/PNM): the `image` crate.
-    dynamic_to_decoded(decode_via_image_crate(&bytes, &extension, path)?)
+    dynamic_to_decoded(decode_via_image_crate(bytes, extension, path)?)
 }
 
 /// Flatten a decoded [`image::DynamicImage`] into a [`DecodedImage`], capturing the
@@ -259,21 +272,28 @@ fn decode_via_image_crate(
 }
 
 /// Decode JPEG bytes with zune's speed-first options, normalized to RGBA8. JPEG is
-/// always 8-bit; the source channel count (1 grey / 3 RGB) is captured before the
-/// RGBA conversion for the stats panel.
+/// always 8-bit; the source channel count is read from the file's own colour
+/// space, from its header, for the stats panel.
 fn decode_jpeg_zune(bytes: &[u8]) -> Result<DecodedImage, String> {
     use zune_core::bytestream::ZCursor;
     use zune_core::colorspace::ColorSpace;
     use zune_core::options::DecoderOptions;
-    use zune_image::image::Image;
+    use zune_image::codecs::jpeg::JpegDecoder;
+    use zune_image::traits::DecoderTrait;
 
     // Speed is a project goal: enable platform intrinsics + unsafe fast paths.
     let options = DecoderOptions::new_fast();
-    let mut image = Image::read(ZCursor::new(bytes), options)
+    // The decoder `Image::read` would pick for these bytes, driven by hand so its
+    // header can be asked what the file holds before it decodes: once decoded, the
+    // image's colour space is the decoder's *output*, which is RGB whatever the file
+    // stored, so a greyscale JPEG used to report three channels.
+    let mut decoder = JpegDecoder::new_with_options(ZCursor::new(bytes), options);
+    decoder
+        .decode_headers()
         .map_err(|error| format!("zune decode jpeg: {error}"))?;
-
-    // Source channel count for the stats panel, before we normalize to RGBA.
-    let source_channels = image.colorspace().num_components().clamp(1, 255) as u8;
+    let source_channels = decoder.input_colorspace().map_or(3, jpeg_source_channels);
+    let mut image = <JpegDecoder<_> as DecoderTrait>::decode(&mut decoder)
+        .map_err(|error| format!("zune decode jpeg: {error}"))?;
 
     image
         .convert_color(ColorSpace::RGBA)
@@ -295,19 +315,35 @@ fn decode_jpeg_zune(bytes: &[u8]) -> Result<DecodedImage, String> {
     })
 }
 
+/// The [`DecodedImage::source_channels`] of a JPEG stored in `colorspace`: 1 for
+/// greyscale, and 3 for everything else a JPEG holds — YCbCr and RGB, and CMYK /
+/// YCCK too, whose fourth component is ink rather than transparency and is folded
+/// into the colour the decoder hands back.
+fn jpeg_source_channels(colorspace: zune_core::colorspace::ColorSpace) -> u8 {
+    use zune_core::colorspace::ColorSpace;
+
+    match colorspace {
+        ColorSpace::Luma => 1,
+        ColorSpace::LumaA => 2,
+        other if other.has_alpha() => 4,
+        _ => 3,
+    }
+}
+
 /// Decode a PSD's merged/composited image via the psd_sdk FFI crate. The
 /// `unsafe`/FFI is fully contained in [`review_psd`] (invariant 9); this only maps
-/// its result into a [`DecodedImage`], reporting the source channel count + bit
-/// depth from the PSD header.
+/// its result into a [`DecodedImage`], reporting the channels the composite is
+/// drawn from (not the planes stored: a spot or saved-selection channel past the
+/// transparency is never read) and the bit depth from the PSD header.
 fn decode_psd(bytes: &[u8], path: &Path) -> Result<DecodedImage, String> {
     let psd = review_psd::decode_psd(bytes)
         .map_err(|error| format!("decode {}: {error}", path.display()))?;
     Ok(DecodedImage {
         width: psd.width,
         height: psd.height,
-        rgba: psd.rgba8,
-        source_channels: psd.channels.clamp(1, 255) as u8,
+        source_channels: psd.drawn_channels(),
         source_bit_depth: psd.bits_per_channel.clamp(1, 255) as u8,
+        rgba: psd.rgba8,
     })
 }
 
@@ -433,6 +469,87 @@ mod tests {
         assert_eq!(decoded.rgba.len(), 4 * 2 * 4);
         assert_eq!(decoded.source_channels, 3);
         assert_eq!(decoded.source_bit_depth, 8);
+    }
+
+    /// Encode `image` as `format` in memory.
+    fn encoded(image: image::DynamicImage, format: image::ImageFormat) -> Vec<u8> {
+        let mut buf = Cursor::new(Vec::new());
+        image.write_to(&mut buf, format).expect("encode fixture");
+        buf.into_inner()
+    }
+
+    /// A greyscale JPEG is one channel: the channel count comes from the file,
+    /// not from the decoder's output, which is RGB whatever the file stored.
+    #[test]
+    fn a_greyscale_jpeg_reports_one_channel() {
+        let grey = image::GrayImage::from_fn(4, 4, |x, y| image::Luma([(x * 40 + y * 10) as u8]));
+        let bytes = encoded(
+            image::DynamicImage::ImageLuma8(grey),
+            image::ImageFormat::Jpeg,
+        );
+        let decoded = decode_jpeg_zune(&bytes).expect("zune decodes a greyscale jpeg");
+        assert_eq!(decoded.source_channels, 1);
+        assert_eq!(decoded.rgba.len(), 4 * 4 * 4);
+        // The pixels are still grey, expanded to RGBA.
+        assert!(
+            decoded
+                .rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|[r, g, b, a]| r == g && g == b && *a == 255)
+        );
+    }
+
+    /// CMYK and YCCK are colour without transparency, as the decode draws them.
+    #[test]
+    fn a_jpeg_colour_space_maps_to_the_channels_drawn() {
+        use zune_core::colorspace::ColorSpace;
+        assert_eq!(jpeg_source_channels(ColorSpace::Luma), 1);
+        assert_eq!(jpeg_source_channels(ColorSpace::YCbCr), 3);
+        assert_eq!(jpeg_source_channels(ColorSpace::RGB), 3);
+        assert_eq!(jpeg_source_channels(ColorSpace::CMYK), 3);
+        assert_eq!(jpeg_source_channels(ColorSpace::YCCK), 3);
+    }
+
+    /// BMP and GIF are offered by the texture pickers, so they must decode: both
+    /// carry a signature, and both go to the `image` crate.
+    #[test]
+    fn bmp_and_gif_decode() {
+        let pixels =
+            image::RgbImage::from_fn(3, 2, |x, y| image::Rgb([x as u8 * 80, y as u8 * 120, 7]));
+        let source = image::DynamicImage::ImageRgb8(pixels.clone());
+
+        let bmp = encoded(source.clone(), image::ImageFormat::Bmp);
+        let decoded = decode_bytes(&bmp, "bmp", Path::new("t.bmp")).expect("bmp decodes");
+        assert_eq!((decoded.width, decoded.height), (3, 2));
+        assert_eq!(decoded.source_channels, 3);
+        // BMP is lossless: every texel comes back as stored, made opaque.
+        let expected: Vec<u8> = pixels
+            .pixels()
+            .flat_map(|image::Rgb([r, g, b])| [*r, *g, *b, 255])
+            .collect();
+        assert_eq!(decoded.rgba, expected);
+
+        let gif = encoded(source, image::ImageFormat::Gif);
+        let decoded = decode_bytes(&gif, "gif", Path::new("t.gif")).expect("gif decodes");
+        assert_eq!((decoded.width, decoded.height), (3, 2));
+        assert_eq!(decoded.rgba.len(), 3 * 2 * 4);
+    }
+
+    /// The extension never outranks the content: a PNG saved under a `.psd` name
+    /// is a PNG, where routing by name sent it to a decoder that could only refuse.
+    #[test]
+    fn a_png_named_psd_decodes_as_a_png() {
+        let pixels =
+            image::RgbaImage::from_fn(2, 2, |x, y| image::Rgba([x as u8, y as u8, 3, 128]));
+        let png = encoded(
+            image::DynamicImage::ImageRgba8(pixels.clone()),
+            image::ImageFormat::Png,
+        );
+        let decoded = decode_bytes(&png, "psd", Path::new("t.psd")).expect("decodes by content");
+        assert_eq!(decoded.rgba, pixels.into_raw());
+        assert_eq!(decoded.source_channels, 4);
     }
 
     /// The psd_sdk FFI decodes a real layered PSD's merged composite into a

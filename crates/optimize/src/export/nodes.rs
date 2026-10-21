@@ -86,19 +86,7 @@ pub(crate) fn authored_parent(
     extras: &SourceExtras,
     index: usize,
 ) -> Option<usize> {
-    let mut cursor = source.nodes.get(index)?.parent;
-    let mut steps = 0;
-    while let Some(parent) = cursor {
-        if !is_synthetic(source, extras, parent) {
-            return Some(parent);
-        }
-        cursor = source.nodes.get(parent)?.parent;
-        steps += 1;
-        if steps > source.nodes.len() {
-            return None;
-        }
-    }
-    None
+    review_model::hierarchy::authored_parent(source, Some(extras), index)
 }
 
 /// Emit one authored node (after its authored parent) with the properties the
@@ -197,9 +185,13 @@ pub(crate) fn place_graph(
 }
 
 /// The scene node a level's mesh attaches to, with the whole graph already
-/// placed: level 0 uses the source node itself — renamed `_LOD0` when `in_chain`
-/// says the file holds several levels; a later level gets a suffixed sibling
-/// copy — same authored properties and attribute — beside it.
+/// placed. In a chain (`in_chain`: the file holds several levels) level 0 uses
+/// the source node itself, renamed `_LOD0`, and a later level gets a suffixed
+/// sibling copy — same authored properties and attribute — beside it. A file
+/// holding one level (one file per LOD, or a lone level) puts it on the source
+/// node itself under its plain name, whatever the level's number: the file
+/// name carries the suffix, and a copy beside the source node would leave that
+/// node behind empty, with every display layer, pose and set still bound to it.
 pub(crate) fn place_level_node(
     scene: &mut SceneData,
     placed: &HashMap<usize, i32>,
@@ -229,8 +221,11 @@ pub(crate) fn place_level_node(
     if base == NO_PARENT {
         return base;
     }
+    if !in_chain {
+        return base;
+    }
     if level == 0 {
-        if in_chain && let Some(node) = source.nodes.get(index) {
+        if let Some(node) = source.nodes.get(index) {
             scene.nodes[base as usize].name = c_string(&suffixed(&node.name, 0), "Node");
         }
         return base;
@@ -365,11 +360,12 @@ pub(crate) fn place_node(
         if !leaf && node.parent.is_none() && node.name.is_empty() && node.mesh_part.is_none() {
             continue;
         }
-        // Reuse a node an earlier group already emitted. A later level's leaf is
-        // a per-level variant of its source node, so it is never shared. A
-        // level-0 leaf an earlier group emitted as its ancestor still takes the
-        // chain's `_LOD0` name.
-        let level_copy = leaf && level != 0;
+        // Reuse a node an earlier group already emitted. A later level's leaf in
+        // a chain is a per-level variant of its source node, so it is never
+        // shared. A level-0 leaf an earlier group emitted as its ancestor still
+        // takes the chain's `_LOD0` name. Outside a chain the file holds one
+        // level, whose leaf *is* the source node, as `place_level_node` has it.
+        let level_copy = leaf && in_chain && level != 0;
         if !level_copy && let Some(&existing) = placed.get(&index) {
             if leaf && in_chain {
                 scene.nodes[existing as usize].name = c_string(&suffixed(&node.name, 0), "Node");
@@ -417,12 +413,14 @@ pub(crate) fn suffixed(name: &str, level: usize) -> String {
 /// The name a level's mesh node goes out under. A file holding a chain names
 /// every level, `_LOD0` included: an engine groups the siblings into one LOD
 /// group by that suffix, so a plain-named level 0 is left out of the group.
-/// Outside a chain level 0 keeps the plain name, so a chain-less export
-/// round-trips with the source's own names.
+/// Outside a chain — a file holding one level, which is what one file per LOD
+/// writes — the node keeps the source's plain name whatever the level: the
+/// file name already carries the suffix, and the file round-trips with the
+/// source's own names.
 pub(crate) fn level_name(name: &str, level: usize, in_chain: bool) -> String {
-    if level == 0 && !in_chain {
-        name.to_owned()
-    } else {
+    if in_chain {
         suffixed(name, level)
+    } else {
+        name.to_owned()
     }
 }

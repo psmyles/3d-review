@@ -105,8 +105,9 @@ pub struct ProcessInput<'a> {
 /// The full result of a run.
 #[derive(Debug, Clone)]
 pub struct ProcessedResult {
-    /// Level 0 first, then each configured LOD level in order. Never empty on
-    /// success.
+    /// Level 0 first, then each configured LOD level in order. Empty only when
+    /// the stack has nothing enabled: that run produces no mesh, and measures
+    /// the source alone ([`Self::source`], [`Self::source_metrics`]).
     pub lods: Vec<ProcessedLod>,
     /// The input mesh's counts **after the lossless index pass** — the baseline
     /// every level's change is measured against.
@@ -207,7 +208,11 @@ pub fn process_progressive(
         return Err(OptError::EmptyMesh);
     }
 
-    index_mesh(&mut submeshes, input.stack, &mut warnings);
+    index_mesh(
+        &mut submeshes,
+        input.extras.filter(|_| tags.node),
+        &mut warnings,
+    );
 
     if run.cancelled() {
         return Err(OptError::Cancelled);
@@ -495,10 +500,21 @@ pub(crate) fn is_excluded(stack: &OptStack, node: u32) -> bool {
 
 /// The settings to use for `op` on `node`: the node's override when it has one
 /// for this operation, otherwise the global settings.
+///
+/// An override only ever stands in for *settings*: one holding a different
+/// kind of operation from the one it names is ignored. The chrome cannot write
+/// one, and a preset carrying one is repaired on load, but a stack can come
+/// from anywhere — and honouring it would run, say, a Weld on one object in
+/// the slot of a vertex-cache reorder.
 pub(crate) fn resolve_op<'a>(stack: &'a OptStack, op: &'a OpInstance, node: u32) -> &'a OpKind {
     stack
         .node_override(node as usize)
-        .and_then(|entry| entry.ops.iter().find(|candidate| candidate.id == op.id))
+        .and_then(|entry| {
+            entry.ops.iter().find(|candidate| {
+                candidate.id == op.id
+                    && std::mem::discriminant(&candidate.kind) == std::mem::discriminant(&op.kind)
+            })
+        })
         .map_or(&op.kind, |candidate| &candidate.kind)
 }
 
@@ -1173,6 +1189,95 @@ mod tests {
             24,
             "the only node is excluded, so nothing is welded"
         );
+    }
+
+    /// `nodes` flat `cells` x `cells` grids side by side, one node each, laid
+    /// out the way import leaves a mesh: every triangle corner its own vertex,
+    /// though neighbouring corners agree in everything.
+    fn corner_split_grids(nodes: u32, cells: u32) -> ModelData {
+        let mut model = ModelData::default();
+        for node in 0..nodes {
+            let at = |i: u32, j: u32| review_model::Vertex {
+                position: glam::Vec3::new(
+                    node as f32 * 2.0 + i as f32 / cells as f32,
+                    j as f32,
+                    0.0,
+                ),
+                normal: glam::Vec3::Z,
+                uv: glam::Vec2::new(i as f32, j as f32) / cells as f32,
+                ..review_model::Vertex::default()
+            };
+            for j in 0..cells {
+                for i in 0..cells {
+                    for (a, b) in [
+                        (i, j),
+                        (i + 1, j),
+                        (i + 1, j + 1),
+                        (i, j),
+                        (i + 1, j + 1),
+                        (i, j + 1),
+                    ] {
+                        model.indices.push(model.vertices.len() as u32);
+                        model.vertices.push(at(a, b));
+                    }
+                    model.triangles.node.extend_from_slice(&[node, node]);
+                }
+            }
+            model.nodes.push(review_model::SceneNode {
+                name: format!("Grid{node}"),
+                mesh_part: Some(node as usize),
+                ..review_model::SceneNode::default()
+            });
+        }
+        model.recompute_bounds();
+        model
+    }
+
+    /// An excluded object goes through the lossless index pass like any other:
+    /// left corner-split it was counted one vertex per face corner in the
+    /// baseline and in the level's stats (invariant 5), measured an ACMR of
+    /// exactly 3.0, and exported as a polygon soup. Its triangles are untouched.
+    #[test]
+    fn an_excluded_object_is_indexed_and_counted_like_the_rest() {
+        let model = corner_split_grids(2, 4);
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::VertexCache);
+        stack.node_override_mut(1).exclude = true;
+
+        let result = run_model(&model, &stack);
+        let indexed = 2 * 5 * 5;
+        assert_eq!(
+            result.source.vertices, indexed,
+            "the baseline counts it indexed"
+        );
+        let level = &result.lods[0].model;
+        assert_eq!(level.stats.vertex_count, indexed);
+        assert_eq!(level.vertices.len(), indexed, "it shares its vertices");
+        assert!(
+            result.source_metrics.acmr < 3.0,
+            "measured on the indexed buffer: {}",
+            result.source_metrics.acmr
+        );
+
+        // Every triangle of the excluded object is still there, in order.
+        let triangles_of = |mesh: &ModelData, node: u32| -> Vec<[[u32; 3]; 3]> {
+            mesh.indices
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .zip(&mesh.triangles.node)
+                .filter(|(_, owner)| **owner == node)
+                .map(|(corners, _)| {
+                    corners.map(|c| {
+                        mesh.vertices[c as usize]
+                            .position
+                            .to_array()
+                            .map(f32::to_bits)
+                    })
+                })
+                .collect()
+        };
+        assert_eq!(triangles_of(level, 1), triangles_of(&model, 1));
     }
 
     #[test]

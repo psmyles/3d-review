@@ -39,6 +39,12 @@ app-notifications-couldnt-read-properties =
     The model itself is fine and you can keep working with it. But if you export it,
     the extra settings the viewer does not show (such as custom properties) would be
     lost.
+# A file that loaded with parts the importer could not read left out - a malformed
+# animation key, blend shape or skin binding is dropped on its own rather than
+# failing the file. Each line under it is the importer's own description of one.
+app-notifications-loaded-with-repairs =
+    { $file } loaded, but some of it could not be read and was left out.
+app-notifications-import-repair-line = { $detail }
 
 # Import stages, shown on the loading card as the worker moves through them.
 # `import` keeps its own English `label()` for the profiling channel; these are
@@ -125,6 +131,9 @@ app-notifications-export-replaced = These files were replaced by this export:
 ## The rest of the notices
 
 app-notifications-dialog-failed = Couldn't open the file dialog
+# Asked for a second file dialog while one is still open, which may be behind
+# another window.
+app-notifications-dialog-already-open = A file dialog is already open. Finish or cancel it first.
 app-notifications-opt-start-failed = Couldn't start mesh optimization
 app-notifications-optimization-failed = Optimization failed: { $detail }
 app-notifications-nothing-to-export = Nothing to export yet - add an operation to the list first.

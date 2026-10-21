@@ -117,8 +117,14 @@ impl Device {
     }
 
     /// Point `env` at this device and its immediate context, so `sg_setup` runs on
-    /// them. sokol AddRefs what it keeps, so neither pointer is retained by us beyond
-    /// the device's own lifetime.
+    /// them.
+    ///
+    /// sokol keeps both as **raw, un-AddRef'd pointers** (`_sg_d3d11_setup_backend`
+    /// stores them as given and its discard releases nothing), so they are valid only
+    /// while this `Device` holds its references. That is why sokol is never left set
+    /// up past this value: `rhi`'s `SokolDevice` owns it and shuts sokol down in its
+    /// own `Drop`, which Rust runs before it drops this field — on every path,
+    /// including a bring-up that fails after `sg_setup`.
     pub(crate) fn fill_environment(&self, env: &mut sg::Environment) {
         env.d3d11 = sg::D3d11Environment {
             device: self.device.as_raw(),
@@ -377,11 +383,17 @@ impl Swapchain {
     /// `ResizeBuffers` that fails leaves the old buffers in place for the next frame
     /// to draw into. Neither is anything the caller in `input.rs` could act on, so
     /// neither is a `Result`.
+    ///
+    /// The size recorded is therefore the size the buffers **are**, not the one asked
+    /// for: it is what every frame tells sokol its swapchain pass measures. Recording
+    /// the request on a failure described a backbuffer that did not exist, and left
+    /// [`crate::rhi::Gpu::resize`] comparing the next request against it — so the
+    /// same size again never retried, and the mismatch stayed until the window moved.
     pub(crate) fn resize(&mut self, width: u32, height: u32) {
-        self.width = width;
-        self.height = height;
         self.rtv = None;
         if width == 0 || height == 0 {
+            self.width = width;
+            self.height = height;
             return;
         }
         #[cfg_attr(
@@ -397,6 +409,8 @@ impl Swapchain {
             Surface::Offscreen(texture) => {
                 // Recreated at the new size on the next acquire.
                 *texture = None;
+                self.width = width;
+                self.height = height;
                 return;
             }
         };
@@ -411,8 +425,26 @@ impl Swapchain {
         // SAFETY: the view — the only outstanding reference to a backbuffer — was
         // released above; 0/UNKNOWN keep the existing buffer count and format.
         let resized = unsafe { chain.ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, flags) };
-        if let Err(err) = resized {
-            log::error!("swapchain ResizeBuffers failed: {err}");
+        match resized {
+            Ok(()) => {
+                self.width = width;
+                self.height = height;
+            }
+            Err(err) => {
+                // Not necessarily the size last recorded: a minimize records 0 × 0
+                // without touching the buffers, so ask the chain what it has.
+                // SAFETY: a pure query on the live chain, filling a struct we own.
+                if let Ok(desc) = unsafe { chain.GetDesc1() } {
+                    self.width = desc.Width;
+                    self.height = desc.Height;
+                }
+                log::error!(
+                    "swapchain ResizeBuffers to {width}x{height} failed, keeping the \
+                     {}x{} buffers: {err}",
+                    self.width,
+                    self.height
+                );
+            }
         }
     }
 
@@ -629,7 +661,7 @@ pub(crate) struct FrameTimings {
     /// held when it was last written four frames ago — a stale pair that looks
     /// perfectly valid. Only the slots in here were written by the frame these
     /// timings belong to.
-    pub(crate) written: u16,
+    pub(crate) written: u32,
     /// Ticks per second, from the disjoint query.
     pub(crate) frequency: u64,
     /// The raw begin/end tick pairs, in [`crate::rhi::gpu_profiler::Zone`] order.
@@ -647,7 +679,7 @@ struct RingSlot {
     /// read back.
     pending: bool,
     /// Which timestamp slots this frame actually wrote.
-    written: u16,
+    written: u32,
 }
 
 /// Ring depth. Generous enough that a slot written at frame N is read and freed well

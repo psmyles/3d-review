@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::OptError;
-use crate::stack::OptStack;
+use crate::stack::{OptStack, StackRepairs};
 
 /// Envelope version this build writes and is willing to read.
 pub const PRESET_VERSION: u32 = 1;
@@ -42,10 +42,20 @@ pub fn to_json(stack: &OptStack) -> Result<String, OptError> {
 ///
 /// Operation ids are re-keyed from a fresh sequence on the way out: the loaded
 /// stack replaces one whose ids the UI may still be holding, and a collision
-/// would silently point a selection or an override at the wrong operation. Every
-/// setting is then clamped into the range the inspector offers
-/// ([`OptStack::sanitize`]), since the file may have been edited by hand.
+/// would silently point a selection or an override at the wrong operation. The
+/// file may have been edited by hand, so the stack is then held to the rules
+/// the chrome keeps while building one ([`OptStack::enforce_rules`]: one LOD
+/// operation, overrides that override only settings, one per object) and every
+/// setting is clamped into the range the inspector offers
+/// ([`OptStack::sanitize`]). Nothing a file can say makes this panic.
+///
+/// [`from_json_with_repairs`] also says what had to be removed.
 pub fn from_json(json: &str) -> Result<OptStack, OptError> {
+    from_json_with_repairs(json).map(|(stack, _)| stack)
+}
+
+/// [`from_json`], with what the load had to remove so the caller can say so.
+pub fn from_json_with_repairs(json: &str) -> Result<(OptStack, StackRepairs), OptError> {
     let preset: Preset =
         serde_json::from_str(json).map_err(|error| OptError::Preset(error.to_string()))?;
 
@@ -58,9 +68,10 @@ pub fn from_json(json: &str) -> Result<OptStack, OptError> {
 
     let mut stack = preset.stack;
     stack.reassign_ids();
+    let repairs = stack.enforce_rules();
     stack.prune_overrides();
     stack.sanitize();
-    Ok(stack)
+    Ok((stack, repairs))
 }
 
 #[cfg(test)]
@@ -369,6 +380,42 @@ mod tests {
             panic!("the weld came back as something else");
         };
         assert_eq!(weld.attribute_tolerance, WELD_TOLERANCE_MIN);
+    }
+
+    /// Edited by hand: an override that holds a Weld in the slot of a vertex
+    /// cache reorder, and a second LOD operation. Loaded as written, the first
+    /// welded that object; both come back repaired, and the load says so.
+    #[test]
+    fn a_hand_edited_preset_is_held_to_the_stacks_rules() {
+        let json = r#"{
+            "version": 1,
+            "stack": {
+                "ops": [
+                    { "id": 4, "enabled": true, "kind": "VertexCache" },
+                    { "id": 5, "enabled": true, "kind": { "SimplifyLod": {} } },
+                    { "id": 6, "enabled": true, "kind": { "SimplifyLod": {} } }
+                ],
+                "overrides": [{
+                    "node": 2,
+                    "ops": [{ "id": 4, "enabled": true, "kind": { "Weld": {} } }]
+                }]
+            }
+        }"#;
+        let (stack, repairs) = from_json_with_repairs(json).expect("a preset loads");
+        assert_eq!(
+            repairs,
+            StackRepairs {
+                lods_removed: 1,
+                overrides_dropped: 1
+            }
+        );
+        assert_eq!(stack.ops.len(), 2);
+        assert!(
+            stack.overrides.is_empty(),
+            "the mismatched override is gone, and nothing is left of its entry: {:?}",
+            stack.overrides
+        );
+        assert_eq!(from_json(json).expect("loads").ops, stack.ops);
     }
 
     #[test]
