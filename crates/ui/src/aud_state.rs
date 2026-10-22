@@ -118,6 +118,13 @@ impl AudUiState {
         self.profile_revision = self.profile_revision.saturating_add(1);
     }
 
+    /// Name the profile, as saving it to a file does. Not an edit: the name
+    /// changes no finding, so it neither re-runs the audit nor takes an undo
+    /// step.
+    pub fn rename_profile(&mut self, name: String) {
+        Arc::make_mut(&mut self.profile).name = name;
+    }
+
     /// Replace the profile wholesale (a loaded file, a built-in, an undo).
     pub fn set_profile(&mut self, profile: Arc<AuditProfile>) {
         self.profile = profile;

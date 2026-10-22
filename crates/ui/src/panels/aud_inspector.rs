@@ -412,23 +412,6 @@ fn profile_editor(ui: &mut egui::Ui, state: &mut UiState) -> Option<AuditIntent>
     panel_grid(ui, "aud_profile", |ui| {
         grid_label_tip(
             ui,
-            Tip::new(k::PROFILE_NAME)
-                .describe(k::PROFILE_NAME_DESCRIPTION)
-                .page(Page::AudProfiles),
-        );
-        grid_control(ui, |ui| {
-            let id = egui::Id::new("aud_profile_name");
-            let (_, finished) = committed_text_edit(ui, id, &edited.name, |text| {
-                egui::TextEdit::singleline(text).desired_width(f32::INFINITY)
-            });
-            if let Some(name) = finished {
-                edited.name = name;
-            }
-        });
-        ui.end_row();
-
-        grid_label_tip(
-            ui,
             Tip::new(k::PROFILE_ENGINE)
                 .describe(k::PROFILE_ENGINE_DESCRIPTION)
                 .page(Page::AudProfiles),
@@ -467,20 +450,70 @@ fn profile_editor(ui: &mut egui::Ui, state: &mut UiState) -> Option<AuditIntent>
     ui.add_space(size::PANEL_ROW_GAP);
 
     for category in Category::ALL {
-        egui::CollapsingHeader::new(audit_labels::category(category))
-            .id_salt(("aud_profile_category", category))
-            .default_open(false)
-            .show(ui, |ui| {
-                for rule in RuleId::in_category(category) {
-                    rule_editor(ui, &mut edited, rule);
-                }
-            });
+        category_editor(ui, &mut edited, category);
     }
 
     if edited != *original {
         state.aud.edit_profile(|profile| *profile = edited);
     }
     intent
+}
+
+/// One category's collapsible group of rules. Its header carries a tick box at
+/// the right edge that switches every rule in it at once — ticked when all are
+/// on, a dash when only some are.
+fn category_editor(ui: &mut egui::Ui, profile: &mut AuditProfile, category: Category) {
+    let rules: Vec<RuleId> = RuleId::in_category(category).collect();
+    let enabled = rules
+        .iter()
+        .filter(|rule| profile.rules.get(rule).is_some_and(|config| config.enabled))
+        .count();
+    let mut all = enabled == rules.len();
+
+    let (mut name_clicked, mut switched) = (false, false);
+    let id = ui.make_persistent_id(("aud_profile_category", category));
+    let mut header =
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
+            .show_header(ui, |ui| {
+                // The name opens the group as a stock header's does; only the arrow
+                // would otherwise.
+                name_clicked = ui
+                    .add(
+                        egui::Label::new(audit_labels::category(category))
+                            .selectable(false)
+                            .sense(egui::Sense::click()),
+                    )
+                    .clicked();
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let checkbox = ui.add(
+                        egui::Checkbox::without_text(&mut all)
+                            .indeterminate(enabled > 0 && enabled < rules.len()),
+                    );
+                    switched = tip(
+                        checkbox,
+                        Tip::new(k::CATEGORY_ENABLED)
+                            .describe(k::CATEGORY_ENABLED_DESCRIPTION)
+                            .page(Page::AudChecks),
+                    )
+                    .changed();
+                });
+            });
+    if name_clicked {
+        header.toggle();
+    }
+    header.body(|ui| {
+        for &rule in &rules {
+            rule_editor(ui, profile, rule);
+        }
+    });
+
+    if switched {
+        for rule in &rules {
+            if let Some(config) = profile.rules.get_mut(rule) {
+                config.enabled = all;
+            }
+        }
+    }
 }
 
 /// One rule's switch, severity and parameters.

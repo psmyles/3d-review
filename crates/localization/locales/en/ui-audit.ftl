@@ -83,8 +83,6 @@ ui-audit-summary-hint = Pick a finding in the Issues list to see it on the model
 ## The Inspector: the profile
 
 ui-audit-profile-heading = Audit profile
-ui-audit-profile-name = Name
-    .description = A name for this profile, shown in the Issues list.
 ui-audit-profile-engine = Target engine
     .description = The engine the model is going to. It sets the starting values of every
         check, and how each finding explains why it matters.
@@ -92,9 +90,12 @@ ui-audit-profile-reset = Reset to { $engine }
     .description = Replaces every setting with the built-in values for this engine.
 ui-audit-profile-save = Save profile...
     .description = Saves this profile to a file you can share, so a team checks every model
-        the same way.
+        the same way. The file's name becomes the profile's name.
 ui-audit-profile-load = Load profile...
     .description = Replaces this profile with one from a file.
+ui-audit-category-enabled = All checks in this category
+    .description = Turns every check in this category on or off. A dash means some of
+        them are on and some are off.
 ui-audit-rule-enabled = Check
     .description = Whether this check runs.
 ui-audit-rule-severity = Severity

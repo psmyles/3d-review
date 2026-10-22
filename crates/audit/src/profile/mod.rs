@@ -363,7 +363,8 @@ fn hash_params(params: &BTreeMap<String, ParamValue>, hasher: &mut impl Hasher) 
 /// A complete audit profile.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AuditProfile {
-    /// The name shown in the Profile row; free text.
+    /// The name shown in the Profile row. The viewer sets it from the file name
+    /// a profile is saved under; empty for a built-in.
     pub name: String,
     /// The engine the profile targets, and the built-in it was derived from.
     pub base: Engine,

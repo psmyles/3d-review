@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use review_audit::AuditProfile;
 use review_audit::profile::envelope;
 
 use crate::App;
@@ -23,6 +24,13 @@ fn saved_profile_file() -> Option<PathBuf> {
     path.push(crate::APP_NAME);
     path.push(PROFILE_FILE);
     Some(path)
+}
+
+/// The profile name a file stands for: its name without the extension.
+fn profile_name_from(path: &Path) -> Option<String> {
+    path.file_stem()
+        .map(|stem| stem.to_string_lossy().trim().to_owned())
+        .filter(|name| !name.is_empty())
 }
 
 /// What reading the saved profile found.
@@ -113,29 +121,47 @@ impl App {
         }
     }
 
-    /// Ask where to save the profile. Serialized before the picker opens, so it
-    /// is the profile the user was looking at.
+    /// Ask where to save the profile. It travels with the request, so the
+    /// profile written is the one the user was looking at.
     pub(super) fn save_audit_profile(&mut self) {
-        match envelope::to_json(&self.ui.aud.profile) {
-            Ok(json) => self.ask(Dialog::SaveAuditProfile { json }),
-            Err(error) => self
-                .notifications
-                .error(keys::app_audit::profile_unreadable(
-                    review_labels::audit::explain_audit_error(&error),
-                )),
-        }
+        self.ask(Dialog::SaveAuditProfile {
+            profile: Arc::clone(&self.ui.aud.profile),
+        });
     }
 
     pub(super) fn load_audit_profile(&mut self) {
         self.ask(Dialog::LoadAuditProfile);
     }
 
-    /// Write a serialized profile to the chosen path.
-    pub(crate) fn write_audit_profile(&mut self, path: &Path, json: &str) {
-        match review_optimize::write_bytes_replacing(path, json) {
-            Ok(()) => self.notifications.success(keys::app_audit::profile_saved(
-                crate::loading::file_label(path),
-            )),
+    /// Write `profile` to the chosen path, named after the file — the save is
+    /// where a profile is named, as an Opt preset is by its file alone. The
+    /// profile on screen takes the name too unless it has been edited since the
+    /// request: then it is no longer the profile that file holds.
+    pub(crate) fn write_audit_profile(&mut self, path: &Path, profile: &AuditProfile) {
+        let mut named = profile.clone();
+        named.name = profile_name_from(path).unwrap_or_default();
+        let json = match envelope::to_json(&named) {
+            Ok(json) => json,
+            Err(error) => {
+                self.notifications
+                    .error(keys::app_audit::profile_unreadable(
+                        review_labels::audit::explain_audit_error(&error),
+                    ));
+                return;
+            }
+        };
+        match review_optimize::write_bytes_replacing(path, &json) {
+            Ok(()) => {
+                let live = &self.ui.aud.profile;
+                if live.base == named.base && live.rules == named.rules && live.name != named.name {
+                    self.ui.aud.rename_profile(named.name);
+                    self.persist_audit_profile();
+                    self.redraw.requested = true;
+                }
+                self.notifications.success(keys::app_audit::profile_saved(
+                    crate::loading::file_label(path),
+                ));
+            }
             Err(error) => {
                 log::error!("audit profile save failed {}: {error}", path.display());
                 self.notifications
@@ -160,7 +186,12 @@ impl App {
             }
         };
         match envelope::from_json(&json) {
-            Ok(profile) => {
+            Ok(mut profile) => {
+                // A file saved before the name came from the file name may
+                // carry none; its file name is what the user called it.
+                if profile.name.trim().is_empty() {
+                    profile.name = profile_name_from(path).unwrap_or_default();
+                }
                 self.ui.aud.set_profile(Arc::new(profile));
                 self.redraw.requested = true;
                 self.notifications.success(keys::app_audit::profile_loaded(
@@ -183,7 +214,7 @@ mod tests {
 
     use review_audit::{AuditProfile, Engine};
 
-    use super::{Saved, read_saved, write_saved};
+    use super::{Saved, profile_name_from, read_saved, write_saved};
 
     /// A directory of this test's own, so parallel runs do not share a file.
     fn scratch(name: &str) -> PathBuf {
@@ -211,6 +242,18 @@ mod tests {
             other => panic!("expected the profile back, got {other:?}"),
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A saved profile is named after its file, without the extension.
+    #[test]
+    fn a_profile_is_named_after_its_file() {
+        let name = |path: &str| profile_name_from(&PathBuf::from(path));
+        assert_eq!(
+            name("/teams/Studio props.json").as_deref(),
+            Some("Studio props")
+        );
+        assert_eq!(name("/teams/hero.v2.json").as_deref(), Some("hero.v2"));
+        assert_eq!(name("/"), None);
     }
 
     /// A file that is not a profile is rejected rather than half-applied.

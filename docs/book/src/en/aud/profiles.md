@@ -14,14 +14,19 @@ the Inspector. Every change you make there re-checks the model at once; a check
 whose settings did not change is not run again. Changes can be undone with
 `Ctrl+Z`.
 
+The checks are grouped by category. The tick box at the right of a category's
+heading turns every check in it on or off at once; it shows a dash when some of
+them are on and some are off.
+
 The profile you used last is remembered and used again the next time you start
 the viewer.
 
 ## Sharing a profile
 
-**Save profile** writes the profile to a small file. A team that checks every
-model against the same file gets the same findings. **Load profile** replaces the
-current profile with one from a file.
+**Save profile** writes the profile to a small file. The name you give the file
+is the profile's name: it is what the Issues list shows from then on. A team that
+checks every model against the same file gets the same findings. **Load profile**
+replaces the current profile with one from a file.
 
 The file is a plain JSON document. Values outside what the editor allows are
 brought back into range when it is loaded, and checks a newer viewer added are

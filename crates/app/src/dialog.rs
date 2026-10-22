@@ -79,9 +79,12 @@ pub(crate) enum Dialog {
     SavePreset { json: String },
     /// Pick an operation-stack preset to load.
     LoadPreset,
-    /// Choose where to save the audit profile, serialized before the picker
-    /// opens.
-    SaveAuditProfile { json: String },
+    /// Choose where to save the audit profile. The file's name becomes the
+    /// profile's, so it is serialized once the picker answers; the profile is
+    /// the one the user was looking at when they asked.
+    SaveAuditProfile {
+        profile: Arc<review_audit::AuditProfile>,
+    },
     /// Pick an audit profile to load.
     LoadAuditProfile,
     /// Choose where to save the audit report, built before the picker opens.
@@ -110,7 +113,7 @@ pub(crate) enum DialogAnswer {
     LoadPreset(PathBuf),
     SaveAuditProfile {
         path: PathBuf,
-        json: String,
+        profile: Arc<review_audit::AuditProfile>,
     },
     LoadAuditProfile(PathBuf),
     SaveAuditReport {
@@ -203,7 +206,7 @@ impl Dialog {
                 )
                 .pick_file()
                 .map(DialogAnswer::LoadPreset),
-            Dialog::SaveAuditProfile { json } => picker
+            Dialog::SaveAuditProfile { profile } => picker
                 .set_title(review_localization::tr(
                     keys::app_dialogs::SAVE_AUDIT_PROFILE,
                 ))
@@ -211,11 +214,17 @@ impl Dialog {
                     review_localization::tr(keys::app_dialogs::FILTER_AUDIT_PROFILE),
                     &[review_audit::profile::envelope::PROFILE_EXTENSION],
                 )
-                .set_file_name(review_localization::tr(
-                    keys::app_dialogs::AUDIT_PROFILE_FILE_NAME,
-                ))
+                .set_file_name(if profile.name.trim().is_empty() {
+                    review_localization::tr(keys::app_dialogs::AUDIT_PROFILE_FILE_NAME).into_owned()
+                } else {
+                    format!(
+                        "{}.{}", // localization: exempt a file name and its extension, not prose
+                        profile.name.trim(),
+                        review_audit::profile::envelope::PROFILE_EXTENSION
+                    )
+                })
                 .save_file()
-                .map(|path| DialogAnswer::SaveAuditProfile { path, json }),
+                .map(|path| DialogAnswer::SaveAuditProfile { path, profile }),
             Dialog::LoadAuditProfile => picker
                 .set_title(review_localization::tr(
                     keys::app_dialogs::LOAD_AUDIT_PROFILE,
@@ -340,8 +349,8 @@ impl App {
             } => self.spawn_opt_export(path, result, source, extras, options),
             DialogAnswer::SavePreset { path, json } => self.write_opt_preset(&path, &json),
             DialogAnswer::LoadPreset(path) => self.read_opt_preset(&path),
-            DialogAnswer::SaveAuditProfile { path, json } => {
-                self.write_audit_profile(&path, &json);
+            DialogAnswer::SaveAuditProfile { path, profile } => {
+                self.write_audit_profile(&path, &profile);
             }
             DialogAnswer::LoadAuditProfile(path) => self.read_audit_profile(&path),
             DialogAnswer::SaveAuditReport { path, json } => self.write_audit_report(&path, &json),
