@@ -6,25 +6,29 @@
 //!
 //! - **Standard** — one uniform matte mid-grey material for every part.
 //! - **Unique** — that same matte material, but a distinct hue per mesh part
-//!   (the model's per-triangle owning node), all at the same mid brightness so
-//!   only the hue distinguishes the parts.
+//!   (the model's per-triangle owning node), all at one OKLab lightness so only
+//!   the hue distinguishes the parts.
 
 use std::collections::HashMap;
 
 use glam::Vec3;
 use review_model::ModelData;
+use review_model::color::oklch_to_linear_srgb;
 
 use crate::config::MaterialMode;
 
 use super::state::{AlphaMode, MaterialState, RoughnessWorkflow};
 
-/// Mid-grey base color (linear RGB) of the standard material — and the brightness
-/// (HSV value) every Unique-mode hue is generated at, so the parts read apart by
-/// hue alone, not lightness.
+/// Mid-grey base color (linear RGB) of the standard material.
 const STANDARD_VALUE: f32 = 0.5;
-/// Saturation of the Unique-mode per-part hues. Moderate, so the colors stay
+/// OKLab lightness every Unique-mode hue is generated at, so the parts read
+/// apart by hue alone, not lightness — an HSV wheel at one value made its blues
+/// far darker than its yellows. Just under the standard grey's 0.79, where the
+/// sRGB gamut still holds [`UNIQUE_CHROMA`] at every hue.
+const UNIQUE_LIGHTNESS: f32 = 0.75;
+/// OKLab chroma of the Unique-mode per-part hues. Moderate, so the colors stay
 /// readable rather than fully-saturated and garish.
-const UNIQUE_SATURATION: f32 = 0.6;
+const UNIQUE_CHROMA: f32 = 0.12;
 /// Golden-ratio conjugate: stepping the hue by this per part spreads successive
 /// parts maximally around the color wheel, so neighboring parts contrast even
 /// though the sequence is deterministic (stable across frames / reloads).
@@ -52,15 +56,13 @@ fn standard_grey() -> MaterialState {
 }
 
 /// The standard material for Unique mesh part `index`: the matte surface tinted
-/// with a deterministic per-part hue at the shared mid brightness.
+/// with a deterministic per-part hue at the shared lightness.
 fn unique_material(index: usize) -> MaterialState {
     let hue = (index as f32 * HUE_STEP).fract();
-    // Treated as linear: a debug visualization, where distinctness matters more
-    // than colour accuracy.
-    standard_material(Vec3::from(crate::geometry::hsv_to_rgb(
+    standard_material(Vec3::from(oklch_to_linear_srgb(
+        UNIQUE_LIGHTNESS,
+        UNIQUE_CHROMA,
         hue,
-        UNIQUE_SATURATION,
-        STANDARD_VALUE,
     )))
 }
 
@@ -223,20 +225,20 @@ mod tests {
     }
 
     #[test]
-    fn unique_hues_are_distinct_but_share_brightness() {
-        // Different parts get different colors; part 0 is the pure grey value's
-        // hue family but saturated, so no two consecutive parts collide.
+    fn unique_hues_are_distinct_but_share_lightness() {
+        // Different parts get different colors, so no two consecutive parts
+        // collide.
         let a = unique_material(0).base_color;
         let b = unique_material(1).base_color;
         assert_ne!(a, b);
-        // Every hue is generated at the shared HSV value, so the brightest channel
-        // equals STANDARD_VALUE for each.
-        for index in 0..6 {
+        // Every hue is generated at the shared OKLab lightness, the blues
+        // included.
+        for index in 0..24 {
             let c = unique_material(index).base_color;
-            let max = c.x.max(c.y).max(c.z);
+            let [lightness, ..] = review_model::color::linear_srgb_to_oklab(c.into());
             assert!(
-                (max - STANDARD_VALUE).abs() < 1e-5,
-                "part {index} max {max}"
+                (lightness - UNIQUE_LIGHTNESS).abs() < 1e-3,
+                "part {index} lightness {lightness}"
             );
         }
     }

@@ -46,8 +46,6 @@ pub use skeleton::{BONE_PICK_TOLERANCE_POINTS, pick_bone_shape, posed_joint_posi
 pub(crate) use skeleton::{BoneTint, skeleton_fill_triangles, skeleton_lines};
 pub(crate) use skin::skin_weight_vertices;
 pub(crate) use trajectory::{trajectory_geometry, trajectory_node_colors};
-pub(crate) use uv::{
-    UvNodeScope, hsv_to_rgb, uv_fill_triangles, uv_highlight_triangles, uv_wireframe_lines,
-};
+pub(crate) use uv::{UvNodeScope, uv_fill_triangles, uv_highlight_triangles, uv_wireframe_lines};
 pub(crate) use uv_seams::uv_seam_lines;
 pub(crate) use wireframe::wireframe_edge_indices;

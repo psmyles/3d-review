@@ -1098,7 +1098,11 @@ void main() {
 @include_block material_alpha
 
 layout(location=0) out vec4 frag_gbuffer;
-layout(location=1) out float frag_depth;
+// A `vec4` for an `R32F` target: only `.x` lands. The line pass's depth prepass runs
+// this program against the scene's two `RGBA16F` colours, and Metal refuses a
+// pipeline whose output has fewer components than its attachment — colour writes
+// off or not. D3D11 does not mind, which is how a `float` here got past it.
+layout(location=1) out vec4 frag_depth;
 
 void main() {
     // Sampled first, under uniform control flow — see the derivative rule in the
@@ -1112,14 +1116,14 @@ void main() {
     // as background and applies no occlusion there.
     if (normal_length_sq < 1e-6) {
         frag_gbuffer = vec4(0.0);
-        frag_depth = BACKGROUND_DEPTH;
+        frag_depth = vec4(BACKGROUND_DEPTH);
         return;
     }
     // View Z is negative in front of the camera; GTAO treats zero as background.
     vec4 view_pos = sc.view * vec4(v_world_position, 1.0);
     vec3 view_normal = normalize((sc.view * vec4(v_normal, 0.0)).xyz);
     frag_gbuffer = vec4(view_normal, view_pos.z);
-    frag_depth = -view_pos.z;
+    frag_depth = vec4(-view_pos.z);
 }
 @end
 

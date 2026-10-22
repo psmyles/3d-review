@@ -26,9 +26,9 @@ use crate::TrajectoryOverlay;
 use crate::scene::SceneVertex;
 
 use super::deform::{NO_DEFORM, node_deform};
-use super::uv::hsv_to_rgb;
 use super::vertex::push_line;
 use review_model::ModelData;
+use review_model::color::{linear_to_srgb, oklch_to_linear_srgb};
 
 /// How far, in radians, a smooth curve may turn from one of its segments to the
 /// next: about six degrees, below which a polyline a few pixels wide already
@@ -45,12 +45,17 @@ const SMOOTH_STEPS_MAX: u32 = 8;
 /// the wheel. The same step the UV islands and the Unique material mode use.
 const HUE_STEP: f32 = 0.618_034;
 
-/// The saturation / value pairs successive nodes cycle through. Hue alone stops
-/// telling paths apart well before a full rig: sixty bones are six degrees apart
-/// on the wheel. Cycling a second, coarser axis keeps neighbours apart in
-/// brightness as well, while every tone stays bright enough to read over both a
-/// dark viewport and a light mesh.
-const TONES: [(f32, f32); 3] = [(0.70, 1.0), (0.95, 0.85), (0.45, 0.95)];
+/// The OKLab lightness every path is drawn at: one value, so no hue reads
+/// darker than another (an HSV wheel's blues did), and high enough to stand out
+/// over both a dark viewport and a light mesh.
+const LIGHTNESS: f32 = 0.78;
+
+/// The OKLab chromas successive nodes cycle through. Hue alone stops telling
+/// paths apart well before a full rig: sixty bones are six degrees apart on the
+/// wheel. Cycling a second, coarser axis keeps neighbours apart in colourfulness
+/// as well, without giving up the shared lightness. Where the gamut cannot hold
+/// a chroma at [`LIGHTNESS`] (the blues), it gives way rather than the lightness.
+const CHROMAS: [f32; 3] = [0.13, 0.075, 0.10];
 
 /// The color of the node at `rank` in [`hierarchy_ranks`]' order — its path's,
 /// and its bone's with it. Keyed on the node rather than on the path's place in
@@ -58,8 +63,8 @@ const TONES: [(f32, f32); 3] = [(0.70, 1.0), (0.95, 0.85), (0.45, 0.95)];
 /// selection hides the paths around it. Gamma space, as every line color is.
 pub(crate) fn trajectory_color(rank: u32) -> [f32; 4] {
     let hue = (rank as f32 * HUE_STEP).fract();
-    let (saturation, value) = TONES[rank as usize % TONES.len()];
-    let [r, g, b] = hsv_to_rgb(hue, saturation, value);
+    let chroma = CHROMAS[rank as usize % CHROMAS.len()];
+    let [r, g, b] = oklch_to_linear_srgb(LIGHTNESS, chroma, hue).map(linear_to_srgb);
     [r, g, b, 1.0]
 }
 
@@ -448,6 +453,21 @@ mod tests {
             assert!(
                 apart > 0.3,
                 "node {child} is only {apart:.3} of the wheel from its parent {parent}"
+            );
+        }
+    }
+
+    /// Every path reads equally light, whatever its hue: the old HSV tones put
+    /// the blues far below the yellows.
+    #[test]
+    fn every_path_shares_one_lightness() {
+        use review_model::color::{linear_srgb_to_oklab, srgb_to_linear};
+        for rank in 0..68 {
+            let [r, g, b, _] = trajectory_color(rank);
+            let [lightness, ..] = linear_srgb_to_oklab([r, g, b].map(srgb_to_linear));
+            assert!(
+                (lightness - LIGHTNESS).abs() < 2e-3,
+                "rank {rank} lightness {lightness}"
             );
         }
     }

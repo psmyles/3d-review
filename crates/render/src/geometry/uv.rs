@@ -3,6 +3,7 @@
 //! connected-component island coloring (union-find over UV-continuous faces).
 
 use review_model::ModelData;
+use review_model::color::{linear_to_srgb, oklch_to_linear_srgb};
 
 use crate::scene::SceneVertex;
 
@@ -300,32 +301,13 @@ pub(crate) fn uv_highlight_triangles(
 
 /// Distinct, evenly-spread island color for the `index`-th UV island. Hues step
 /// by the golden-ratio conjugate so successive islands stay far apart on the
-/// wheel; saturation/value are fixed for a cohesive, readable palette. Returned
-/// in gamma space (the scene shader emits a zero-normal vertex color directly).
+/// wheel; OKLab lightness and chroma are fixed, so every island reads equally
+/// light. Returned in gamma space (the scene shader emits a zero-normal vertex
+/// color directly).
 fn island_color(index: u32) -> [f32; 4] {
     let hue = (index as f32 * 0.618_034).fract();
-    let [r, g, b] = hsv_to_rgb(hue, 0.55, 0.80);
+    let [r, g, b] = oklch_to_linear_srgb(0.75, 0.12, hue).map(linear_to_srgb);
     [r, g, b, 1.0]
-}
-
-/// HSV to RGB, each component in `0..=1`; the hue wraps. What the RGB means
-/// (gamma or linear) is the caller's: this is only the colour-wheel arithmetic,
-/// shared by the UV islands and the Unique material mode's per-part hues.
-pub(crate) fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
-    let h = h.rem_euclid(1.0) * 6.0;
-    let sector = h.floor() as i32;
-    let f = h - sector as f32;
-    let p = v * (1.0 - s);
-    let q = v * (1.0 - s * f);
-    let t = v * (1.0 - s * (1.0 - f));
-    match sector.rem_euclid(6) {
-        0 => [v, t, p],
-        1 => [q, v, p],
-        2 => [p, v, t],
-        3 => [p, q, v],
-        4 => [t, p, v],
-        _ => [v, p, q],
-    }
 }
 
 #[cfg(test)]
