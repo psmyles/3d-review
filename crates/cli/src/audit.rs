@@ -76,7 +76,7 @@ fn work(common: &Common, args: &AuditArgs, bar: &Bar, report: &mut Report) -> us
     let mut found = [0u32; 3];
     let (mut done, mut flagged) = (0usize, 0usize);
     for (index, model) in models.iter().enumerate() {
-        console::say(&format!("[{}/{count}] {}", index + 1, model.label()));
+        console::heading(&format!("[{}/{count}] {}", index + 1, model.label()));
         let progress = |fraction: f32| bar.set((index as f32 + fraction) / count as f32);
         let mut entry = Entry::new(&model.label());
         let failed = |entry: Entry, problem: String, report: &mut Report| {

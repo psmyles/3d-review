@@ -46,7 +46,11 @@ These rules hold for every command, and they are what a tool calling it can rely
 - **Plain lines.** Results go to standard output, problems to standard error,
   each a whole line in the reader's language. A line that reports a problem keeps
   its wording from one release to the next, so a tool can match on it. Writes to a
-  closed pipe are ignored, never fatal.
+  closed pipe are ignored, never fatal. Each model's first line (`[3/12]
+  chair.fbx`) is yellow in a terminal known to show colour: on macOS and Linux,
+  and on Windows in Windows Terminal, ConEmu or one that sets `TERM` (Launcher's
+  console). Through a pipe or into a file, and with `NO_COLOR` set, every line is
+  plain.
 - **Progress** is the terminal's own bar, `OSC 9;4`, sent where it is known to be
   shown: Windows Terminal, ConEmu, WezTerm and Ghostty, or anywhere with
   `--progress-bar on`. Elsewhere it is not sent, because some terminals print the

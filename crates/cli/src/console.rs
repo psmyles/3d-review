@@ -12,9 +12,14 @@
 //! iTerm2 - turns any `OSC 9` into a notification, so `auto` sends it only
 //! where it is known to be shown (the same list cargo keeps), and a tool that
 //! reads it asks for it with `--progress-bar on`.
+//!
+//! Each model's first line (`[3/12] chair.fbx`) is yellow where the terminal is
+//! known to show colour, so a long run's models are easy to tell apart. Through
+//! a pipe or into a file every line stays plain.
 
 use std::cell::Cell;
 use std::io::{IsTerminal, Write};
+use std::sync::OnceLock;
 
 use crate::args::BarMode;
 
@@ -22,6 +27,49 @@ use crate::args::BarMode;
 pub(crate) fn say(text: &str) {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{text}");
+}
+
+/// The line that starts a model's part of the run, yellow where colour shows.
+pub(crate) fn heading(text: &str) {
+    let mut out = std::io::stdout().lock();
+    if colour() {
+        let _ = writeln!(out, "{YELLOW}{text}{PLAIN}");
+    } else {
+        let _ = writeln!(out, "{text}");
+    }
+}
+
+/// `SGR 33` and `SGR 0`: the terminal's own yellow, then back to its default.
+const YELLOW: &str = "\x1b[33m";
+const PLAIN: &str = "\x1b[0m";
+
+/// Whether standard output shows colour, worked out once.
+fn colour() -> bool {
+    static SHOWN: OnceLock<bool> = OnceLock::new();
+    *SHOWN.get_or_init(|| {
+        shows_colour(std::io::stdout().is_terminal(), cfg!(windows), |name| {
+            std::env::var(name).ok()
+        })
+    })
+}
+
+/// A terminal, `NO_COLOR` not set, and one known to show colour. Windows' own
+/// console shows escape codes as text until a program switches them on, which
+/// takes the `unsafe` this crate forbids, so there only the terminals that
+/// show them already: Windows Terminal, ConEmu, and one that names itself in
+/// `TERM` (Launcher's console, WezTerm). `TERM=dumb` asks for none anywhere.
+fn shows_colour(terminal: bool, windows: bool, var: impl Fn(&str) -> Option<String>) -> bool {
+    let term = var("TERM").filter(|t| !t.is_empty());
+    if !terminal
+        || var("NO_COLOR").is_some_and(|v| !v.is_empty())
+        || term.as_deref() == Some("dumb")
+    {
+        return false;
+    }
+    !windows
+        || term.is_some()
+        || var("WT_SESSION").is_some()
+        || var("ConEmuANSI").as_deref() == Some("ON")
 }
 
 /// One line about a problem.
@@ -91,4 +139,41 @@ fn terminal_shows_progress() -> bool {
         || equals("ConEmuANSI", "ON")
         || equals("TERM_PROGRAM", "WezTerm")
         || equals("TERM_PROGRAM", "ghostty")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shows_colour;
+
+    fn with<'a>(vars: &'a [(&str, &str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        |name| {
+            vars.iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| v.to_string())
+        }
+    }
+
+    #[test]
+    fn colour_shows_only_where_the_terminal_shows_it() {
+        // A Mac's or a Linux terminal, Launcher's console on any system.
+        assert!(shows_colour(true, false, with(&[])));
+        assert!(shows_colour(
+            true,
+            true,
+            with(&[("TERM", "xterm-256color")])
+        ));
+        assert!(shows_colour(true, true, with(&[("WT_SESSION", "1")])));
+        // Never through a pipe, into a file, or when asked for none.
+        assert!(!shows_colour(
+            false,
+            false,
+            with(&[("TERM", "xterm-256color")])
+        ));
+        assert!(!shows_colour(true, false, with(&[("NO_COLOR", "1")])));
+        assert!(!shows_colour(true, false, with(&[("TERM", "dumb")])));
+        // An empty NO_COLOR doesn't count, as the convention says.
+        assert!(shows_colour(true, false, with(&[("NO_COLOR", "")])));
+        // Windows' own console would print the escape codes.
+        assert!(!shows_colour(true, true, with(&[])));
+    }
 }

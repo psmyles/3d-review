@@ -76,7 +76,7 @@ fn work(common: &Common, args: &OptimizeArgs, bar: &Bar, report: &mut Report) {
     let (mut done, mut skipped) = (0usize, 0usize);
     let mut outputs: Vec<String> = Vec::new();
     for (index, model) in models.iter().enumerate() {
-        console::say(&format!("[{}/{count}] {}", index + 1, model.label()));
+        console::heading(&format!("[{}/{count}] {}", index + 1, model.label()));
         let progress = |fraction: f32| bar.set((index as f32 + fraction) / count as f32);
         let (status, entry, problem, written) = batch.optimize(model, &progress);
         match status {

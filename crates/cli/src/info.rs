@@ -32,7 +32,7 @@ fn work(common: &Common, bar: &Bar, report: &mut Report) {
     let mut done = 0usize;
     let mut totals = [0usize; 4];
     for (index, model) in models.iter().enumerate() {
-        console::say(&format!("[{}/{count}] {}", index + 1, model.label()));
+        console::heading(&format!("[{}/{count}] {}", index + 1, model.label()));
         let progress = |fraction: f32| bar.set((index as f32 + fraction) / count as f32);
         let mut entry = Entry::new(&model.label());
         let loaded = match load::load(&model.path, &progress) {

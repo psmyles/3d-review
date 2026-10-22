@@ -144,6 +144,7 @@ const FUNCTION_SINKS: &[(&str, &[usize])] = &[
     ("LayoutJob::single_section", &[0]),
     // `review-cli`'s lines: a console line is that tool's label.
     ("console::say", &[0]),
+    ("console::heading", &[0]),
     ("console::warn", &[0]),
     // widget wrappers: (ui, …).
     ("grid_label_tip", &[1]),
