@@ -84,7 +84,7 @@ pub(crate) fn build_scene(
                 }
             };
 
-            let (mut mesh, notes) = build_mesh(
+            let mut mesh = build_mesh(
                 &lod.model,
                 &lod.carry,
                 &group,
@@ -101,19 +101,6 @@ pub(crate) fn build_scene(
                 .and_then(|(index, extras)| extras.mesh_of_node(index as u32))
             {
                 mesh.props = scene.push_props(&part.props);
-            }
-            let mesh_name = mesh.name.to_string_lossy().into_owned();
-            if notes.polygons_lost {
-                report.notes.push(ExportNote::WrittenAsTriangles {
-                    level: lod.level,
-                    mesh: mesh_name,
-                });
-            } else if notes.triangles_rebuilt > 0 {
-                report.notes.push(ExportNote::TrianglesRebuilt {
-                    level: lod.level,
-                    mesh: mesh_name,
-                    count: notes.triangles_rebuilt,
-                });
             }
             if options.hierarchy == HierarchyMode::Rebuild {
                 build_deform(

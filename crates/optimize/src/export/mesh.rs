@@ -31,7 +31,7 @@ pub(crate) fn build_mesh(
     source: &ModelData,
     extras: Option<&SourceExtras>,
     unit: UnitScale,
-) -> (MeshData, MeshNotes) {
+) -> MeshData {
     let source_node = group.source_node.and_then(|index| source.nodes.get(index));
     let part = group
         .source_node
@@ -242,7 +242,6 @@ pub(crate) fn build_mesh(
     let mut corner_of_edge: HashMap<(i32, i32), i32> = HashMap::new();
     let mut emitted_faces: std::collections::HashSet<(usize, usize)> =
         std::collections::HashSet::new();
-    let mut triangles_as_triangles = 0usize;
     let mut written_triangles = 0usize;
 
     let mut push_face = |corners: &[i32],
@@ -324,9 +323,6 @@ pub(crate) fn build_mesh(
                     &mut face_offsets,
                 );
                 face_sources.push(u32::MAX);
-                if !pieces.is_empty() {
-                    triangles_as_triangles += 1;
-                }
             }
         }
     }
@@ -408,20 +404,6 @@ pub(crate) fn build_mesh(
         })
         .collect();
 
-    // "Written as triangles" is a loss only when there were polygons to lose:
-    // most game assets are triangles already, and saying so of them is a note
-    // about nothing.
-    let source_had_polygons = part.is_some_and(|part| {
-        let first = part.face_first as usize;
-        source
-            .faces
-            .get(first..first.saturating_add(part.face_count as usize))
-            .is_some_and(|faces| faces.iter().any(|face| face.index_count > 3))
-    });
-    let notes = MeshNotes {
-        triangles_rebuilt: triangles_as_triangles,
-        polygons_lost: pieces.is_empty() && extras.is_some() && source_had_polygons,
-    };
     let vertex_count = positions.len() / 3;
     let level_vertices = level_of_local;
     let source_corners: Vec<u32> = level_vertices
@@ -434,7 +416,7 @@ pub(crate) fn build_mesh(
                 .unwrap_or(u32::MAX)
         })
         .collect();
-    let mesh = MeshData {
+    MeshData {
         name: c_string(&name, "Mesh"),
         node,
         positions,
@@ -467,8 +449,7 @@ pub(crate) fn build_mesh(
         channel_sources: Vec::new(),
         skins: Vec::new(),
         blend_channels: Vec::new(),
-    };
-    (mesh, notes)
+    }
 }
 
 /// The UV sets one mesh writes: `(model channel, name)` for each, in order.
@@ -523,15 +504,6 @@ fn uv_plan(
                 .collect()
         }
     }
-}
-
-/// What a mesh had to give up, for the report.
-pub(crate) struct MeshNotes {
-    /// Triangles written as triangles inside a mesh that otherwise kept its
-    /// polygons.
-    pub(crate) triangles_rebuilt: usize,
-    /// The whole mesh went out as triangles although the source had polygons.
-    pub(crate) polygons_lost: bool,
 }
 
 /// The maps that take world-baked geometry back into its node's local space.

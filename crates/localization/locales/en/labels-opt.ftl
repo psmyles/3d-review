@@ -157,12 +157,6 @@ labels-opt-note-deform-not-written-flat =
     world space, which has no bones to bind to.
 labels-opt-note-animation-not-written-flat =
     Animation was not written: a flat hierarchy has no nodes for the curves to drive.
-labels-opt-note-written-as-triangles =
-    LOD { $level }: '{ $mesh }' was written as triangles - the stack rebuilt its geometry.
-labels-opt-note-triangles-rebuilt = { $count ->
-        [one] LOD { $level }: one triangle of '{ $mesh }' was written as a triangle - the stack rebuilt it.
-       *[other] LOD { $level }: { $count } triangles of '{ $mesh }' were written as triangles - the stack rebuilt them.
-    }
 labels-opt-note-orphaned-animation-layers = { $count ->
         [one] One animation layer belonged to no stack and was not written.
        *[other] { $count } animation layers belonged to no stack and were not written.

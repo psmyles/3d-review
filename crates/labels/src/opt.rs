@@ -171,14 +171,6 @@ pub fn explain_export_note(note: &ExportNote) -> String {
         ExportNote::CaptureNotLoaded => tr(k::NOTE_CAPTURE_NOT_LOADED).into_owned(),
         ExportNote::DeformNotWrittenFlat => tr(k::NOTE_DEFORM_NOT_WRITTEN_FLAT).into_owned(),
         ExportNote::AnimationNotWrittenFlat => tr(k::NOTE_ANIMATION_NOT_WRITTEN_FLAT).into_owned(),
-        ExportNote::WrittenAsTriangles { level, mesh } => {
-            k::note_written_as_triangles(count(*level), mesh.clone())
-        }
-        ExportNote::TrianglesRebuilt {
-            level,
-            mesh,
-            count: triangles,
-        } => k::note_triangles_rebuilt(count(*level), mesh.clone(), count(*triangles)),
         ExportNote::OrphanedAnimationLayers { count: layers } => {
             k::note_orphaned_animation_layers(count(*layers))
         }

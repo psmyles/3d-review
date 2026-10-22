@@ -243,14 +243,6 @@ pub enum ExportNote {
     DeformNotWrittenFlat,
     /// A flat hierarchy has no nodes for animation curves to drive.
     AnimationNotWrittenFlat,
-    /// A whole mesh was written as triangles because the stack rebuilt it.
-    WrittenAsTriangles { level: usize, mesh: String },
-    /// Some of a mesh's triangles were written as triangles.
-    TrianglesRebuilt {
-        level: usize,
-        mesh: String,
-        count: usize,
-    },
     /// Animation layers that belonged to no stack.
     OrphanedAnimationLayers { count: usize },
     /// Animated properties whose target has no counterpart in this export.
@@ -286,16 +278,6 @@ impl fmt::Display for ExportNote {
             Self::AnimationNotWrittenFlat => f.write_str(
                 "Animation was not written: a flat hierarchy has no nodes for the curves to \
                  drive.",
-            ),
-            Self::WrittenAsTriangles { level, mesh } => write!(
-                f,
-                "LOD {level}: '{mesh}' was written as triangles — the stack rebuilt its \
-                 geometry."
-            ),
-            Self::TrianglesRebuilt { level, mesh, count } => write!(
-                f,
-                "LOD {level}: {count} triangle(s) of '{mesh}' were written as triangles — the \
-                 stack rebuilt them."
             ),
             Self::OrphanedAnimationLayers { count } => write!(
                 f,

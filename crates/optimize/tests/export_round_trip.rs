@@ -10,9 +10,9 @@
 
 use review_model::ModelData;
 use review_optimize::{
-    AoQuality, AoTarget, BakeAoParams, ExportNote, ExportOptions, FbxFormat, HierarchyMode,
-    LodLevel, LodPackaging, LodParams, OpKind, OptStack, SimplifyAlgorithm, SimplifySettings,
-    WeldParams, export_fbx,
+    AoQuality, AoTarget, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode, LodLevel,
+    LodPackaging, LodParams, OpKind, OptStack, SimplifyAlgorithm, SimplifySettings, WeldParams,
+    export_fbx,
 };
 
 mod common;
@@ -816,40 +816,5 @@ fn one_file_per_lod_with_the_capture_puts_each_level_on_its_own_node() {
             "{} holds its own level",
             file.display()
         );
-    }
-}
-
-/// "Written as triangles" names a genuine loss — a source's quads and n-gons
-/// that a simplify turned into triangles. Most game assets are triangles
-/// already, and the note used to fire on them too, for every mesh of every
-/// simplified export.
-#[test]
-fn only_a_source_with_polygons_is_said_to_lose_them() {
-    let written_as_triangles = |name: &str| -> Option<bool> {
-        let (model, extras) = fixture_full(name)?;
-        let result = run_with_extras(&model, &extras, &weld_and_halve());
-        let dir = temp_dir(&format!("round_trip_triangle_note_{name}"));
-        let report = export_fbx(
-            &result.lods,
-            &model,
-            Some(&extras),
-            &dir.join("out.fbx"),
-            &ExportOptions::default(),
-        )
-        .expect("export succeeds");
-        Some(
-            report
-                .notes
-                .iter()
-                .any(|note| matches!(note, ExportNote::WrittenAsTriangles { .. })),
-        )
-    };
-    // A source of triangles only: nothing was lost.
-    if let Some(noted) = written_as_triangles("SM_column04.fbx") {
-        assert!(!noted, "an all-triangle source loses no polygons");
-    }
-    // A source of quads: the simplified level genuinely went out as triangles.
-    if let Some(noted) = written_as_triangles("monkey.fbx") {
-        assert!(noted, "a quad source's simplified level is reported");
     }
 }

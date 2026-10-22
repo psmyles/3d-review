@@ -22,8 +22,7 @@ Files are written as FBX version 7.7, in the same unit the original file used.
 Everything the operations did not change:
 
 - **Shape** - four-sided and many-sided faces survive wherever no operation
-  rebuilt the surface. A simplified level is written as triangles, and the
-  report tells you which operation did it.
+  rebuilt the surface. A simplified level is written as triangles.
 - **Materials** - just as they were, with their texture paths, embedded images
   and layered textures.
 - **Structure** - pivots, rotation orders, custom properties, lights, cameras,
