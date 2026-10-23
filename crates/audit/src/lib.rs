@@ -119,10 +119,14 @@ pub fn run(
 
 /// What decides whether a rule's previous result still holds: its own
 /// settings, plus — for the reduce rule, which reads them — the LOD rule's
-/// parameters.
+/// parameters, and — for the LOD rule, which takes over the reduce rule's
+/// objects while it is off — whether the reduce rule is on.
 fn finding_key(profile: &AuditProfile, rule: RuleId, config: &RuleConfig) -> u64 {
     let own = config.finding_key();
     match rule {
+        RuleId::TriangleLod => {
+            own ^ u64::from(profile.rule(RuleId::TriangleReduce).enabled).rotate_left(29)
+        }
         RuleId::TriangleReduce => {
             own ^ profile
                 .rule(RuleId::TriangleLod)

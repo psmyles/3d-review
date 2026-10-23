@@ -55,6 +55,7 @@ panel.
   finding.
 - Primary + `N` - start over with an empty viewer.
 - Primary + `O` - open a model.
+- Primary + `W` - close the viewer.
 - Primary + `Z` - undo.
 - Primary + `Y`, or Primary + Shift + `Z` - redo.
 

@@ -89,10 +89,23 @@ pub(crate) fn triangle_density(
     })
 }
 
-/// `reduce = false`: objects that should switch to a LOD below some screen
-/// size. `reduce = true`: objects too dense even at full screen. Both read the
-/// LOD rule's parameters (`config` is that rule's).
-pub(super) fn triangle_lod(ctx: &Context<'_>, config: &RuleConfig, reduce: bool) -> Outcome {
+/// Which objects [`triangle_lod`] reports, by the screen size `S` below which
+/// each should switch to a LOD.
+#[derive(Clone, Copy)]
+pub(super) enum LodScope {
+    /// The LOD rule: `min_screen_size ≤ S ≤ 1`.
+    Lod,
+    /// The LOD rule while the reduce rule is off: `S ≥ min_screen_size`, so
+    /// an object too dense even at full screen is not a pass for want of the
+    /// rule that would have reported it.
+    LodAndReduce,
+    /// The reduce rule: `S > 1`.
+    Reduce,
+}
+
+/// The objects `scope` names. Every scope reads the LOD rule's parameters
+/// (`config` is that rule's).
+pub(super) fn triangle_lod(ctx: &Context<'_>, config: &RuleConfig, scope: LodScope) -> Outcome {
     let min_pixel_area = config.number("min_pixel_area").unwrap_or(10.0);
     let screen_height = config.number("screen_height").unwrap_or(1080.0);
     let min_screen_size = config.number("min_screen_size").unwrap_or(0.1);
@@ -111,10 +124,10 @@ pub(super) fn triangle_lod(ctx: &Context<'_>, config: &RuleConfig, reduce: bool)
             let density =
                 triangle_density(&measure, triangles, diameter, min_pixel_area, screen_height)?;
             let size = density.lod_screen_size;
-            let offends = if reduce {
-                size > 1.0
-            } else {
-                (min_screen_size..=1.0).contains(&size)
+            let offends = match scope {
+                LodScope::Lod => (min_screen_size..=1.0).contains(&size),
+                LodScope::LodAndReduce => size >= min_screen_size,
+                LodScope::Reduce => size > 1.0,
             };
             offends.then(|| {
                 let mut offender = Offender::node(node, Some(Measured::ScreenSize(size)));
@@ -127,10 +140,11 @@ pub(super) fn triangle_lod(ctx: &Context<'_>, config: &RuleConfig, reduce: bool)
         Measured::ScreenSize(s) => Some(*s),
         _ => None,
     });
-    let threshold = if reduce {
-        Threshold::Max(Measured::ScreenSize(1.0))
-    } else {
-        Threshold::Min(Measured::SquarePixels(min_pixel_area))
+    let threshold = match scope {
+        LodScope::Lod | LodScope::LodAndReduce => {
+            Threshold::Min(Measured::SquarePixels(min_pixel_area))
+        }
+        LodScope::Reduce => Threshold::Max(Measured::ScreenSize(1.0)),
     };
     Outcome::judged(offenders, threshold).with_measured(measured)
 }

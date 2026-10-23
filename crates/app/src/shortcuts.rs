@@ -133,6 +133,9 @@ impl App {
             match key.as_str() {
                 "n" => self.reset_to_start_state(),
                 "o" => self.open_model_from_dialog(),
+                // The viewer has one window, so closing it is quitting — the
+                // menu's Exit, carried out in `about_to_wait`.
+                "w" => self.exit_requested = true,
                 // Primary+Z undoes; Primary+Shift+Z redoes (the common alt-redo
                 // chord, and the only redo chord on a Mac).
                 "z" if self.modifiers.shift_key() => self.redo(),
@@ -343,7 +346,7 @@ mod tests {
         for key in ["`", "1", "2", "3", "g", "i", "x", "q", "f", "r"] {
             assert!(!repeats(key, false), "{key} must not repeat");
         }
-        for chord in ["n", "o"] {
+        for chord in ["n", "o", "w"] {
             assert!(!repeats(chord, true), "primary+{chord} must not repeat");
         }
         // The frame steps are bare keys; chorded, they are not bound at all.

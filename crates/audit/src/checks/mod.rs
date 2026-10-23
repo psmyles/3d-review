@@ -125,10 +125,19 @@ pub(crate) fn evaluate(
         RuleId::UnusedBones => skin::unused_bones(ctx),
         RuleId::BindPoseMismatch => skin::bind_pose_mismatch(ctx),
         RuleId::TexelDensity => density::texel(ctx, config),
-        RuleId::TriangleLod => density::triangle_lod(ctx, config, false),
-        RuleId::TriangleReduce => {
-            density::triangle_lod(ctx, &profile.rule(RuleId::TriangleLod), true)
+        RuleId::TriangleLod => {
+            let scope = if profile.rule(RuleId::TriangleReduce).enabled {
+                density::LodScope::Lod
+            } else {
+                density::LodScope::LodAndReduce
+            };
+            density::triangle_lod(ctx, config, scope)
         }
+        RuleId::TriangleReduce => density::triangle_lod(
+            ctx,
+            &profile.rule(RuleId::TriangleLod),
+            density::LodScope::Reduce,
+        ),
         RuleId::InvalidCharacters => naming::invalid_characters(ctx),
         RuleId::NamePattern => naming::pattern(ctx, config),
         RuleId::LodSuffix => naming::lod_suffix(ctx),

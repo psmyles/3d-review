@@ -19,9 +19,11 @@
 //! brought back in line by [`Installed::sync`].
 //!
 //! **Accelerators here intercept keys before winit ever sees them.** That is why only
-//! Open and New carry one, and why each carries exactly the chord `shortcuts.rs`
-//! binds: a menu accelerator that disagreed with the keyboard handler would silently
-//! shadow it, and the shortcut would look broken with no way to tell why. The other
+//! Open, New and Close Window carry one, and why each carries exactly the chord
+//! `shortcuts.rs` binds: a menu accelerator that disagreed with the keyboard handler
+//! would silently shadow it, and the shortcut would look broken with no way to tell
+//! why. (Close Window's ⌘W raises the window's close request rather than reaching
+//! `shortcuts.rs`, which ends in the same exit.) The other
 //! file-command chords (⌘Z / ⌘⇧Z / ⌘Y) get no menu item precisely so they keep
 //! reaching winit — there is no Edit menu to put them in that would not also have to
 //! mirror the undo stack's state. Documentation deliberately carries no F1 either:
@@ -186,6 +188,12 @@ pub(crate) fn install(
                 &review_localization::tr(keys::menu::ADD_ANIMATIONS),
             ),
             &open_recent,
+            &PredefinedMenuItem::separator(),
+            // AppKit's `performClose:` with its own ⌘W: the window's close
+            // request, which quits the viewer as its close button does.
+            &PredefinedMenuItem::close_window(Some(&review_localization::tr(
+                keys::menu::CLOSE_WINDOW,
+            ))),
         ],
     )
     .ok()?;

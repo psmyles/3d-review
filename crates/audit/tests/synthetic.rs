@@ -281,6 +281,82 @@ fn a_triangle_budget_names_the_bound_it_broke() {
     assert_eq!(both.offenders.len(), 2, "the file, then part A");
 }
 
+/// A 1 m square of `n` x `n` quads on `node`, its corner at `origin`.
+fn grid(node: u32, origin: [f32; 3], n: usize) -> Vec<Face> {
+    let step = 1.0 / n as f32;
+    let [x, y, z] = origin;
+    (0..n * n)
+        .map(|i| {
+            let (u, v) = ((i % n) as f32 * step, (i / n) as f32 * step);
+            let corner = |du: f32, dv: f32| ([x + u + du, y + v + dv, z], [u + du, v + dv]);
+            face(
+                node,
+                &[
+                    corner(0.0, 0.0),
+                    corner(step, 0.0),
+                    corner(step, step),
+                    corner(0.0, step),
+                ],
+            )
+        })
+        .collect()
+}
+
+/// A part too dense even at full screen belongs to Too dense for its size —
+/// but while that rule is off, Needs a LOD reports it rather than passing it.
+#[test]
+fn needs_a_lod_takes_over_too_dense_parts_while_that_rule_is_off() {
+    // At a 120 px screen and the default 10 px², a 1 m square of n x n quads
+    // switches at S = (√2 / 120)·√(40·n²): about 0.37 for n = 5 (needs a
+    // LOD) and 1.49 for n = 20 (too dense).
+    let mut faces = grid(0, [0.0, 0.0, 0.0], 5);
+    faces.extend(grid(1, [3.0, 0.0, 0.0], 20));
+    let model = build(vec![mesh_node("Light"), mesh_node("Dense")], faces);
+    let profile = |reduce: bool| {
+        let mut profile = AuditProfile::builtin(Engine::Generic);
+        for (rule, config) in &mut profile.rules {
+            config.enabled =
+                *rule == RuleId::TriangleLod || (reduce && *rule == RuleId::TriangleReduce);
+        }
+        profile
+            .rules
+            .get_mut(&RuleId::TriangleLod)
+            .unwrap()
+            .params
+            .insert("screen_height".into(), ParamValue::Number(120.0));
+        profile
+    };
+    let audit = |profile: &AuditProfile, reuse: Option<&AuditReport>| {
+        let input = AuditInput {
+            model: &model,
+            extras: None,
+        };
+        run(input, profile, reuse, RunOptions::default()).unwrap()
+    };
+    let nodes = |report: &AuditReport, rule: RuleId| -> Vec<Option<u32>> {
+        let result = report.result(rule).unwrap();
+        result
+            .offenders
+            .iter()
+            .map(|offender| offender.node)
+            .collect()
+    };
+
+    let both = audit(&profile(true), None);
+    assert_eq!(nodes(&both, RuleId::TriangleLod), [Some(0)]);
+    assert_eq!(nodes(&both, RuleId::TriangleReduce), [Some(1)]);
+
+    let lod_only = audit(&profile(false), None);
+    assert_eq!(nodes(&lod_only, RuleId::TriangleLod), [Some(0), Some(1)]);
+
+    // Switching the reduce rule off re-measures the LOD rule rather than
+    // reusing its narrower result, and switching it back narrows it again.
+    let reused = audit(&profile(false), Some(&both));
+    assert_eq!(nodes(&reused, RuleId::TriangleLod), [Some(0), Some(1)]);
+    let restored = audit(&profile(true), Some(&reused));
+    assert_eq!(nodes(&restored, RuleId::TriangleLod), [Some(0)]);
+}
+
 #[test]
 fn ngons_are_counted_by_polygon() {
     let pentagon = face(

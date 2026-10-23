@@ -50,7 +50,9 @@ profile's engine.
 - **Needs a LOD**: the screen size below which a part's triangles get too small,
   so it should switch to a LOD there.
 - **Too dense for its size**: a part whose triangles are too small even when it
-  fills the screen. A LOD cannot help; the mesh itself needs reducing.
+  fills the screen. A LOD cannot help; the mesh itself needs reducing. While
+  this check is off, Needs a LOD lists these parts instead, at a screen size
+  above 1, so turning it off never hides them.
 
 The triangle figures are an estimate worked out from each part's size,
 surface and triangle count. They assume the part is roughly rounded and that
