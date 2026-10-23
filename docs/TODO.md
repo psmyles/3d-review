@@ -4,3 +4,4 @@
 - generate colliders?
 - UV view during opt mode?
 - viewport presets
+- show thumbnails in file explorer / finder
