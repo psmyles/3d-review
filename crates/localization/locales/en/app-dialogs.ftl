@@ -13,6 +13,10 @@ app-dialogs-save-audit-profile = Save audit profile
 app-dialogs-load-audit-profile = Load audit profile
 app-dialogs-save-audit-report = Save audit report
 
+# The reason the system's administrator password prompt gives when installing the
+# command-line tool needs one (macOS).
+app-dialogs-install-cli-prompt = { $product } wants to install the { $command } command in { $folder }.
+
 # Filter names in the dialog's file-type dropdown.
 app-dialogs-filter-fbx = FBX
 app-dialogs-filter-image = Image

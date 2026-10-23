@@ -19,7 +19,7 @@ review-cli --version | --help | <command> --help
 | | |
 |---|---|
 | Windows | `review-cli.exe` beside `3d-review.exe`, in the install folder the Uninstall key `{B6F4B0E9-2E1B-4C3A-9D2F-3D5E7A1C0F42}_is1` names as `InstallLocation` (`%LOCALAPPDATA%\Programs\3D Review` for a per-user install, `C:\Program Files\3D Review` for all users). Setup's **Add 3D Review to my PATH** task, off by default, puts that folder on the user's PATH. |
-| macOS | `3D Review.app/Contents/MacOS/review-cli`. Find the app by its bundle id, `com.psmyles.3d-review` (`mdfind "kMDItemCFBundleIdentifier == 'com.psmyles.3d-review'"`). A `scripts/dev-app.sh` bundle has it too. |
+| macOS | `3D Review.app/Contents/MacOS/review-cli`. Find the app by its bundle id, `com.psmyles.3d-review` (`mdfind "kMDItemCFBundleIdentifier == 'com.psmyles.3d-review'"`). A `scripts/dev-app.sh` bundle has it too. The .dmg cannot install anything itself, so the app does it: **3D Review > Install Command Line Tool...** symlinks `/usr/local/bin/review-cli` to that binary, asking for an administrator password when the folder needs one, and a notice says so at launch while no `review-cli` is on the PATH. The link follows the app's updates, and breaks if the app is moved (the launch notice then comes back). |
 
 ## The contract
 

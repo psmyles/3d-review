@@ -5,8 +5,8 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-# The macOS shell leaves: the Launch Services open hook (D14) and the menu bar
-# (D15). Its own crate rather than a module of `app` for the reason `psd` and the
+# The macOS shell leaves: the Launch Services open hook (D14), the menu bar
+# (D15), and linking the bundled review-cli onto the PATH. Its own crate rather than a module of `app` for the reason `psd` and the
 # GPU backend leaf are: it needs `unsafe` — `class_addMethod` on winit's
 # application delegate is not expressible any other way — and invariant 9 keeps
 # `crates/app` at `#![forbid(unsafe_code)]`. Everything here is shell plumbing;

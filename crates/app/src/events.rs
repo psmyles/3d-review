@@ -6,6 +6,8 @@
 
 use std::path::PathBuf;
 
+use review_shell_macos::CliInstallError;
+
 use crate::texture_manager::TextureDecode;
 use crate::{audit, dialog, loading, opt, update};
 
@@ -66,6 +68,9 @@ pub(crate) enum UserEvent {
     /// Help > Check for Updates has its answer (posted by the thread that asked
     /// GitHub - see `update.rs`).
     UpdateChecked(update::UpdateCheck),
+    /// 3D Review > Install Command Line Tool finished (posted by the thread that
+    /// waited on it - see `cli_install.rs`). macOS only.
+    CliInstalled(Result<PathBuf, CliInstallError>),
     /// The OS asked for a file to be opened (`docs/ARCHITECTURE.md`, Platform
     /// decisions D14): a Finder double-click, an `open(1)`, or a drop on the Dock
     /// icon. macOS only — Windows delivers the same intent as `argv[1]`, which

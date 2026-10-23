@@ -4,10 +4,12 @@
 //! quit: ⌘Q belongs to the menu, not the window, so without one there is no way out
 //! but Force Quit. This builds the menu bar the viewer's own toolbar menu implies,
 //! with each entry where a Mac puts it rather than where the toolbar does: About and
-//! the Remember Settings preference go in the application menu, the toolbar's Exit
-//! *is* Quit, and Help is AppKit's Help menu (which is what gives it the search
-//! field). Every item that is *ours* routes back through the caller's callback as a
-//! [`MenuCommand`], into the handler the toolbar's entry already reaches.
+//! the Remember Settings preference go in the application menu (with Install
+//! Command Line Tool, which has no toolbar counterpart: Setup does it on Windows),
+//! the toolbar's Exit *is* Quit, and Help is AppKit's Help menu (which is what gives
+//! it the search field). Every item that is *ours* routes back through the caller's
+//! callback as a [`MenuCommand`], into the handler the toolbar's entry already
+//! reaches.
 //!
 //! The rest are `muda` **predefined** items, which is deliberate: those map onto
 //! AppKit's own responder-chain selectors (`terminate:`, `hide:`,
@@ -42,6 +44,7 @@ mod keys {
 // items are AppKit's.
 const ID_ABOUT: &str = "review.about";
 const ID_REMEMBER_SETTINGS: &str = "review.remember-settings";
+const ID_INSTALL_CLI: &str = "review.install-cli";
 const ID_OPEN: &str = "review.open";
 const ID_ADD_ANIMATIONS: &str = "review.add-animations";
 const ID_NEW: &str = "review.new";
@@ -141,6 +144,13 @@ pub(crate) fn install(
             &item(ID_ABOUT, &keys::menu::about(product)),
             &PredefinedMenuItem::separator(),
             &remember_settings,
+            &PredefinedMenuItem::separator(),
+            // Here rather than in the toolbar's menu: only the macOS .dmg has no
+            // installer to put the CLI on the PATH.
+            &item(
+                ID_INSTALL_CLI,
+                &review_localization::tr(keys::menu::INSTALL_COMMAND_LINE_TOOL),
+            ),
             &PredefinedMenuItem::separator(),
             &PredefinedMenuItem::services(Some(&review_localization::tr(keys::menu::SERVICES))),
             &PredefinedMenuItem::separator(),
@@ -262,6 +272,7 @@ fn command_for(id: &MenuId) -> Option<MenuCommand> {
     Some(match id {
         ID_ABOUT => MenuCommand::About,
         ID_REMEMBER_SETTINGS => MenuCommand::ToggleRememberSettings,
+        ID_INSTALL_CLI => MenuCommand::InstallCommandLineTool,
         ID_OPEN => MenuCommand::Open,
         ID_ADD_ANIMATIONS => MenuCommand::AddAnimations,
         ID_NEW => MenuCommand::New,
@@ -311,6 +322,7 @@ mod tests {
         let ids = [
             (ID_ABOUT, MenuCommand::About),
             (ID_REMEMBER_SETTINGS, MenuCommand::ToggleRememberSettings),
+            (ID_INSTALL_CLI, MenuCommand::InstallCommandLineTool),
             (ID_OPEN, MenuCommand::Open),
             (ID_ADD_ANIMATIONS, MenuCommand::AddAnimations),
             (ID_NEW, MenuCommand::New),

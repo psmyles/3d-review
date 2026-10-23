@@ -98,6 +98,24 @@ app-notifications-update-available = Version { $version } is available. Opening 
 app-notifications-update-latest = You have the latest version ({ $version }).
 app-notifications-update-check-failed = Couldn't check for updates: { $detail }
 
+## The command-line tool (macOS)
+
+# At launch, while no review-cli is on the PATH. The menu path is the
+# application menu's own item (menu-install-command-line-tool).
+app-notifications-cli-not-on-path =
+    The { $command } command is not on your PATH. Choose { $product } > Install
+    Command Line Tool... to add it.
+app-notifications-cli-installed =
+    Installed the { $command } command at { $link }. Open a new terminal window to use it.
+app-notifications-cli-install-not-bundled =
+    There is no command-line tool to install: this is not a packaged build of { $product }.
+app-notifications-cli-install-not-in-applications =
+    Move { $product } to your Applications folder and open it from there first: a link
+    to this copy would stop working.
+app-notifications-cli-install-occupied =
+    { $link } already exists and is not a link to { $product }. Remove it and try again.
+app-notifications-cli-install-failed = Couldn't install the { $command } command: { $detail }
+
 ## Tracy
 
 app-notifications-tracy-on-next-launch = Tracy profiling will be on from the next time you start the viewer.

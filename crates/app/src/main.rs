@@ -7,6 +7,7 @@
 
 mod animation;
 mod audit;
+mod cli_install;
 mod dialog;
 mod docs_dir;
 mod events;
@@ -383,6 +384,9 @@ struct App {
     /// A Help > Check for Updates request is on its way to GitHub; a second one
     /// is ignored until it answers.
     update_check_in_flight: bool,
+    /// 3D Review > Install Command Line Tool is waiting on the system's password
+    /// prompt; a second one is ignored until it answers.
+    cli_install_in_flight: bool,
     /// The macOS menu bar (D15), brought in line with [`UiState`] after every
     /// batch of events. Always `None` on Windows, which has none.
     menu_bar: Option<review_shell_macos::MenuBar>,
@@ -512,6 +516,7 @@ impl Default for App {
             dialog_open: false,
             exit_requested: false,
             update_check_in_flight: false,
+            cli_install_in_flight: false,
             menu_bar: None,
             menu_proxy: None,
             startup_error: None,
@@ -831,6 +836,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let _ = proxy.send_event(UserEvent::MenuCommand(command));
             });
         }
+        self.suggest_cli_install();
     }
 
     /// Handle a message a worker thread posted back through the event loop
@@ -855,6 +861,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::OpenPath(path) => self.open_model_from_path(&path),
             UserEvent::MenuCommand(command) => self.handle_menu_command(command),
             UserEvent::UpdateChecked(result) => self.handle_update_checked(result),
+            UserEvent::CliInstalled(result) => self.handle_cli_installed(result),
             // Only an open Log window asks for these, but one can close between
             // the line being logged and this arriving.
             UserEvent::LogUpdated => {

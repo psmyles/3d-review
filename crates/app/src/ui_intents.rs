@@ -183,6 +183,7 @@ impl App {
                 return self.open_url(self.ui.about.info.new_issue_url());
             }
             MenuCommand::Credits => return self.open_url(self.ui.about.info.credits_url()),
+            MenuCommand::InstallCommandLineTool => return self.install_cli(),
         };
         self.apply_menu_intent(intent);
     }

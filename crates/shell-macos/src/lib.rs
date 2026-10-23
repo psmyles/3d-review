@@ -1,4 +1,5 @@
-//! The macOS shell leaves: Launch Services opens (D14) and the menu bar (D15).
+//! The macOS shell leaves: Launch Services opens (D14), the menu bar (D15), and
+//! putting the bundled `review-cli` on the PATH.
 //!
 //! Its own crate rather than a module of `review-app` for the same reason
 //! `review-psd` and `render`'s `rhi/backend/` are separate: the open hook needs
@@ -10,11 +11,15 @@
 //! Nothing here knows what a model, a camera or a frame is. `app` hands over a
 //! callback and gets back paths and a [`MenuCommand`], and hands the menu bar the
 //! few plain values it shows ([`MenuState`]); that is the whole interface, and it
-//! is why this crate depends on neither `winit` nor any crate of ours.
+//! is why this crate depends on neither `winit` nor any crate of ours. The CLI
+//! install is the same shape: `app` asks, and gets back a path or a typed
+//! [`CliInstallError`] it words itself.
 //!
 //! Every item is a no-op stub off macOS, so `app` calls them unconditionally and
 //! carries no `cfg` of its own.
 
+#[cfg(target_os = "macos")]
+mod cli_install;
 #[cfg(target_os = "macos")]
 mod menubar;
 #[cfg(target_os = "macos")]
@@ -35,6 +40,10 @@ pub enum MenuCommand {
     About,
     /// App → Remember Settings.
     ToggleRememberSettings,
+    /// App → Install Command Line Tool…: link `review-cli` onto the PATH. The one
+    /// entry with no toolbar counterpart — Setup does this on Windows, and only the
+    /// macOS .dmg has no installer to do it (see [`install_cli`]).
+    InstallCommandLineTool,
     /// File → Open… (⌘O)
     Open,
     /// File → Add Animations…
@@ -121,6 +130,64 @@ pub fn install_menu_bar(
 ) -> Option<MenuBar> {
     let _ = (product, on_command);
     None
+}
+
+/// What the bundled command-line tool is called, inside the bundle and on the PATH.
+pub const CLI_NAME: &str = "review-cli";
+
+/// Where [`install_cli`] puts the link: on the default PATH of every macOS shell,
+/// and on Apple silicon not Homebrew's folder, so it collides with nothing.
+pub const CLI_LINK: &str = "/usr/local/bin/review-cli";
+
+/// Why [`install_cli`] did not put the CLI on the PATH. Typed, so `app` words it
+/// from the catalog; only [`CliInstallError::Failed`] carries a diagnostic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CliInstallError {
+    /// This is not a packaged build — no `.app` with a `review-cli` inside it.
+    NotBundled,
+    /// The app is running from the disk image or a quarantined (translocated)
+    /// copy, so a link into it would stop working.
+    NotInApplications,
+    /// [`CLI_LINK`] exists and is not a link — some other program's file.
+    Occupied,
+    /// The user dismissed the administrator password prompt.
+    Cancelled,
+    /// Anything else; the detail is a diagnostic, not catalog text.
+    Failed(String),
+}
+
+/// Whether to suggest installing the CLI: this is a packaged build and no
+/// `review-cli` is reachable from a shell (including a link a moved app left
+/// dangling). Only touches the filesystem, so it is cheap enough for startup.
+///
+/// Always `false` off macOS, where Setup's PATH task is how it gets there.
+#[cfg(target_os = "macos")]
+pub fn cli_install_offered() -> bool {
+    cli_install::offered()
+}
+
+/// The non-macOS stub. See the macOS arm.
+#[cfg(not(target_os = "macos"))]
+pub fn cli_install_offered() -> bool {
+    false
+}
+
+/// Link [`CLI_LINK`] to the `review-cli` inside the running bundle, asking for an
+/// administrator password — with `prompt` as the reason the system's dialog
+/// gives — when the folder is not writable. Returns the CLI the link points at.
+///
+/// **Blocks** while the password prompt is up, so call it from a worker thread.
+/// Reinstalling over an earlier link is fine; a real file there is refused.
+#[cfg(target_os = "macos")]
+pub fn install_cli(prompt: &str) -> Result<PathBuf, CliInstallError> {
+    cli_install::install(prompt)
+}
+
+/// The non-macOS stub. See the macOS arm.
+#[cfg(not(target_os = "macos"))]
+pub fn install_cli(prompt: &str) -> Result<PathBuf, CliInstallError> {
+    let _ = prompt;
+    Err(CliInstallError::NotBundled)
 }
 
 /// Teach winit's application delegate to answer `application:openURLs:`, so a
