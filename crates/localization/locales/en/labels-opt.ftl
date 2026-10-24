@@ -92,6 +92,10 @@ labels-opt-warning-shrinkwrap-below-shape-change =
 labels-opt-warning-lod-empty =
     LOD { $level } simplified away completely. Raise its target ratio, or lower its error
     limit so the simplifier stops sooner.
+labels-opt-warning-authored-lods-replaced = { $objects ->
+        [one] This model already has LOD levels, so Generate LODs built its levels from each chain's _LOD0 and left out the one existing lower-detail object, which the generated levels replace.
+       *[other] This model already has LOD levels, so Generate LODs built its levels from each chain's _LOD0 and left out the { $objects } existing lower-detail objects, which the generated levels replace.
+    }
 labels-opt-warning-simplifier-stalled =
     The simplifier removed almost nothing: this mesh has an attribute seam at nearly every
     edge, which a topology-preserving collapse cannot cross. Add a Weld operation with

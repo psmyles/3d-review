@@ -103,6 +103,11 @@ pub(crate) fn emit_authored_node(
     if let Some(&existing) = placed.get(&index) {
         return Some(existing);
     }
+    // An authored LOD the generated chain replaces: the generated level of the
+    // same name is written instead, and both would collide.
+    if scene.replaced(index) {
+        return None;
+    }
     // A parent cycle would recurse forever; the chain can never legitimately be
     // deeper than the node table.
     if depth > source.nodes.len() {
@@ -185,13 +190,20 @@ pub(crate) fn place_graph(
 }
 
 /// The scene node a level's mesh attaches to, with the whole graph already
-/// placed. In a chain (`in_chain`: the file holds several levels) level 0 uses
-/// the source node itself, renamed `_LOD0`, and a later level gets a suffixed
-/// sibling copy — same authored properties and attribute — beside it. A file
-/// holding one level (one file per LOD, or a lone level) puts it on the source
-/// node itself under its plain name, whatever the level's number: the file
-/// name carries the suffix, and a copy beside the source node would leave that
-/// node behind empty, with every display layer, pose and set still bound to it.
+/// placed.
+///
+/// What carries the level is the mesh's *level root* ([`SceneData::level_root`]):
+/// the mesh node itself, or — when the file's own chain names its levels on a
+/// group (`Wall_LOD0` holding `Body` and `Trim`) — that group. In a chain
+/// (`in_chain`: the file holds several levels) level 0 uses the source nodes
+/// themselves with the root renamed `_LOD0`, and a later level gets a copy of
+/// the root, suffixed, beside it, with the nodes from there down to the mesh
+/// copied under it — same authored properties and attribute. A file holding one
+/// level (one file per LOD, or a lone level) puts it on the source node itself:
+/// the file name carries the suffix, and a copy beside the source node would
+/// leave that node behind empty, with every display layer, pose and set still
+/// bound to it. Only a root whose name already says which level it is (an
+/// authored `_LOD0`) is renamed there, so it does not claim the wrong one.
 pub(crate) fn place_level_node(
     scene: &mut SceneData,
     placed: &HashMap<usize, i32>,
@@ -221,24 +233,64 @@ pub(crate) fn place_level_node(
     if base == NO_PARENT {
         return base;
     }
-    if !in_chain {
-        return base;
-    }
-    if level == 0 {
-        if let Some(node) = source.nodes.get(index) {
-            scene.nodes[base as usize].name = c_string(&suffixed(&node.name, 0), "Node");
+    // Root first, down to the mesh node. A root the authored walk never meets
+    // (a cycle, or a root the import made up) leaves the mesh node its own root.
+    let (root, renumber) = scene.level_root(index);
+    let path = authored_path(source, extras, index, root).unwrap_or_else(|| vec![index]);
+    let root = path[0];
+    let named = in_chain || renumber;
+
+    if !in_chain || level == 0 {
+        if named && let (Some(node), Some(&at)) = (source.nodes.get(root), placed.get(&root)) {
+            scene.nodes[at as usize].name = c_string(&suffixed(&node.name, level), "Node");
         }
         return base;
     }
-    let (Some(node), Some(authored)) = (source.nodes.get(index), extras.nodes.get(index)) else {
-        return base;
-    };
-    let parent = scene.nodes[base as usize].parent;
-    let data = authored_node_data(scene, node, authored, parent, &suffixed(&node.name, level));
-    scene.nodes.push(data);
-    let copy = (scene.nodes.len() - 1) as i32;
-    scene.level_copies.entry(index).or_default().push(copy);
-    copy
+
+    let mut parent = placed
+        .get(&root)
+        .map_or(NO_PARENT, |&at| scene.nodes[at as usize].parent);
+    for &index in &path {
+        if let Some(&copy) = scene.level_nodes.get(&(index, level)) {
+            parent = copy;
+            continue;
+        }
+        let (Some(node), Some(authored)) = (source.nodes.get(index), extras.nodes.get(index))
+        else {
+            return base;
+        };
+        let name = if index == root {
+            suffixed(&node.name, level)
+        } else {
+            node.name.clone()
+        };
+        let data = authored_node_data(scene, node, authored, parent, &name);
+        scene.nodes.push(data);
+        parent = (scene.nodes.len() - 1) as i32;
+        scene.level_nodes.insert((index, level), parent);
+        scene.level_copies.entry(index).or_default().push(parent);
+    }
+    parent
+}
+
+/// The authored nodes from `root` down to `leaf`, root first, or `None` when
+/// `root` is not an authored ancestor of `leaf` (or `leaf` itself).
+fn authored_path(
+    source: &ModelData,
+    extras: &SourceExtras,
+    leaf: usize,
+    root: usize,
+) -> Option<Vec<usize>> {
+    let mut path = vec![leaf];
+    while *path.last()? != root {
+        // A cycle can never legitimately be longer than the node table.
+        if path.len() > source.nodes.len() {
+            return None;
+        }
+        path.push(authored_parent(source, extras, *path.last()?)?);
+    }
+    path.reverse();
+    Some(path)
 }
 
 /// Create (or reuse) the scene node this group's mesh attaches to, returning its
@@ -312,8 +364,13 @@ pub(crate) fn place_node(
             .and_then(|index| source.nodes.get(index))
             .map(|node| node.name.clone())
             .unwrap_or_else(|| source.name.clone());
+        // Flat has no group to carry the level, so only a mesh node whose own
+        // name is an authored level is renumbered outside a chain.
+        let renumber = group
+            .source_node
+            .is_some_and(|leaf| scene.level_root(leaf) == (leaf, true));
         scene.nodes.push(plain(
-            c_string(&level_name(&name, level, in_chain), "Mesh"),
+            c_string(&level_name(&name, level, in_chain || renumber), "Mesh"),
             NO_PARENT,
             Mat4::IDENTITY,
         ));
@@ -338,6 +395,15 @@ pub(crate) fn place_node(
     }
     chain.reverse();
 
+    // The level root (see `place_level_node`): from it down, a later level in a
+    // chain is the level's own copy. A root off the chain is the leaf's own.
+    let (root, renumber) = scene.level_root(source_index);
+    let root_at = chain
+        .iter()
+        .position(|&index| index == root)
+        .unwrap_or(chain.len() - 1);
+    let named = in_chain || renumber;
+
     let mut parent = NO_PARENT;
     // The frame the chain hangs off is the *written file's* root, whose unit is
     // the source's — not the meter import normalized everything to. Starting
@@ -348,11 +414,12 @@ pub(crate) fn place_node(
     // already expressed in (it parks the normalization at the synthetic root,
     // which the skip below folds in here).
     let mut parent_world = Mat4::from_scale(Vec3::splat(1.0 / scene.unit.per_meter));
-    for &index in &chain {
+    for (position, &index) in chain.iter().enumerate() {
         let Some(node) = source.nodes.get(index) else {
             continue;
         };
         let leaf = index == source_index;
+        let is_root = position == root_at;
         // The synthetic file root — skipped, per above. (Never the leaf, so the
         // mesh always has a real node to attach to.) `parent_world` is left
         // alone so its transform — import parks the unit normalization there —
@@ -360,15 +427,22 @@ pub(crate) fn place_node(
         if !leaf && node.parent.is_none() && node.name.is_empty() && node.mesh_part.is_none() {
             continue;
         }
-        // Reuse a node an earlier group already emitted. A later level's leaf in
-        // a chain is a per-level variant of its source node, so it is never
-        // shared. A level-0 leaf an earlier group emitted as its ancestor still
-        // takes the chain's `_LOD0` name. Outside a chain the file holds one
-        // level, whose leaf *is* the source node, as `place_level_node` has it.
-        let level_copy = leaf && in_chain && level != 0;
-        if !level_copy && let Some(&existing) = placed.get(&index) {
-            if leaf && in_chain {
-                scene.nodes[existing as usize].name = c_string(&suffixed(&node.name, 0), "Node");
+        // Reuse a node an earlier group already emitted. From the level root
+        // down, a later level in a chain is a per-level variant of its source
+        // nodes, shared only with that level's other meshes. A level-0 root an
+        // earlier group emitted as its ancestor still takes the chain's `_LOD0`
+        // name. Outside a chain the file holds one level, whose nodes *are* the
+        // source nodes, as `place_level_node` has it.
+        let level_copy = in_chain && level != 0 && position >= root_at;
+        let existing = if level_copy {
+            scene.level_nodes.get(&(index, level)).copied()
+        } else {
+            placed.get(&index).copied()
+        };
+        if let Some(existing) = existing {
+            if is_root && named && !level_copy {
+                scene.nodes[existing as usize].name =
+                    c_string(&suffixed(&node.name, level), "Node");
             }
             parent = existing;
             parent_world = node.transform;
@@ -387,8 +461,8 @@ pub(crate) fn place_node(
             node.transform
         };
 
-        let name = if leaf {
-            level_name(&node.name, level, in_chain)
+        let name = if is_root {
+            level_name(&node.name, level, named)
         } else {
             node.name.clone()
         };
@@ -396,7 +470,9 @@ pub(crate) fn place_node(
             .nodes
             .push(plain(c_string(&name, "Node"), parent, local));
         parent = (scene.nodes.len() - 1) as i32;
-        if !level_copy {
+        if level_copy {
+            scene.level_nodes.insert((index, level), parent);
+        } else {
             placed.insert(index, parent);
         }
         parent_world = node.transform;
@@ -405,20 +481,22 @@ pub(crate) fn place_node(
     (parent, notes)
 }
 
-/// `"Body_LOD2"`.
+/// `"Body_LOD2"` — or, for a name that is already an authored level,
+/// `"Wall_LOD0"` renumbered to `"Wall_LOD2"`, never `"Wall_LOD0_LOD2"`.
 pub(crate) fn suffixed(name: &str, level: usize) -> String {
-    format!("{name}_LOD{level}")
+    review_model::naming::with_lod(name, level)
 }
 
-/// The name a level's mesh node goes out under. A file holding a chain names
+/// The name a level's root node goes out under. A file holding a chain names
 /// every level, `_LOD0` included: an engine groups the siblings into one LOD
 /// group by that suffix, so a plain-named level 0 is left out of the group.
 /// Outside a chain — a file holding one level, which is what one file per LOD
 /// writes — the node keeps the source's plain name whatever the level: the
 /// file name already carries the suffix, and the file round-trips with the
-/// source's own names.
-pub(crate) fn level_name(name: &str, level: usize, in_chain: bool) -> String {
-    if in_chain {
+/// source's own names. `named` is whether the level is named: in a chain, or
+/// on a root that is already an authored level and must not claim the wrong one.
+pub(crate) fn level_name(name: &str, level: usize, named: bool) -> String {
+    if named {
         suffixed(name, level)
     } else {
         name.to_owned()

@@ -15,15 +15,21 @@ use crate::stack::{ExportOptions, HierarchyMode};
 
 use super::*;
 
-/// Build the payload for one output file.
+/// Build the payload for one output file. `generated` is whether the export
+/// as a whole writes a generated chain (several levels, in this file or across
+/// several), which is what replaces the source's own lower LOD levels.
 pub(crate) fn build_scene(
     lods: &[ProcessedLod],
+    generated: bool,
     source: &ModelData,
     extras: Option<&SourceExtras>,
     options: &ExportOptions,
     report: &mut ExportReport,
 ) -> Result<SceneData, OptError> {
     let mut scene = SceneData::new(UnitScale::from_source(source.stats.source_unit_meters));
+    if generated {
+        scene.lod_roles = review_model::naming::lod_roles(source);
+    }
 
     if let Some(extras) = extras {
         build_settings(&mut scene, extras);

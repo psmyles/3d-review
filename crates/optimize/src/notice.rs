@@ -39,6 +39,10 @@ pub enum OptWarning {
     ShrinkwrapBelowShapeChange,
     /// A LOD level simplified away to nothing.
     LodEmpty { level: usize },
+    /// The model already carries a `_LOD<n>` chain, so Generate LODs built its
+    /// levels from each chain's most detailed object and left out this many
+    /// authored lower-detail objects, which the generated levels replace.
+    AuthoredLodsReplaced { objects: usize },
     /// A simplify removed almost nothing because every edge is an attribute seam.
     SimplifierStalledOnSeams,
     /// The tangent rebuild failed.
@@ -127,6 +131,12 @@ impl fmt::Display for OptWarning {
                 f,
                 "LOD {level} simplified away completely. Raise its target ratio, or lower its \
                  error limit so the simplifier stops sooner."
+            ),
+            Self::AuthoredLodsReplaced { objects } => write!(
+                f,
+                "This model already has LOD levels, so Generate LODs built its levels from \
+                 each chain's _LOD0 and left out the {objects} existing lower-detail \
+                 object(s), which the generated levels replace."
             ),
             Self::SimplifierStalledOnSeams => f.write_str(
                 "The simplifier removed almost nothing: this mesh has an attribute seam at \

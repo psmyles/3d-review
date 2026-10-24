@@ -98,6 +98,9 @@ pub fn explain_opt_warning(warning: &OptWarning) -> String {
             tr(k::WARNING_SHRINKWRAP_BELOW_SHAPE_CHANGE).into_owned()
         }
         OptWarning::LodEmpty { level } => k::warning_lod_empty(count(*level)),
+        OptWarning::AuthoredLodsReplaced { objects } => {
+            k::warning_authored_lods_replaced(count(*objects))
+        }
         OptWarning::SimplifierStalledOnSeams => tr(k::WARNING_SIMPLIFIER_STALLED).into_owned(),
         OptWarning::TangentsFailed { detail } => k::warning_tangents_failed(detail.clone()),
         OptWarning::NormalsKeptForBlendShapes { object } => {

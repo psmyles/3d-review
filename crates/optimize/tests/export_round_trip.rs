@@ -172,6 +172,122 @@ fn a_lod_chain_writes_suffixed_sibling_nodes_into_one_file() {
     );
 }
 
+/// A file that already carries a LOD chain is regenerated from its `_LOD0`: the
+/// written chain is `X_LOD0` … `X_LODn` and nothing else — no `X_LOD0_LOD1`, and
+/// no authored `X_LOD1` left beside the generated one — in either packaging,
+/// with the source capture loaded (the viewer's path).
+#[test]
+fn an_authored_chain_is_regenerated_from_lod0_under_its_own_names() {
+    let Some((monkey, monkey_extras)) = fixture_full("monkey.fbx") else {
+        return;
+    };
+    // First give the asset a chain of its own, the way a game FBX arrives.
+    let dir = temp_dir("round_trip_authored_chain");
+    let authored = dir.join("authored.fbx");
+    export_fbx(
+        &run_with_extras(&monkey, &monkey_extras, &weld_and_halve()).lods,
+        &monkey,
+        Some(&monkey_extras),
+        &authored,
+        &ExportOptions::default(),
+    )
+    .expect("the authored chain is written");
+    let (model, extras) = reload_full(&authored);
+    let mesh_names = |model: &ModelData| -> Vec<String> {
+        let mut names: Vec<String> = model
+            .nodes
+            .iter()
+            .filter(|node| node.mesh_part.is_some())
+            .map(|node| node.name.clone())
+            .collect();
+        names.sort();
+        names
+    };
+    let authored_names = mesh_names(&model);
+    assert_eq!(authored_names.len(), 2, "{authored_names:?}");
+    let base = authored_names[0]
+        .strip_suffix("_LOD0")
+        .unwrap_or_else(|| panic!("an authored LOD0: {authored_names:?}"))
+        .to_owned();
+    let lod0_triangles = {
+        let lod0 = model
+            .nodes
+            .iter()
+            .position(|node| node.name == authored_names[0])
+            .expect("the LOD0 node") as u32;
+        model
+            .triangles
+            .node
+            .iter()
+            .filter(|&&node| node == lod0)
+            .count()
+    };
+
+    let mut stack = OptStack::default();
+    stack.push_op(OpKind::SimplifyLod(LodParams {
+        levels: [0.5, 0.25]
+            .into_iter()
+            .map(|target_ratio| LodLevel {
+                target_ratio,
+                ..LodLevel::default()
+            })
+            .collect(),
+        ..LodParams::default()
+    }));
+    let result = run_with_extras(&model, &extras, &stack);
+    assert_eq!(result.lods.len(), 3);
+    assert_eq!(
+        result.lods[0].model.stats.triangle_count, lod0_triangles,
+        "level 0 is the authored LOD0 alone"
+    );
+
+    let regenerated = dir.join("regenerated.fbx");
+    export_fbx(
+        &result.lods,
+        &model,
+        Some(&extras),
+        &regenerated,
+        &ExportOptions::default(),
+    )
+    .expect("the regenerated chain is written");
+    let loaded = reimport(&regenerated);
+    assert_eq!(
+        mesh_names(&loaded),
+        [0, 1, 2].map(|level| format!("{base}_LOD{level}")),
+        "one mesh per generated level, named as the authored chain was"
+    );
+    let names: Vec<&str> = loaded.nodes.iter().map(|node| node.name.as_str()).collect();
+    for level in 0..3 {
+        let name = format!("{base}_LOD{level}");
+        assert_eq!(
+            names.iter().filter(|&&node| node == name).count(),
+            1,
+            "{name} is written once: {names:?}"
+        );
+    }
+
+    let per_level = dir.join("per_level.fbx");
+    let report = export_fbx(
+        &result.lods,
+        &model,
+        Some(&extras),
+        &per_level,
+        &ExportOptions {
+            packaging: LodPackaging::FilePerLod,
+            ..ExportOptions::default()
+        },
+    )
+    .expect("the per-level files are written");
+    for (level, file) in report.files.iter().enumerate() {
+        assert_eq!(
+            mesh_names(&reimport(file)),
+            [format!("{base}_LOD{level}")],
+            "{} holds its own level, named for it",
+            file.display()
+        );
+    }
+}
+
 #[test]
 fn one_file_per_lod_writes_a_numbered_file_for_each_level() {
     let Some(model) = fixture("monkey.fbx") else {

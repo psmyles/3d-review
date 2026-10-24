@@ -46,6 +46,9 @@ pub(crate) fn placed_or_place(
     if let Some(&existing) = placed.get(&node) {
         return Some(existing);
     }
+    if scene.replaced(node) {
+        return None;
+    }
     match extras {
         Some(extras) => emit_authored_node(scene, placed, source, extras, node, 0),
         None => {

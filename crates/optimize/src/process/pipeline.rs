@@ -5,6 +5,7 @@
 //! crate with no shared vertices at all and every meshoptimizer operation is a
 //! no-op on it. Skipping it is never useful.
 
+use review_model::naming::{self, LodRole};
 use review_model::{ModelData, SourceExtras};
 
 use crate::Warnings;
@@ -72,6 +73,40 @@ pub(crate) fn index_mesh(
             });
         }
     }
+}
+
+/// Remove every piece of an authored LOD level the generated chain stands in
+/// for, returning how many objects went.
+///
+/// A file carrying `Wall_LOD0` … `Wall_LOD2` already *is* a chain, and running
+/// Generate LODs over all of it would simplify the hand-made `Wall_LOD1` into
+/// levels of its own and export it beside the generated `Wall_LOD1`. So the
+/// chain is generated from its most detailed level alone and the rest are
+/// replaced ([`naming::lod_roles`] says which is which) — excluded or not,
+/// since an excluded copy would collide with the generated level just the same.
+/// Objects outside any chain are untouched.
+///
+/// `tagged` is whether the pieces carry real node tags; without them every
+/// piece claims node 0 and nothing can be told apart.
+pub(crate) fn drop_authored_lods(
+    submeshes: &mut Vec<Submesh>,
+    model: &ModelData,
+    tagged: bool,
+) -> usize {
+    if !tagged {
+        return 0;
+    }
+    let roles = naming::lod_roles(model);
+    let replaced = |node: u32| matches!(roles.get(node as usize), Some(LodRole::Replaced));
+    let mut dropped: Vec<u32> = submeshes
+        .iter()
+        .map(|piece| piece.node)
+        .filter(|&node| replaced(node))
+        .collect();
+    dropped.sort_unstable();
+    dropped.dedup();
+    submeshes.retain(|piece| !replaced(piece.node));
+    dropped.len()
 }
 
 /// One level under construction.

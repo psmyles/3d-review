@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 
 use review_model::extras::Prop;
+use review_model::naming::LodRole;
 
 use super::*;
 
@@ -190,6 +191,13 @@ pub(crate) struct SceneData {
     pub(crate) selection_sets: Vec<SelectionSetData>,
     /// Source node → the suffixed per-level copies made of it.
     pub(crate) level_copies: HashMap<usize, Vec<i32>>,
+    /// (source node, level) → that level's copy of it, so the nodes a level
+    /// copies are copied once and shared by every mesh of the level.
+    pub(crate) level_nodes: HashMap<(usize, usize), i32>,
+    /// Each source node's place in the file's own LOD chain, when this export
+    /// writes a generated chain (`naming::lod_roles`); empty otherwise, which
+    /// reads as every node [`LodRole::Plain`].
+    pub(crate) lod_roles: Vec<LodRole>,
 }
 
 impl SceneData {
@@ -221,6 +229,26 @@ impl SceneData {
             display_layers: Vec::new(),
             selection_sets: Vec::new(),
             level_copies: HashMap::new(),
+            level_nodes: HashMap::new(),
+            lod_roles: Vec::new(),
+        }
+    }
+
+    /// Whether `node` belongs to an authored LOD level the generated chain
+    /// replaces. Such a node is not written: the generated level of the same
+    /// name stands in its place.
+    pub(crate) fn replaced(&self, node: usize) -> bool {
+        matches!(self.lod_roles.get(node), Some(LodRole::Replaced))
+    }
+
+    /// The node that names the level `leaf`'s mesh belongs to, and whether that
+    /// name already carries a `_LOD<n>` suffix to renumber: the suffixed node of
+    /// an authored chain's source level (`leaf` itself or a group above it), or
+    /// `leaf` with nothing to renumber.
+    pub(crate) fn level_root(&self, leaf: usize) -> (usize, bool) {
+        match self.lod_roles.get(leaf) {
+            Some(LodRole::Source { root }) => (*root, true),
+            _ => (leaf, false),
         }
     }
 

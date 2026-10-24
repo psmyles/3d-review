@@ -127,10 +127,13 @@ pub fn export_fbx(
     // which truncates the user's previous export before writing a byte, and a
     // chain whose third level failed would already have replaced the first two.
     let mut staged: Vec<Staged> = Vec::with_capacity(lods.len());
+    // A generated chain replaces the file's own lower LOD levels, as the run
+    // that made it did (`process::drop_authored_lods`) — in every file of it.
+    let generated = lods.len() > 1;
     let paths = planned_files(lods.iter().map(|lod| lod.level), path, options);
     match options.packaging {
         LodPackaging::SingleFileSuffixed => {
-            let scene = build_scene(lods, source, extras, options, &mut report)?;
+            let scene = build_scene(lods, generated, source, extras, options, &mut report)?;
             staged.push(Staged::write(&paths[0], |staging| {
                 write_scene(&scene, staging, options.format)
             })?);
@@ -143,6 +146,7 @@ pub fn export_fbx(
                 // on a suffixed copy beside it (`place_level_node`).
                 let scene = build_scene(
                     std::slice::from_ref(lod),
+                    generated,
                     source,
                     extras,
                     options,
@@ -505,8 +509,8 @@ mod tests {
 
         assert_eq!(
             placed_names(&scene),
-            ["SM_Crate", "SM_Crate_LOD0_LOD0", "SM_Crate_LOD0_LOD1"],
-            "only the leaf is suffixed; the ancestors are shared"
+            ["SM_Crate", "SM_Crate_LOD0", "SM_Crate_LOD1"],
+            "only the leaf is suffixed, its own suffix renumbered; the ancestors are shared"
         );
         assert_eq!(scene.nodes[1].parent, 0);
         assert_eq!(scene.nodes[2].parent, 0, "the level-1 leaf is a sibling");
@@ -607,6 +611,18 @@ mod tests {
         assert_eq!(scene.nodes[3].attribute_kind, ATTRIB_LIGHT);
         assert!(scene.nodes.iter().all(|node| node.authored_transform));
 
+        // A generated chain: the file's own `SM_Crate_LOD1` is what the chain
+        // replaces, so it is not written and the generated level takes its name.
+        let mut scene = empty_scene();
+        scene.lod_roles = review_model::naming::lod_roles(&source);
+        let mut placed = HashMap::new();
+        place_graph(&mut scene, &mut placed, &source, &extras);
+        assert_eq!(
+            placed_names(&scene),
+            ["SM_Crate", "SM_Crate_LOD0", "Key"],
+            "the authored LOD1 is replaced"
+        );
+
         let group = NodeGroup {
             source_node: Some(2),
             triangles: Vec::new(),
@@ -617,21 +633,81 @@ mod tests {
         );
         assert_eq!(
             scene.nodes[1].name.to_str().unwrap(),
-            "SM_Crate_LOD0_LOD0",
-            "level 0 of a chain is the source node, suffixed like the rest"
+            "SM_Crate_LOD0",
+            "level 0 of a chain is the source node, its own suffix kept, not doubled"
         );
         let copy = place_level_node(&mut scene, &placed, &source, &extras, &group, 1, true);
-        assert_eq!(copy, 4);
-        assert_eq!(scene.nodes[4].parent, 0, "the level copy is a sibling");
-        assert_eq!(scene.nodes[4].name.to_str().unwrap(), "SM_Crate_LOD0_LOD1");
+        assert_eq!(copy, 3);
+        assert_eq!(scene.nodes[3].parent, 0, "the level copy is a sibling");
+        assert_eq!(scene.nodes[3].name.to_str().unwrap(), "SM_Crate_LOD1");
+        assert_eq!(
+            place_level_node(&mut scene, &placed, &source, &extras, &group, 1, true),
+            3,
+            "one copy per level"
+        );
 
         // A file holding one level (one file per LOD) puts any level on the
-        // source node itself: a copy beside it would leave that node empty.
+        // source node itself: a copy beside it would leave that node empty. Its
+        // authored suffix says which level it is, so it says the right one.
         let nodes_before = scene.nodes.len();
         assert_eq!(
             place_level_node(&mut scene, &placed, &source, &extras, &group, 2, false),
             1
         );
         assert_eq!(scene.nodes.len(), nodes_before, "no copy for a lone level");
+        assert_eq!(scene.nodes[1].name.to_str().unwrap(), "SM_Crate_LOD2");
+    }
+
+    /// A chain whose levels are groups (`Wall_LOD0` holding `Body` and `Trim`)
+    /// carries each generated level on a copy of the group, not on suffixed
+    /// meshes beside the source ones; the meshes below keep their names.
+    #[test]
+    fn a_group_level_is_copied_with_the_meshes_below_it() {
+        let node =
+            |name: &str, parent: Option<usize>, mesh: Option<usize>| review_model::SceneNode {
+                name: name.to_owned(),
+                parent,
+                mesh_part: mesh,
+                ..Default::default()
+            };
+        let source = ModelData {
+            name: "Wall".to_owned(),
+            nodes: vec![
+                node("", None, None),
+                node("Wall_LOD0", Some(0), None),
+                node("Body", Some(1), Some(0)),
+                node("Trim", Some(1), Some(1)),
+                node("Wall_LOD1", Some(0), None),
+                node("Body", Some(4), Some(2)),
+            ],
+            ..ModelData::default()
+        };
+        let mut scene = empty_scene();
+        scene.lod_roles = review_model::naming::lod_roles(&source);
+        let mut placed = HashMap::new();
+        for level in 0..2 {
+            for leaf in [2, 3] {
+                let group = NodeGroup {
+                    source_node: Some(leaf),
+                    triangles: Vec::new(),
+                };
+                place_node(
+                    &mut scene,
+                    &mut placed,
+                    &source,
+                    &group,
+                    HierarchyMode::Rebuild,
+                    level,
+                    true,
+                );
+            }
+        }
+
+        assert_eq!(
+            placed_names(&scene),
+            ["Wall_LOD0", "Body", "Trim", "Wall_LOD1", "Body", "Trim"]
+        );
+        let parents: Vec<i32> = scene.nodes.iter().map(|node| node.parent).collect();
+        assert_eq!(parents, [NO_PARENT, 0, 0, NO_PARENT, 3, 3]);
     }
 }

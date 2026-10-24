@@ -3,6 +3,9 @@
 //! ## Shape of a run
 //!
 //! 1. Split the model into per-(node, material) submeshes ([`crate::submesh`]).
+//!    When the LOD operation will fan out and the file already carries a
+//!    `_LOD<n>` chain, drop the chain's less detailed levels: the chain is
+//!    generated from its `_LOD0` and replaces them ([`drop_authored_lods`]).
 //! 2. Apply every enabled operation *above* the LOD operation, once.
 //! 3. Fan out: level 0 is the mesh as it now stands; each configured LOD level
 //!    re-simplifies **from that same level-0 mesh**, not from the level above.
@@ -208,6 +211,36 @@ pub fn process_progressive(
         return Err(OptError::EmptyMesh);
     }
 
+    // Operations split around the LOD operation: those above it shape the mesh
+    // every level starts from, those below it tidy up each generated level.
+    let lod_position = input
+        .stack
+        .ops
+        .iter()
+        .position(|op| op.enabled && matches!(op.kind, OpKind::SimplifyLod(_)));
+    let (pre_ops, lod_op, post_ops) = match lod_position {
+        Some(position) => (
+            &input.stack.ops[..position],
+            match &input.stack.ops[position].kind {
+                OpKind::SimplifyLod(params) => Some(params),
+                _ => None,
+            },
+            &input.stack.ops[position + 1..],
+        ),
+        None => (&input.stack.ops[..], None, &input.stack.ops[0..0]),
+    };
+
+    // A file that already carries a LOD chain is generated from its most
+    // detailed level; the authored lower levels are what the chain replaces. Done
+    // before the baseline is measured, so every level's change is quoted against
+    // the mesh it was actually generated from.
+    if lod_op.is_some_and(|params| !params.levels.is_empty()) {
+        let objects = drop_authored_lods(&mut submeshes, input.model, tags.node);
+        if objects > 0 {
+            warnings.push(OptWarning::AuthoredLodsReplaced { objects });
+        }
+    }
+
     index_mesh(
         &mut submeshes,
         input.extras.filter(|_| tags.node),
@@ -245,25 +278,6 @@ pub fn process_progressive(
             elapsed: started.elapsed(),
         });
     }
-
-    // Operations split around the LOD operation: those above it shape the mesh
-    // every level starts from, those below it tidy up each generated level.
-    let lod_position = input
-        .stack
-        .ops
-        .iter()
-        .position(|op| op.enabled && matches!(op.kind, OpKind::SimplifyLod(_)));
-    let (pre_ops, lod_op, post_ops) = match lod_position {
-        Some(position) => (
-            &input.stack.ops[..position],
-            match &input.stack.ops[position].kind {
-                OpKind::SimplifyLod(params) => Some(params),
-                _ => None,
-            },
-            &input.stack.ops[position + 1..],
-        ),
-        None => (&input.stack.ops[..], None, &input.stack.ops[0..0]),
-    };
 
     // A Reduce among the pre-operations simplifies the mesh every level then
     // starts from, so its error is part of level 0's — and of every level below
@@ -1278,6 +1292,72 @@ mod tests {
                 .collect()
         };
         assert_eq!(triangles_of(level, 1), triangles_of(&model, 1));
+    }
+
+    /// `Wall_LOD0`, `Wall_LOD1` and a `Prop` outside any chain.
+    fn authored_chain() -> ModelData {
+        let mut model = corner_split_grids(3, 4);
+        for (node, name) in model
+            .nodes
+            .iter_mut()
+            .zip(["Wall_LOD0", "Wall_LOD1", "Prop"])
+        {
+            node.name = name.to_owned();
+        }
+        model
+    }
+
+    fn nodes_of(model: &ModelData) -> Vec<u32> {
+        let mut nodes = model.triangles.node.clone();
+        nodes.sort_unstable();
+        nodes.dedup();
+        nodes
+    }
+
+    /// A file that already carries a chain is generated from its `_LOD0`: the
+    /// authored `Wall_LOD1` is in no level (the generated one replaces it), the
+    /// object outside the chain is processed as ever, and the user is told.
+    #[test]
+    fn a_chain_is_generated_from_lod0_and_replaces_the_authored_levels() {
+        let model = authored_chain();
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::SimplifyLod(LodParams::default()));
+
+        let result = run_model(&model, &stack);
+        assert_eq!(result.lods.len(), 4);
+        for lod in &result.lods {
+            assert_eq!(nodes_of(&lod.model), [0, 2], "LOD {}", lod.level);
+        }
+        assert_eq!(
+            result.source.vertices,
+            2 * 5 * 5,
+            "the baseline is what the chain is generated from"
+        );
+        assert!(
+            result
+                .warnings
+                .contains(&OptWarning::AuthoredLodsReplaced { objects: 1 }),
+            "{:?}",
+            result.warnings
+        );
+    }
+
+    /// Only Generate LODs replaces an authored chain: any other stack keeps
+    /// every object, since nothing would stand in for the ones it dropped.
+    #[test]
+    fn an_authored_chain_is_kept_without_a_lod_operation() {
+        let model = authored_chain();
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::VertexCache);
+
+        let result = run_model(&model, &stack);
+        assert_eq!(nodes_of(&result.lods[0].model), [0, 1, 2]);
+        assert!(
+            !result
+                .warnings
+                .iter()
+                .any(|warning| matches!(warning, OptWarning::AuthoredLodsReplaced { .. }))
+        );
     }
 
     #[test]
