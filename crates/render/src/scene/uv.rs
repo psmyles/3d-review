@@ -211,9 +211,10 @@ impl SceneGpu {
             enabled: false,
             ..TonemapSettings::default()
         };
-        let mut post = post_uniforms(ViewportBackground::Black, false, tonemap, false);
+        let mut post = post_uniforms(ViewportBackground::Black, false, false, tonemap, false);
         let [r, g, b] = uv.background.clear_color();
-        post.bg_top = [r, g, b, 0.0];
+        // `w` is the background's opacity (see `post_uniforms`).
+        post.bg_top = [r, g, b, 1.0];
         post.bg_bottom = [r, g, b, 0.0];
         self.queue_composite(frame, &post, targets, None, dest);
     }

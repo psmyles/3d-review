@@ -40,7 +40,9 @@ mod tex;
 mod texture;
 
 use camera::CameraTransition;
-pub use camera::{DEFAULT_FOV_Y_DEGREES, FramingArea, OrbitCamera, UvCamera, ease_in_out_cubic};
+pub use camera::{
+    DEFAULT_FOV_Y_DEGREES, FramingArea, OrbitCamera, UvCamera, ease_in_out_cubic, gesture,
+};
 pub use config::*;
 pub use egui_sokol::EguiRenderer;
 pub use geometry::{BONE_PICK_TOLERANCE_POINTS, pick_bone_shape, posed_joint_positions};
@@ -56,6 +58,10 @@ use scene::SceneGpu;
 pub use selection::{Selection, SelectionView, selection_bounds};
 use tex::TexGpu;
 pub use tex::{TexBackground, TexImage};
+pub use texture::imported::{
+    self as imported_textures, ImportedBinding, ImportedTexture, ImportedTextures, LoadedTextures,
+    TextureSource, TextureUse,
+};
 pub use texture::{ChannelSelect, DecodedImage, TextureSlot, decode_image, suggested_channel};
 
 /// Size in bytes of one *engine-equivalent* vertex: position, normal, UV,
@@ -255,6 +261,11 @@ pub struct SceneFrame<'a> {
     /// pick target instead of the mesh. Mutually exclusive with `hover`.
     pub hover_bone: Option<u32>,
     pub background: ViewportBackground,
+    /// Leave the background out: the frame's alpha is the scene's coverage and
+    /// its color the surface's own (straight alpha), for an image composited
+    /// over something else — a file thumbnail. `false` everywhere in the viewer,
+    /// whose swapchain shows no alpha.
+    pub transparent_background: bool,
     /// The pose to deform the model with — the rest pose or a clip's frame, as a
     /// ready palette + blend-shape weights built by `review_model::anim`. `None`
     /// draws the raw bind-pose buffers (a static model, or a workspace that

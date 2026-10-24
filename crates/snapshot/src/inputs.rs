@@ -7,6 +7,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use review_model::{Bounds, ModelData, naming::node_lod};
 use review_optimize::{LodLevel, LodParams, OpKind, OptStack, ProcessInput};
+use review_render::{LoadedTextures, imported_textures};
 
 use crate::cli::{InputSpec, LevelSpec, StackSpec};
 
@@ -16,6 +17,10 @@ pub struct Subject {
     pub model: Arc<ModelData>,
     /// Sorted node indices, exactly what the viewer's Outliner eye toggles.
     pub hidden: Vec<u32>,
+    /// The textures the file's materials name, decoded, as the viewer binds
+    /// them on load. Shared by every subject of one file: a processed level
+    /// keeps the source's material table.
+    pub textures: Arc<LoadedTextures>,
 }
 
 impl Subject {
@@ -66,9 +71,15 @@ pub fn load(spec: &InputSpec) -> Result<Vec<Subject>> {
             None
         }
     };
+    let textures = Arc::new(load_textures(&file, &model, extras.as_ref(), spec));
 
     let Some(stack_spec) = &spec.stack else {
-        return Ok(split_by_lod_suffix(&file, Arc::new(model), spec.level));
+        return Ok(split_by_lod_suffix(
+            &file,
+            Arc::new(model),
+            spec.level,
+            &textures,
+        ));
     };
 
     let stack = match stack_spec {
@@ -129,6 +140,7 @@ pub fn load(spec: &InputSpec) -> Result<Vec<Subject>> {
             label: format!("{file} @{stack_name} LOD{}", lod.level),
             model: Arc::new(lod.model),
             hidden: Vec::new(),
+            textures: Arc::clone(&textures),
         })
         .collect();
     if subjects.is_empty() {
@@ -137,9 +149,50 @@ pub fn load(spec: &InputSpec) -> Result<Vec<Subject>> {
     Ok(subjects)
 }
 
+/// The textures `model`'s materials name, found and decoded as the viewer
+/// does on load, with a line for each one that could not be.
+fn load_textures(
+    file: &str,
+    model: &ModelData,
+    extras: Option<&review_model::SourceExtras>,
+    spec: &InputSpec,
+) -> LoadedTextures {
+    let Some(extras) = extras else {
+        return LoadedTextures::default();
+    };
+    let loaded = imported_textures::load(&model.materials, extras, Some(&spec.path), None);
+    let found = loaded.images.iter().filter(|image| image.is_ok()).count();
+    if !loaded.planned.is_empty() {
+        println!("{file}: {found} texture(s) bound");
+    }
+    for texture in &loaded.planned.textures {
+        let origin = if texture.source.is_embedded() {
+            "embedded"
+        } else {
+            "file"
+        };
+        println!("  {origin}: {}", texture.key.display());
+    }
+    for name in &loaded.planned.missing {
+        println!("  warning: {file}: texture not found: {name}");
+    }
+    for (texture, error) in loaded.failures() {
+        println!(
+            "  warning: {file}: texture {} did not decode: {error}",
+            texture.key.display()
+        );
+    }
+    loaded
+}
+
 /// A file's subjects by its `_LOD<n>` node suffixes: the selected level, every
 /// level, or — with no selector — the whole file at once.
-fn split_by_lod_suffix(file: &str, model: Arc<ModelData>, level: LevelSpec) -> Vec<Subject> {
+fn split_by_lod_suffix(
+    file: &str,
+    model: Arc<ModelData>,
+    level: LevelSpec,
+    textures: &Arc<LoadedTextures>,
+) -> Vec<Subject> {
     let mesh_nodes: Vec<u32> = model
         .nodes
         .iter()
@@ -159,6 +212,7 @@ fn split_by_lod_suffix(file: &str, model: Arc<ModelData>, level: LevelSpec) -> V
             .copied()
             .filter(|&node| node_lod(&model, node) != Some(lod))
             .collect(),
+        textures: Arc::clone(textures),
     };
     match level {
         LevelSpec::One(lod) => vec![only(lod)],
@@ -167,6 +221,7 @@ fn split_by_lod_suffix(file: &str, model: Arc<ModelData>, level: LevelSpec) -> V
             label: file.to_owned(),
             model,
             hidden: Vec::new(),
+            textures: Arc::clone(textures),
         }],
     }
 }

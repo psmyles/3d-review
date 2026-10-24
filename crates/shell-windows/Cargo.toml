@@ -1,0 +1,51 @@
+[package]
+name = "review-shell-windows"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Explorer's thumbnails and preview pane for FBX files, drawn by the viewer's own renderer"
+publish = false
+
+# A COM in-process server: the one DLL Explorer loads for an `.fbx` thumbnail
+# (into its COM Surrogate) and for the preview pane (into our own `prevhost.exe`).
+# Installed as `3d-review-shell.dll` (`product.json`'s `shellExtension`).
+#
+# Build it with the `release-shell` profile, not `release`: the workspace's
+# release profile aborts on panic, and an abort here takes down a process
+# Explorer owns. See that profile in the workspace manifest.
+[lib]
+name = "review_shell"
+crate-type = ["cdylib"]
+
+[target.'cfg(windows)'.dependencies]
+glam.workspace = true
+log.workspace = true
+review-localization.workspace = true
+review-log.workspace = true
+review-preview = { path = "../preview" }
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_WindowsAndMessaging",
+] }
+# What `#[implement]` expands to (see the workspace manifest).
+windows-core.workspace = true
+
+[build-dependencies]
+review-localization-build.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
+winresource.workspace = true
+
+[lints]
+workspace = true

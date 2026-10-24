@@ -14,6 +14,9 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::window::Window;
 
 use review_render::FramingArea;
+use review_render::gesture::{
+    DRAG_ZOOM_SENSITIVITY, PINCH_ZOOM_STEP, WHEEL_LINE_ZOOM_STEP, WHEEL_PIXELS_PER_ZOOM_STEP,
+};
 use review_ui::theme::size;
 use review_ui::{OptLayout, WorkspaceMode};
 
@@ -482,21 +485,6 @@ impl App {
 /// click rather than a drag. Generous enough to absorb the shake of clicking a
 /// mouse, tight enough that a deliberate orbit never selects anything.
 pub(crate) const CLICK_MAX_DISTANCE_PX: f32 = 4.0;
-
-/// Camera zoom per pixel of a right-button zoom-drag (pointer-down zooms in).
-pub(crate) const DRAG_ZOOM_SENSITIVITY: f32 = 0.01;
-
-/// Camera zoom per wheel notch for line-based scroll deltas (mice).
-pub(crate) const WHEEL_LINE_ZOOM_STEP: f32 = 0.5;
-
-/// Pixel-precise scroll (trackpads) divided by this to match one wheel notch.
-pub(crate) const WHEEL_PIXELS_PER_ZOOM_STEP: f32 = 120.0;
-
-/// Camera zoom per unit of trackpad pinch scale (`docs/ARCHITECTURE.md`, Platform
-/// decisions D16). A pinch delta is a scale *fraction* — a comfortable two-finger
-/// spread accumulates to roughly 1.0 over its length — so this is the zoom that
-/// whole gesture is worth, not a per-notch step like the wheel's.
-pub(crate) const PINCH_ZOOM_STEP: f32 = 4.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DragMode {

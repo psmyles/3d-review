@@ -554,6 +554,35 @@ fn a_staged_import_is_drawable_but_unmeasured() {
     assert!(complete.stats.gpu_vertex_count > 0);
 }
 
+/// A file read from memory (what a shell thumbnail handler is given) goes
+/// through the same walk as one read from disk, so the two imports are the
+/// same model and the same capture — down to each material's texture maps,
+/// which is what the thumbnail binds its textures by.
+#[test]
+fn an_import_from_memory_is_the_import_from_the_file() {
+    let path = fixture("SM_Wall_Break_4x3m.fbx");
+    if !path.exists() {
+        skipping(format!("{} is not present", path.display()));
+        return;
+    }
+    let bytes = std::fs::read(&path).expect("read the fixture");
+    let (from_file, file_extras) = review_import::load_model_full(&path).expect("imports");
+    let (from_bytes, byte_extras) =
+        review_import::load_model_full_from_bytes(&bytes, &path).expect("imports from memory");
+    assert_eq!(from_bytes, from_file);
+    assert_eq!(byte_extras, file_extras);
+
+    // Named by the name it is given: no path, no directory, the same model.
+    let (named, _) =
+        review_import::load_model_full_from_bytes(&bytes, std::path::Path::new("wall.fbx"))
+            .expect("imports from memory");
+    assert_eq!(named.name, "wall");
+    assert_eq!(named.vertices, from_file.vertices);
+
+    let garbage = review_import::load_model_full_from_bytes(b"not an fbx", &path);
+    assert!(matches!(garbage, Err(ImportError::LoadFailed(_))));
+}
+
 /// Every fixture's source-property capture must describe the model it came
 /// with: `load_model_full` runs the funnel guard, so an index that drifted
 /// from the geometry fails here rather than in an export.

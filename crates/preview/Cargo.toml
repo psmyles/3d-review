@@ -1,0 +1,23 @@
+[package]
+name = "review-preview"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "What a file browser shows of a model: a thumbnail and an interactive preview, drawn by the viewer's own renderer on a windowless GPU"
+publish = false
+
+# The safe, host-agnostic core of the shell extensions (`shell-windows`, and the
+# macOS Quick Look extension after it): load a model from a path or from bytes,
+# draw it offscreen through the real `Renderer`, move its camera from pointer
+# input. No window, no event loop, no platform types — each shell owns those.
+[dependencies]
+glam.workspace = true
+log.workspace = true
+review-import = { path = "../import" }
+review-model = { path = "../model" }
+review-render = { path = "../render", features = ["headless"] }
+thiserror.workspace = true
+
+[lints]
+workspace = true

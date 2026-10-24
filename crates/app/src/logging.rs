@@ -15,19 +15,11 @@ use winit::event_loop::EventLoopProxy;
 use crate::events::UserEvent;
 use crate::{APP_NAME, App};
 
-/// Where the day's log is kept. Logs describe this machine rather than the
-/// user, so they stay out of the roaming profile the settings live in:
-///
-/// - Windows: `%LOCALAPPDATA%\3D Review\logs`
-/// - macOS: `~/Library/Logs/3D Review`, where Console.app looks for them
-///
-/// `cfg!` rather than `#[cfg]`, so both arms are compiled on both platforms.
+/// Where the day's log is kept (`review_log::standard_dir`): the same folder the
+/// shell extensions write to, so one file holds the day's thumbnail and preview
+/// lines too.
 fn logs_dir() -> Option<PathBuf> {
-    if cfg!(target_os = "macos") {
-        dirs::home_dir().map(|home| home.join("Library").join("Logs").join(APP_NAME))
-    } else {
-        dirs::data_local_dir().map(|local| local.join(APP_NAME).join("logs"))
-    }
+    review_log::standard_dir(APP_NAME)
 }
 
 /// Open today's file (removing any earlier day's), wake the event loop through

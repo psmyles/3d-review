@@ -27,6 +27,8 @@ pub struct Capture {
     /// covers its scene: framed around, then dimmed.
     chrome: [u32; 4],
     background: ViewportBackground,
+    /// Leave the background out, so the alpha is the scene's coverage.
+    transparent: bool,
     grid: bool,
     skeleton: bool,
     curve_style: TrajectoryStyle,
@@ -42,6 +44,7 @@ impl Capture {
         size: (u32, u32),
         chrome: [u32; 4],
         background: ViewportBackground,
+        transparent: bool,
         grid: bool,
         skeleton: bool,
         curve_style: TrajectoryStyle,
@@ -55,6 +58,7 @@ impl Capture {
             size,
             chrome,
             background,
+            transparent,
             grid,
             skeleton,
             curve_style,
@@ -102,6 +106,7 @@ impl Capture {
                 let revision = self.next_revision;
                 self.next_revision += 1;
                 self.renderer.set_model_materials(&subject.model.materials);
+                self.renderer.bind_imported_textures(&subject.textures);
                 self.current = Some((model_key, revision));
                 revision
             }
@@ -153,6 +158,8 @@ impl Capture {
             } else {
                 self.background
             },
+            // Never for the normals look: `compare` needs its black background.
+            transparent_background: self.transparent && look != Look::Normals,
             // One pose per subject, and the palette lives with the subject's own
             // mesh, so a fixed revision is enough to upload it once.
             pose: posed.map(|posed| &posed.deform),

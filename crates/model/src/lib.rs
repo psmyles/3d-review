@@ -44,7 +44,8 @@ pub use geometry::{Bounds, TopologyFace, TriangleData, Vertex};
 pub use morph::{MorphChannel, MorphData, MorphKeyframe, MorphShape};
 pub use pick::PosedScene;
 pub use scene::{
-    Axis, BoneInfo, CoordinateAxes, LocalTransform, MaterialImportDefaults, NodeKind, SceneNode,
+    Axis, BoneInfo, CoordinateAxes, LocalTransform, MaterialImportDefaults, MaterialMap, NodeKind,
+    SceneNode,
 };
 pub use skin::{SkinCluster, SkinData, SkinDeformerInfo, SkinningMethod};
 pub use stats::{ENGINE_VERTEX_BYTES, MeshGroupStats, ModelStats, ScopeStats, StatsScope};

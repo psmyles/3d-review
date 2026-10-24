@@ -9,6 +9,9 @@ rust-version.workspace = true
 # The local wall clock: a log line is read against the clock on the wall, and the
 # day's file is named and pruned by the local date. `std` has no time zone.
 chrono.workspace = true
+# Where the day's file goes (`standard_dir`): the per-machine data folder on
+# Windows, `~/Library/Logs` on macOS.
+dirs.workspace = true
 # The standard facade every crate in the graph already logs through (winit, egui,
 # notify...), so installing one logger captures their warnings too, and our own
 # crates need only `log` itself to write a line.

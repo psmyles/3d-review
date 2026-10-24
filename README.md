@@ -32,7 +32,8 @@ in the app, which opens the same pages right next to your model.
 | **[Debug overlays](docs/book/src/en/overlays.md)**                   | Face and vertex normals, a bounding box with its size on the edges, texture seams, the pivot and the skeleton. Every one of them moves with an animated model.                                                                               |
 | **[Rendering quality](docs/book/src/en/rendering-quality.md)**       | Lighting from real photographed environments, soft shadows in corners that clean themselves up while the view is still, five tone-mapping recipes, and edge smoothing.                                                                       |
 | **[Outliner and Inspector](docs/book/src/en/outliner-inspector.md)** | The list of parts, materials and animations on the left; facts about the selection and a live material editor on the right.                                                                                                                  |
-| **[Materials and textures](docs/book/src/en/materials.md)**          | Seven material slots with per-channel routing, a shared texture pool, and PNG, JPEG, TGA, TIFF, PSD, BMP, GIF, HDR and PNM read directly. A texture reloads by itself when you save it.                                                      |
+| **[Materials and textures](docs/book/src/en/materials.md)**          | Seven material slots with per-channel routing, a shared texture pool, and PNG, JPEG, TGA, TIFF, PSD, BMP, GIF, HDR and PNM read directly. The textures a file names are found and loaded with it, and reload by themselves when you save them. |
+| **[File Explorer](docs/book/src/en/explorer.md)**                    | On Windows, `.fbx` thumbnails in File Explorer, and a live, textured preview in its preview pane that you can orbit and zoom - drawn by the viewer's own renderer.                                                                           |
 | **[Skinning and animation](docs/book/src/en/animation.md)**          | Bone-driven bending done on the GPU, whole-part animation and blend shapes, every animation in the file as a clip, with playback controls.                                                                                                   |
 | **[Model statistics](docs/book/src/en/stats.md)**                    | Only real measured numbers: the artist's own point count next to what a game really has to store, and the gap between them.                                                                                                                  |
 | **[Opt](docs/book/src/en/opt/index.md)**                             | A list of [meshoptimizer](https://meshoptimizer.org/) operations you can reorder, a soft-shadow bake, per-part exclusions, a side-by-side or ghosted comparison, and an FBX export that keeps everything you did not change.                 |
@@ -154,7 +155,11 @@ for you.
 `cargo run --release -p review-render --features bake --bin bake_ibl` rebuilds
 the lighting maps. It needs a real GPU.
 
-- `packaging/build-windows-installer.ps1` builds the Windows installer.
+- `packaging/build-windows-installer.ps1` builds the Windows installer, File
+  Explorer extension included.
+- `scripts/register-shell.ps1` registers a development build of the File
+  Explorer extension for the current user (`-Unregister` removes it). Build it
+  first with `cargo build --profile release-shell -p review-shell-windows`.
 - `scripts/build-mac.sh` builds, signs, notarizes and packages the macOS
   `.dmg`. It is run by hand on the development Mac, so the signing certificate
   never leaves that machine.
@@ -171,7 +176,7 @@ instead of showing partial data, so download that version of the server.
 
 ## Architecture
 
-The code is split into eleven crates (Rust's word for a library or program),
+The code is split into thirteen crates (Rust's word for a library or program),
 and the lines between them matter.
 
 | Crate                | Role                                                                                                                                                                                                 |
@@ -186,6 +191,8 @@ and the lines between them matter.
 | `localization-build` | The build-time half: turns the English catalog into typed keys.                                                                                                                                      |
 | `psd`                | Photoshop PSD decoding over a bundled psd_sdk bridge, with a safe API.                                                                                                                               |
 | `shell-macos`        | The two macOS shell pieces: the Finder open hook and the menu bar. Does nothing on other platforms.                                                                                                  |
+| `preview`            | What a file browser shows of a model - a thumbnail and an interactive preview - drawn by the real renderer on a windowless GPU. Safe and platform-neutral, shared by the shell extensions.          |
+| `shell-windows`      | The File Explorer extension: a COM DLL providing `.fbx` thumbnails and the preview pane over `preview`.                                                                                              |
 | `prof`               | Guarded Tracy helpers shared by every instrumented crate.                                                                                                                                            |
 
 Data flows one way: input and dropped files reach `app`, which drives `import`

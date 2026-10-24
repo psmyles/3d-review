@@ -23,4 +23,4 @@ mod raw;
 mod raw_extras;
 mod raw_scene;
 
-pub(crate) use bridge::{ExtrasHandle, load_fbx};
+pub(crate) use bridge::{ExtrasHandle, FbxInput, load_fbx};

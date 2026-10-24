@@ -21,6 +21,80 @@ pub struct MaterialImportDefaults {
     /// Import default emissive color (linear RGB, `emission_color` scaled by
     /// `emission_factor`). Black when the source material declared none.
     pub emissive: Vec3,
+    /// The emission strength alone (`emissive` is the emission color times
+    /// this): what an emission *texture* is multiplied by, since a connected
+    /// texture replaces the color it is connected to. `1.0` when the source
+    /// material declared none.
+    pub emission_factor: f32,
+    /// Per [`MaterialMap`] (indexed by [`MaterialMap::index`]), the texture the
+    /// source material names for that map: an index into
+    /// [`SourceExtras::textures`](crate::SourceExtras::textures), which is where
+    /// its file names and embedded bytes are. `None` when the map has none.
+    pub maps: [Option<u32>; MaterialMap::COUNT],
+}
+
+impl MaterialImportDefaults {
+    /// The texture the source names for `map`, as an index into
+    /// [`SourceExtras::textures`](crate::SourceExtras::textures).
+    pub fn map(&self, map: MaterialMap) -> Option<u32> {
+        self.maps[map.index()]
+    }
+}
+
+/// A map a source material can name a texture for, as the importer resolves
+/// it across shading models (a Maya Standard Surface, a 3ds Max Physical
+/// material and a classic Phong all land in the same roles). Mirrors
+/// `review_import_material_map` in `ufbx_bridge.h`, in the same order.
+///
+/// These are the *source's* roles, which is why both `Normal` and `Bump`, and
+/// both `Roughness` and `Glossiness`, are here: which one a viewer binds, and
+/// how, is its decision rather than the file's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MaterialMap {
+    BaseColor,
+    Normal,
+    /// The legacy Bump slot, which game exports often fill with a tangent-space
+    /// normal map rather than a height map.
+    Bump,
+    Roughness,
+    /// Glossiness or smoothness: roughness inverted.
+    Glossiness,
+    Metalness,
+    AmbientOcclusion,
+    Emission,
+    Opacity,
+}
+
+impl MaterialMap {
+    pub const COUNT: usize = 9;
+
+    /// Every map, in the bridge's order.
+    pub const ALL: [MaterialMap; MaterialMap::COUNT] = [
+        MaterialMap::BaseColor,
+        MaterialMap::Normal,
+        MaterialMap::Bump,
+        MaterialMap::Roughness,
+        MaterialMap::Glossiness,
+        MaterialMap::Metalness,
+        MaterialMap::AmbientOcclusion,
+        MaterialMap::Emission,
+        MaterialMap::Opacity,
+    ];
+
+    /// The position in [`MaterialImportDefaults::maps`], and the bridge's code.
+    pub fn index(self) -> usize {
+        match self {
+            MaterialMap::BaseColor => 0,
+            MaterialMap::Normal => 1,
+            MaterialMap::Bump => 2,
+            MaterialMap::Roughness => 3,
+            MaterialMap::Glossiness => 4,
+            MaterialMap::Metalness => 5,
+            MaterialMap::AmbientOcclusion => 6,
+            MaterialMap::Emission => 7,
+            MaterialMap::Opacity => 8,
+        }
+    }
 }
 
 /// What a scene-graph node *is*, as classified by the importer from the source

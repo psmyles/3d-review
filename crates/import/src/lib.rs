@@ -305,10 +305,35 @@ pub fn load_model_with_progress(
     }
 }
 
+/// [`load_model_full`] over a file already in memory — what a shell extension
+/// is handed, which gets the file's bytes as a stream rather than its path.
+/// `name` is the file's own path when the caller knows it, or just its name:
+/// the model is named after it, and relative texture paths resolve against
+/// its directory. The bytes are always FBX; there is no extension to check.
+pub fn load_model_full_from_bytes(
+    bytes: &[u8],
+    name: &Path,
+) -> Result<(ModelData, Option<SourceExtras>), ImportError> {
+    #[cfg(has_ufbx)]
+    {
+        let StagedImport { mut model, extras } =
+            ffi::load_fbx(ffi::FbxInput::Bytes { bytes, name }, &|_| {}, true, None)?;
+        model.stats.gpu_vertex_count = model.count_gpu_vertices();
+        let extras = extras.marshal(&model)?;
+        Ok((model, extras))
+    }
+
+    #[cfg(not(has_ufbx))]
+    {
+        let _ = (bytes, name);
+        Err(ImportError::UfbxUnavailable)
+    }
+}
+
 pub fn load_fbx(_path: &Path, _progress: ProgressSink<'_>) -> Result<ModelData, ImportError> {
     #[cfg(has_ufbx)]
     {
-        ffi::load_fbx(_path, _progress, false, None).map(|staged| staged.model)
+        ffi::load_fbx(ffi::FbxInput::Path(_path), _progress, false, None).map(|staged| staged.model)
     }
 
     #[cfg(not(has_ufbx))]
@@ -324,7 +349,7 @@ fn load_fbx_staged(
 ) -> Result<StagedImport, ImportError> {
     #[cfg(has_ufbx)]
     {
-        ffi::load_fbx(_path, _progress, true, _cancel)
+        ffi::load_fbx(ffi::FbxInput::Path(_path), _progress, true, _cancel)
     }
 
     #[cfg(not(has_ufbx))]

@@ -68,6 +68,12 @@ $appExe = "$appFileStem.exe"
 $appProgId = $meta.fileAssociation.progId
 $appTypeName = $meta.fileAssociation.typeName
 $appUrl = $meta.homepage
+# The Explorer shell extension's identity (crates\shell-windows reads the same
+# fields in its build.rs). Inno takes the GUIDs without braces; see 3d-review.iss.
+$shellDll = $meta.shellExtension.dllName
+$thumbnailGuid = $meta.shellExtension.thumbnailClsid.Trim('{', '}')
+$previewGuid = $meta.shellExtension.previewClsid.Trim('{', '}')
+$previewAppGuid = $meta.shellExtension.previewAppId.Trim('{', '}')
 
 # --- 3. Sync the crate version to product.json ----------------------------------
 # product.json is the single source of the version, but nothing in a `cargo build`
@@ -157,6 +163,10 @@ if (-not $SkipBuild) {
         # workspaces for scripts, pipelines and Launcher.
         & cargo build --release -p review-cli
         if ($LASTEXITCODE -ne 0) { throw "cargo build of review-cli failed (exit $LASTEXITCODE)." }
+        # The Explorer thumbnail + preview extension, with its own profile: release,
+        # but unwinding on panic, since it runs inside processes Explorer owns.
+        & cargo build --profile release-shell -p review-shell-windows
+        if ($LASTEXITCODE -ne 0) { throw "cargo build of review-shell-windows failed (exit $LASTEXITCODE)." }
     }
     finally {
         Pop-Location
@@ -196,6 +206,10 @@ $cliPath = Join-Path $repoRoot 'target\release\review-cli.exe'
 if (-not (Test-Path $cliPath)) {
     throw "review-cli.exe not found at $cliPath. Run without -SkipBuild, or build first."
 }
+$shellPath = Join-Path $repoRoot 'target\release-shell\review_shell.dll'
+if (-not (Test-Path $shellPath)) {
+    throw "review_shell.dll not found at $shellPath. Run without -SkipBuild, or build first."
+}
 
 # ISCC (Inno Setup 6) reads packaging\3d-review.iss and takes the product metadata
 # above as /D defines.
@@ -224,6 +238,10 @@ Write-Host "==> Packaging installer for $appName $appVersion..." -ForegroundColo
     "/DMyAppProgId=$appProgId" `
     "/DMyAppTypeName=$appTypeName" `
     "/DMyAppUrl=$appUrl" `
+    "/DMyShellDll=$shellDll" `
+    "/DMyThumbnailGuid=$thumbnailGuid" `
+    "/DMyPreviewGuid=$previewGuid" `
+    "/DMyPreviewAppGuid=$previewAppGuid" `
     $issScript
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed (exit $LASTEXITCODE)." }
 

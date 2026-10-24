@@ -1,6 +1,6 @@
 {
   "productName": "3D Review",
-  "version": "0.7.4",
+  "version": "0.8.0",
   "author": "Chandan Singh",
   "publisher": "Chandan Singh",
   "description": "A 3D model viewer and auditor",
@@ -11,5 +11,11 @@
     "extension": ".fbx",
     "progId": "3DReview.fbx",
     "typeName": "FBX 3D Model"
+  },
+  "shellExtension": {
+    "dllName": "3d-review-shell.dll",
+    "thumbnailClsid": "{2B5CBA72-DC44-464E-AEFD-DEBD0A3F8066}",
+    "previewClsid": "{D0953A88-C253-4DD5-B547-AD9B2E5471CA}",
+    "previewAppId": "{9D74B0F7-5CA1-4539-B0A1-AE72A382E283}"
   }
 }

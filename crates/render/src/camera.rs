@@ -908,13 +908,34 @@ pub fn ease_in_out_cubic(t: f32) -> f32 {
     }
 }
 
+/// How far each pointer gesture moves a 3D camera. One definition for the viewer
+/// and for every shell that drives a camera of its own (Explorer's preview pane),
+/// so a gesture feels the same wherever it is made.
+pub mod gesture {
+    /// Camera zoom per pixel of a zoom-drag (pointer-down zooms in).
+    pub const DRAG_ZOOM_SENSITIVITY: f32 = 0.01;
+
+    /// Camera zoom per wheel notch for line-based scroll deltas (mice).
+    pub const WHEEL_LINE_ZOOM_STEP: f32 = 0.5;
+
+    /// Pixel-precise scroll (trackpads) divided by this to match one wheel notch.
+    pub const WHEEL_PIXELS_PER_ZOOM_STEP: f32 = 120.0;
+
+    /// Camera zoom per unit of trackpad pinch scale (`docs/ARCHITECTURE.md`,
+    /// Platform decisions D16). A pinch delta is a scale *fraction* — a
+    /// comfortable two-finger spread accumulates to roughly 1.0 over its length —
+    /// so this is the zoom that whole gesture is worth, not a per-notch step like
+    /// the wheel's.
+    pub const PINCH_ZOOM_STEP: f32 = 4.0;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// One mouse-wheel notch's worth of zoom, matching `app`'s
-    /// `WHEEL_LINE_ZOOM_STEP`, so the zoom-range tests exercise the real step.
-    const WHEEL_NOTCH: f32 = 0.5;
+    /// One mouse-wheel notch's worth of zoom, so the zoom-range tests exercise
+    /// the real step.
+    const WHEEL_NOTCH: f32 = gesture::WHEEL_LINE_ZOOM_STEP;
 
     fn ndc_z(projection: Mat4, view_z: f32) -> f32 {
         let clip = projection * Vec3::new(0.0, 0.0, view_z).extend(1.0);

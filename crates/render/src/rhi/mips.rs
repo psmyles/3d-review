@@ -61,6 +61,42 @@ pub(crate) fn levels_below_base(rgba: &[u8], width: u32, height: u32, srgb: bool
     chain
 }
 
+/// `rgba` halved, with the same filter as the chain, until neither axis exceeds
+/// `max_side` — the mip level a GPU would sample for an image drawn that small,
+/// which is what lets a caller that will never draw it larger skip uploading
+/// and mipping the levels above it. `None` when it already fits.
+#[allow(
+    dead_code,
+    reason = "the build script includes this file by path for the chain alone"
+)]
+pub(crate) fn halved_to_fit(
+    rgba: &[u8],
+    (width, height): (u32, u32),
+    max_side: u32,
+    srgb: bool,
+) -> Option<(Vec<u8>, u32, u32)> {
+    let max_side = max_side.max(1) as usize;
+    let (mut src_width, mut src_height) = (width.max(1) as usize, height.max(1) as usize);
+    if src_width.max(src_height) <= max_side {
+        return None;
+    }
+    let tables = srgb.then(Tables::new);
+    let mut level: Option<Vec<u8>> = None;
+    while src_width.max(src_height) > max_side {
+        let dst_width = (src_width / 2).max(1);
+        let dst_height = (src_height / 2).max(1);
+        let src = level.as_deref().unwrap_or(rgba);
+        level = Some(halve(
+            src,
+            (src_width, src_height),
+            (dst_width, dst_height),
+            tables.as_ref(),
+        ));
+        (src_width, src_height) = (dst_width, dst_height);
+    }
+    level.map(|level| (level, src_width as u32, src_height as u32))
+}
+
 /// One 2×2 box-filter step. `tables` present means the RGB channels are sRGB-encoded
 /// and are averaged in linear light.
 fn halve(
@@ -187,6 +223,18 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Halving to fit stops at the first level inside the bound and leaves an
+    /// image that already fits alone.
+    #[test]
+    fn halving_to_fit_stops_at_the_first_level_inside_the_bound() {
+        let base = vec![7u8; 1000 * 300 * 4];
+        let (pixels, width, height) =
+            halved_to_fit(&base, (1000, 300), 256, false).expect("1000 px is over the bound");
+        assert_eq!((width, height), (250, 75));
+        assert_eq!(pixels.len(), 250 * 75 * 4);
+        assert!(halved_to_fit(&base, (1000, 300), 1000, false).is_none());
     }
 
     /// Half black, half white, averaged in linear light: the result is the sRGB

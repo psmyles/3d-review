@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use review_shell_macos::CliInstallError;
 
 use crate::texture_manager::TextureDecode;
-use crate::{audit, dialog, loading, opt, update};
+use crate::{audit, dialog, imported_textures, loading, opt, update};
 
 /// Custom event posted from a background thread to the winit event loop, so work
 /// done off the main thread is applied back on it (the redraw loop + all renderer
@@ -60,6 +60,10 @@ pub(crate) enum UserEvent {
     /// (posted by the import thread right after the mesh). Carried for the
     /// exporter; nothing in the viewport reads it.
     SourceExtrasReady(Box<loading::SourceExtrasReady>),
+    /// The textures the model's own materials name have been found and decoded
+    /// (posted by the thread `imported_textures.rs` starts once the capture
+    /// that names them lands). Boxed: it carries every decoded image.
+    ImportedTexturesLoaded(Box<imported_textures::ImportedTexturesLoaded>),
     /// A native file dialog closed (posted by the thread that opened it —
     /// `docs/ARCHITECTURE.md`, Platform decisions D9). `None` when the user
     /// cancelled. Boxed because the export variant carries a whole LOD chain's

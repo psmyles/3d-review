@@ -361,6 +361,9 @@ impl App {
     /// lazily). Watching the directory — not the file — tolerates editors that save
     /// via an atomic rename. Each directory is watched at most once.
     pub(crate) fn watch_texture(&mut self, path: &Path) {
+        if self.textures.embedded.contains(path) {
+            return;
+        }
         let Some(dir) = path.parent().map(Path::to_path_buf) else {
             return;
         };
@@ -477,6 +480,7 @@ impl App {
         self.ui.texture_pool = Vec::new();
         self.ui.uv_texture = None;
         self.textures.watched_dirs.clear();
+        self.textures.embedded.clear();
         // Dropping the watcher unregisters every directory.
         self.textures.watcher = None;
     }
@@ -500,6 +504,9 @@ pub(crate) struct TextureSubsystem {
     /// Directories the watcher is registered on (the parents of pooled textures),
     /// so each directory is watched at most once.
     pub(crate) watched_dirs: HashSet<PathBuf>,
+    /// Pooled textures whose pixels the model file embeds (`imported_textures.rs`):
+    /// their key names no file, so they are never watched. Cleared with the pool.
+    pub(crate) embedded: HashSet<PathBuf>,
     /// Decoded-image cache keyed by source path, so a packed map assigned to
     /// several slots / materials decodes once. Cleared on model load / reset.
     pub(crate) cache: HashMap<PathBuf, Arc<DecodedImage>>,

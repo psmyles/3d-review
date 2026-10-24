@@ -21,6 +21,8 @@
 //! shares them by refcount, and the GPU upload is deduplicated by path (the material
 //! table's path-keyed cache).
 
+pub mod imported;
+
 use std::io::Cursor;
 use std::path::Path;
 
@@ -182,6 +184,24 @@ pub struct DecodedImage {
     pub source_channels: u8,
     /// Bits per channel of the source file (e.g. 8, 16), before the RGBA8 decode.
     pub source_bit_depth: u8,
+}
+
+impl DecodedImage {
+    /// This image halved until neither side exceeds `max_side` — the mip level a
+    /// GPU would sample for it drawn that small — averaging RGB in linear light
+    /// when it is `srgb` color, exactly as the mip chain does. Unchanged when it
+    /// already fits. The `source_*` fields still describe the file.
+    pub fn fitted_within(self, max_side: u32, srgb: bool) -> DecodedImage {
+        match crate::rhi::halved_to_fit(&self.rgba, (self.width, self.height), max_side, srgb) {
+            Some((rgba, width, height)) => DecodedImage {
+                width,
+                height,
+                rgba,
+                ..self
+            },
+            None => self,
+        }
+    }
 }
 
 /// Decode `path` into RGBA8 pixels. Reads the file once, then dispatches by magic

@@ -41,10 +41,12 @@ pub(crate) struct PostUniforms {
     /// [`ActiveMaterial::Buffers`] data-inspection view, whose scene shader emits
     /// final display pixels itself so the shown value is faithful.
     pub(crate) passthrough: u32,
-    /// Viewport background fill in display (sRGB) space (`xyz`; `w` padding for the
-    /// 16-byte std140 slot). The composite paints `lerp(bg_top, bg_bottom, v)` where
-    /// the scene coverage is below 1; a flat preset sets both equal, the gradient
-    /// distinct. Built from `ViewportBackground::gradient_srgb`.
+    /// Viewport background fill in display (sRGB) space (`xyz`). The composite
+    /// paints `lerp(bg_top, bg_bottom, v)` where the scene coverage is below 1; a
+    /// flat preset sets both equal, the gradient distinct. Built from
+    /// `ViewportBackground::gradient_srgb`. `bg_top.w` is the background's opacity
+    /// — 1 for the viewport, 0 for a transparent render — and `bg_bottom.w` is
+    /// padding for the 16-byte std140 slot.
     pub(crate) bg_top: [f32; 4],
     pub(crate) bg_bottom: [f32; 4],
 }

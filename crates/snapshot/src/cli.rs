@@ -35,7 +35,10 @@ OPTIONS
                         leave, as the viewer does, and dim them so the sheet shows it
   --background <name>   black, grey25, grey50, grey75, white, gradient (default grey25)
   --grid                draw the ground grid
-  --compare             measure each subject's shading normals against the first's,
+  --transparent         leave the background out: each view's alpha is the scene's
+                        coverage, as a file thumbnail is drawn (write it with
+                        --singles; the sheet itself is opaque)
+  --compare            measure each subject's shading normals against the first's,
                         and write a heat-map sheet of where they disagree
   --singles             also write each view as its own image
   --inspect             report how each subject's vertices and normals relate to
@@ -70,6 +73,7 @@ pub struct Args {
     pub chrome: [u32; 4],
     pub background: ViewportBackground,
     pub grid: bool,
+    pub transparent: bool,
     pub compare: bool,
     pub singles: bool,
     pub inspect: bool,
@@ -169,6 +173,7 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
         chrome: [0; 4],
         background: ViewportBackground::Grey25,
         grid: false,
+        transparent: false,
         compare: false,
         singles: false,
         inspect: false,
@@ -214,6 +219,7 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
             "--chrome" => args.chrome = parse_chrome(&value("--chrome")?)?,
             "--background" => args.background = parse_background(&value("--background")?)?,
             "--grid" => args.grid = true,
+            "--transparent" => args.transparent = true,
             "--compare" => args.compare = true,
             "--singles" => args.singles = true,
             "--inspect" => args.inspect = true,

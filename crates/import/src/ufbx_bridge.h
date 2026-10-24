@@ -23,6 +23,22 @@ typedef struct review_import_face {
     uint32_t index_count;
 } review_import_face;
 
+/* The maps a material can name a texture for, as ufbx resolves them across
+   shading models. Mirrored by `review_model::MaterialMap` in this order; the
+   index is the position in `review_import_material::maps`. */
+typedef enum review_import_material_map {
+    REVIEW_IMPORT_MAP_BASE_COLOR = 0,
+    REVIEW_IMPORT_MAP_NORMAL = 1,
+    REVIEW_IMPORT_MAP_BUMP = 2,
+    REVIEW_IMPORT_MAP_ROUGHNESS = 3,
+    REVIEW_IMPORT_MAP_GLOSSINESS = 4,
+    REVIEW_IMPORT_MAP_METALNESS = 5,
+    REVIEW_IMPORT_MAP_AMBIENT_OCCLUSION = 6,
+    REVIEW_IMPORT_MAP_EMISSION = 7,
+    REVIEW_IMPORT_MAP_OPACITY = 8,
+    REVIEW_IMPORT_MAP_COUNT = 9
+} review_import_material_map;
+
 typedef struct review_import_material {
     char *name;
     /* Import defaults seeding the editable material table. Base color
@@ -34,6 +50,15 @@ typedef struct review_import_material {
     float smoothness;
     float metallic;
     float emissive[3];
+    /* The emission strength on its own (`emissive` is color x this): what an
+       emission texture is multiplied by, since a connected texture replaces
+       the color. 1 when the material declares none. */
+    float emission_factor;
+    /* Per `review_import_material_map`, the ufbx texture feeding that map —
+       its `typed_id`, which is also its index in the extras capture's texture
+       table — or -1 when the map has none. A layered or shader texture is
+       resolved to the first file texture under it. */
+    int32_t maps[REVIEW_IMPORT_MAP_COUNT];
     /* The ufbx material this deduplicated slot came from, for the extras
        capture (which needs its properties and texture connections). Opaque to
        the Rust side; valid only while the ufbx scene is. */
@@ -351,6 +376,21 @@ typedef int (*review_import_progress_fn)(
    marshaled after it is on screen. */
 int review_import_load_fbx(
     const char *path,
+    review_import_scene *out_scene,
+    review_import_extras *out_extras,
+    review_import_error *out_error,
+    review_import_progress_fn progress,
+    void *progress_user
+);
+
+/* `review_import_load_fbx` over a file already in memory: `size` bytes at
+   `data`, which must stay valid for the call. `filename` may be NULL; when given
+   it is the file's own path, which ufbx resolves each texture's relative file
+   name against. Same outputs, same return codes, same walk. */
+int review_import_load_fbx_memory(
+    const void *data,
+    size_t size,
+    const char *filename,
     review_import_scene *out_scene,
     review_import_extras *out_extras,
     review_import_error *out_error,

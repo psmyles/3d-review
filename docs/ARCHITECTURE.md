@@ -55,7 +55,7 @@ the source mesh and each processed Opt level.
 
 ## Crate map
 
-Fourteen crates. The boundaries carry real weight — see [Invariants](#invariants) 2,
+Sixteen crates. The boundaries carry real weight — see [Invariants](#invariants) 2,
 9 and 10.
 
 ### `app` — `review-app`
@@ -81,6 +81,7 @@ One `impl App` block per concern, one file each:
 | `gate.rs` | The performance gate stamp (`--gate-out <file>`) |
 | `dialog.rs` | Every native file dialog |
 | `texture_manager.rs` | Scene texture pool, off-thread decode, disk auto-reload |
+| `imported_textures.rs` | The model's own textures, once its source capture lands: planned and decoded on a worker (`render`'s `imported_textures`), pooled and bound in one message, one card listing the ones not found. Binding resets the undo history, since they are the file's, not an edit — an entry from the second before would otherwise undo the textures away |
 | `animation.rs` | The animation clock and pose evaluation, and the selected clip's motion paths while the transport's animation-curve toggle is on (sampled after the egui pass, so a click draws in its own frame; freed when the toggle goes off) |
 | `window_state.rs` | Window position/size restore (saved on exit, never in a gate run), monitor validation, refresh-rate query |
 | `settings.rs` | The per-user `settings.cfg`: the locale, **Remember settings** and the option values it keeps, the recent-files list. A read error other than "not found" skips the next save rather than overwriting lines the viewer does not own |
@@ -245,6 +246,16 @@ file gave none (`generate_missing_tangents`, keeping authored ones), and measure
 
 The scene loads with `UFBX_INHERIT_MODE_HANDLING_HELPER_NODES` so `parent ×
 local` recomposes `node_to_world` exactly.
+
+Each material also records which texture feeds each of its maps
+(`MaterialImportDefaults::maps`, per `MaterialMap`): ufbx's resolution of the
+shading model's own property names, as an index into the capture's texture table,
+which is where the file names and embedded bytes are. A classic Lambert/Phong's
+`ShininessExponent` texture is recorded as glossiness, not roughness, unless
+Blender wrote the file (GOTCHAS: *A classic material's shininess texture is a
+gloss map*). `load_model_full_from_bytes` is the same import over a file already
+in memory — one walk, only the ufbx load call differs — for the shell extensions,
+which are handed a stream rather than a path.
 
 #### Cancelling a load
 
@@ -424,6 +435,19 @@ between mismatched formats is a silent no-op.
 - `texture.rs` — source-texture decode by magic-byte dispatch: PSD via
   `review-psd`, JPEG via zune's fast path, PNG/TGA/TIFF/HDR/BMP/GIF/PNM via the
   `image` crate. Plus filename channel auto-detect.
+- `texture/imported.rs` (`review_render::imported_textures`) — the textures a
+  model's own materials name: `plan` (which slot each map feeds; embedded bytes or
+  the first authored path that exists, then the file name beside the model and in
+  `textures/`), `decode` (in parallel, optionally halved to fit), and
+  `TextureUse::binding`, decided once the pixels are in — a Bump-slot image binds
+  as a normal map only if it is blue on average, an opacity map reads alpha if it
+  has one. Binding makes the connected color's factor white (a connected texture
+  *replaces* the color) and switches a glossiness map's material to smoothness.
+  The viewer, the snapshot tool and the shell extensions all go through it.
+- `SceneFrame::transparent_background` — the composite leaves the background
+  out: alpha is coverage and color the surface's own (straight alpha), what a file
+  thumbnail is drawn as. `bg_top.w` carries it to `fs_post`, 1 for every viewport
+  preset.
 - `tex.rs` / `tex/gpu.rs` — what the Tex viewport is asked to draw, and its image
   and checker draws (two deferred `SwapchainJob`s, deliberately outside the scene
   MRT/tonemap path so the displayed texel equals the stored texel).
@@ -838,6 +862,68 @@ through the system's administrator prompt when the folder needs it). Every
 entry point is a no-op stub off macOS, so it is depended on unconditionally with
 no `cfg` at the call site.
 
+### `preview` — `review-preview`
+
+What a file browser shows of a model, drawn by the viewer's own `Renderer` on a
+windowless GPU: the safe, host-agnostic core of the shell extensions.
+`#![forbid(unsafe_code)]`, no window, no event loop, no platform types.
+
+- `scene.rs` — `PreviewScene::load` from a path or from bytes (`SceneSource`):
+  the model, its textures decoded through `imported_textures` (halved to a size
+  the caller gives — a thumbnail has no use for a 4K map), its rest pose. The
+  source capture is dropped once the textures are found. Every scene's id is also
+  its mesh revision, unique across the process.
+- `viewport.rs` — `Host`, the process's GPU and every `Viewport` drawing through
+  it. sokol_gfx is a process singleton and a resource id from a device since shut
+  down can alias the next one's, so viewports live *inside* the host: they can
+  never outlive the device, and the one `&mut Host` a shell holds under its lock
+  serializes every GPU call. Each viewport has its own camera (two preview panes
+  in one host). Frames are read back as straight-alpha `Image`s.
+- `thumbnail.rs` — one still at the viewer's default angle, drawn at twice the
+  size and halved alpha-weighted, AO converged.
+- `interaction.rs` — pointer input to camera moves at the viewer's own rates
+  (`review_render::gesture`): left orbits, right and middle pan, `Alt`+right
+  zooms, the wheel zooms. Right pans rather than looking around, because the
+  viewer's look drag exists to steer a flycam a preview has no keys for.
+
+Offscreen plus readback, not a swapchain on the pane's window: a preview pane is a
+child of another process's window, two can share a host, and the host decides when
+either goes away. A readback costs a millisecond or two, and a pane draws only
+while something is changing.
+
+### `shell-windows` — `review-shell-windows`
+
+Explorer's thumbnails and preview pane for `.fbx` (D23): one COM in-process DLL,
+installed as `3d-review-shell.dll`, built with the `release-shell` profile (D24).
+Its identity — the DLL name, both CLSIDs, the preview's AppID — is
+`product.json`'s `shellExtension`, which `build.rs`, the installer and
+`scripts/register-shell.ps1` all read.
+
+- `com.rs` — `DllGetClassObject` / `DllCanUnloadNow` (always `S_FALSE`: the GPU
+  host, its reaper thread and the window class must never be unloaded under) and
+  the class factory.
+- `thumbnail.rs` — `IThumbnailProvider` + `IInitializeWithStream`: the file read
+  into memory, a scene loaded from the bytes, a straight-alpha top-down DIB.
+- `preview/` — `mod.rs` the `IPreviewHandler` record of what Explorer said;
+  `ui.rs` the thread every pane window lives on, which the handler posts work to
+  (the handler's own calls arrive on threads that never pump messages — GOTCHAS);
+  `window.rs` the pane's window procedure and GDI; `pane.rs` its safe state (the
+  load, the viewport, the last frame laid over the pane's background).
+- `host.rs` — the process's one `Host`, behind a lock, dropped by a reaper thread
+  after 30 s idle with no pane open, so a surrogate Explorer keeps alive holds no
+  GPU memory.
+- `guard.rs` — every entry point's panic-to-`HRESULT` boundary.
+
+Logs go to the viewer's own day file (`review_log::standard_dir`), under a session
+header naming the surrogate's process. Status text is `shell-preview.ftl`, which
+the localization gate scans this crate for.
+
+It is checked without an Explorer window: `scripts/register-shell.ps1` registers a
+build for the current user, `scripts/shell-thumbnail.ps1` asks the shell for a
+file's thumbnail through the real thumbnail cache and surrogate, and
+`scripts/shell-preview.ps1` hosts the preview handler out of process, as Explorer
+does, drives it with the pointer and captures each step.
+
 ### `prof` — `review-prof`
 
 The guarded Tracy helpers every instrumented crate shares: `zone!`, `plot!`,
@@ -1031,14 +1117,15 @@ apparent size on a 2× display while the native `Window`/`Panel` chrome beside i
 did not. Don't reintroduce a px-to-point conversion.
 
 **9. All unsafe and all C/FFI lives in `import`, `psd` and `optimize`** — plus the
-scoped GPU site below and `shell-macos`'s one Objective-C hook. No unsafe leaks
-into `model` or `ui`, nor into `render`'s geometry, material or camera modules.
+scoped GPU site below, `shell-macos`'s one Objective-C hook and `shell-windows`'
+COM server. No unsafe leaks into `model` or `ui`, nor into `render`'s geometry,
+material or camera modules.
 Before `slice::from_raw_parts`, null-check the pointer and treat len 0 as empty
 (`checked_slice`). Free the C scene on **both** success and error paths.
 
-**The compiler enforces it.** `app`, `model`, `ui`, `audit`, `log`, `prof` and
-`localization` are `#![forbid(unsafe_code)]`. `render`, `import` and `optimize`
-are `#![deny(unsafe_code)]` at the crate root, and each sanctioned module opts
+**The compiler enforces it.** `app`, `model`, `ui`, `audit`, `log`, `prof`,
+`preview` and `localization` are `#![forbid(unsafe_code)]`. `render`, `import`,
+`optimize` and `shell-windows` are `#![deny(unsafe_code)]` at the crate root, and each sanctioned module opts
 back in with a scoped `#![allow(unsafe_code, reason = "...")]` saying why — so a
 new `unsafe` anywhere else is a build error, and the list of `allow`s *is* the
 list of unsafe modules:
@@ -1051,6 +1138,12 @@ list of unsafe modules:
   test-only `probe.rs`.
 - `render`: `rhi/backend/{d3d11,metal}.rs` and the `extern "C"` logger callback
   in `rhi/sokol_log.rs`.
+- `shell-windows`: `com.rs` (the DLL exports and the class factory),
+  `thumbnail.rs` (reading the `IStream`, building the DIB section),
+  `preview/mod.rs` (the handler's raw rectangles and out-pointers),
+  `preview/window.rs` (the pane's window procedure and GDI) and `preview/ui.rs`
+  (the window thread's message loop). `host.rs`, `guard.rs` and `preview/pane.rs`
+  are safe: the scene, the camera and the pixels are `review-preview`'s.
 
 The workspace also denies `clippy::undocumented_unsafe_blocks`, which is what
 makes "every unsafe carries a `// SAFETY:` rationale" a build error rather than a
@@ -1082,6 +1175,13 @@ The sanctioned exceptions:
   sokol_gfx draws with — pipelines, buffers, targets, textures, samplers — is safe
   Rust over its C API, so what used to be ~2000 lines of pervasive COM unsafe is
   now that leaf plus the one `extern "C"` logger callback in `rhi/sokol_log.rs`.
+- **The Explorer shell extension** (`crates/shell-windows`). A COM in-process
+  server is raw pointers by definition — out-pointers, `RECT`s, an `IStream`, a
+  window procedure — so the crate holds that surface and nothing else; everything
+  it draws is safe code in `review-preview` over the same `Renderer` the viewer
+  uses. Every entry point runs inside `guard::guarded`, which turns a panic into an
+  `HRESULT`, because a panic unwinding into a COM vtable shim aborts a process
+  Explorer owns (D24).
 
 Every unsafe in `render` touches only GPU plumbing — never model geometry, camera
 math or material logic, which stay safe.
@@ -1304,6 +1404,8 @@ one settled.
 | D20 | The swapchain is plain UNORM, not an sRGB format — the flip model disallows `*_SRGB` — so the composite, egui and Tex shaders encode sRGB themselves. |
 | D21 | `vendor/sokol-rust` is a pinned upstream checkout, `exclude`d in the root manifest so `-D warnings` does not lint it. `--exclude` on the command line is not enough: cargo lints every path dependency inside the workspace directory as local. |
 | D22 | psd_sdk is vendored as source and compiled with `cc` beside a C-ABI wrapper, with committed hand-kept bindings, so a clean checkout links without a prebuilt library. |
+| D23 | Explorer integration is a COM DLL over a shared, safe core (`crates/preview`) that the macOS Quick Look extension will call too. The thumbnail provider is **stream-initialized and isolated** in Explorer's COM Surrogate, and accepts that a stream has no directory: textures beside the model reach the preview pane, not the thumbnail (measured alternatives in GOTCHAS). The preview handler gets a `prevhost.exe` of its own AppID and a window thread of its own. Both render offscreen and read back. |
+| D24 | The shell DLL builds with the `release-shell` profile: `release` with `panic = "unwind"`, so `guard::guarded` can answer a panic with an `HRESULT` instead of aborting a surrogate Explorer shares with other vendors' handlers. |
 
 The structural rules the decisions add up to:
 
@@ -1311,5 +1413,5 @@ The structural rules the decisions add up to:
 | --- | --- |
 | **`rhi` owns the backend** | Nothing outside `render/src/rhi/` names an `sg::` type, a backend pixel format or a window handle. Every resource goes through a wrapper, every format is `Format`, every failure is a `GpuError`, and invalid input (a zero dimension, a refused drawable) is an error there rather than a sokol validation abort. |
 | **One swapchain pass** | Exactly one swapchain pass per frame — Metal presents inside `sg_end_pass`, so a second one would double-present. Everything a `Renderer::render_*` draws onscreen is therefore recorded as a deferred `SwapchainJob` and replayed when that pass opens; offscreen passes are issued directly. |
-| **Platform leaves** | The complete inventory of per-OS code: `rhi/backend/{d3d11,metal}.rs` (device, swapchain, GPU timer, bake readback), `crates/shell-macos` (open-file events, menu bar, CLI-on-PATH link), and the packaging scripts. Elsewhere an OS is named only for a convention, never a capability: the primary modifier (`app/shortcuts.rs`, `ui/lib.rs`), where per-user files live and how paths compare (`app/logging.rs`, `window_state.rs`, `paths.rs`), and the file dialog's owner window on Windows (`app/dialog.rs`). |
+| **Platform leaves** | The complete inventory of per-OS code: `rhi/backend/{d3d11,metal}.rs` (device, swapchain, GPU timer, bake readback), `crates/shell-macos` (open-file events, menu bar, CLI-on-PATH link), `crates/shell-windows` (Explorer's thumbnail provider and preview handler), and the packaging scripts. Elsewhere an OS is named only for a convention, never a capability: the primary modifier (`app/shortcuts.rs`, `ui/lib.rs`), where per-user files live and how paths compare (`app/logging.rs`, `window_state.rs`, `paths.rs`), and the file dialog's owner window on Windows (`app/dialog.rs`). |
 | **Toolchain** | `rust-toolchain.toml` tracks stable rather than pinning a version, and shader edits are the only thing that needs a platform shader compiler (D5): a checkout that does not touch `review.glsl` builds from the committed bytecode. |

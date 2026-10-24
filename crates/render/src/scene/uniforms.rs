@@ -36,20 +36,24 @@ pub(super) fn flat_display(frame: &SceneFrame<'_>) -> bool {
         ) || frame.debug.heat_map.is_active())
 }
 
-/// Build the composite pass's [`PostUniforms`] from the live settings.
+/// Build the composite pass's [`PostUniforms`] from the live settings. With
+/// `transparent` the background is left out entirely: the composite's alpha is
+/// the scene's coverage and its color the surface's own (straight alpha).
 pub(super) fn post_uniforms(
     background: ViewportBackground,
+    transparent: bool,
     gtao_active: bool,
     tonemap: TonemapSettings,
     passthrough: bool,
 ) -> PostUniforms {
     let (top, bottom) = background.gradient_srgb();
+    let opacity = if transparent { 0.0 } else { 1.0 };
     PostUniforms {
         gtao_enabled: u32::from(gtao_active),
         tonemap_enabled: u32::from(tonemap.enabled),
         tonemap_op: tonemap.operator.shader_index(),
         passthrough: u32::from(passthrough),
-        bg_top: [top[0], top[1], top[2], 0.0],
+        bg_top: [top[0], top[1], top[2], opacity],
         bg_bottom: [bottom[0], bottom[1], bottom[2], 0.0],
     }
 }

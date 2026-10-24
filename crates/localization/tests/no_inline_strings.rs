@@ -31,7 +31,7 @@ use syn::visit::Visit;
 /// The crates whose sources may not carry user-visible literals: the ones that
 /// draw, announce, or name something on screen - and, for the console tool, the
 /// terminal is the screen.
-const SCANNED: [&str; 5] = ["ui", "app", "shell-macos", "labels", "cli"];
+const SCANNED: [&str; 6] = ["ui", "app", "shell-macos", "shell-windows", "labels", "cli"];
 
 /// Macros whose literals reach a terminal. `write!` / `writeln!` are not here:
 /// they build strings and files as often as they print, and the console tool's

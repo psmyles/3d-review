@@ -401,6 +401,7 @@ impl SceneGpu {
             frame,
             &post_uniforms(
                 scene.background,
+                scene.transparent_background,
                 gtao_active,
                 scene.tonemap,
                 flat_display(scene),

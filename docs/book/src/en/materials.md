@@ -36,6 +36,37 @@ one "packed" image can feed three parts at once, with, say, ambient occlusion
 in red, roughness in green and metallic in blue. The viewer guesses the right
 channel from the file name when a texture is loaded, and you can change it.
 
+## Textures the file names
+
+When a model loads, the viewer also loads the textures its own materials name
+and puts each one in its slot, as if you had picked it yourself. It looks for
+each image in this order:
+
+1. inside the FBX file, for files saved with their media embedded;
+2. at the path the file wrote down;
+3. by its file name: next to the model, in a `textures` folder beside it, and in
+   a `textures` folder one level up. An asset is often moved after it is
+   exported, and its file name is what still finds its pictures.
+
+Any texture it cannot find is listed in one warning card, so a missing file is
+easy to spot. The model itself is shown either way.
+
+A few choices follow what modelling programs do with the same file:
+
+- A texture connected to the base color or the glow (emissive) color *replaces*
+  that color, so the color it is multiplied by becomes white.
+- A glossiness texture (shiny where it is bright) switches the material to the
+  Smoothness workflow, and older Lambert and Phong materials from Maya and 3ds
+  Max store theirs in a "shininess" slot that is read the same way.
+- A texture in the old Bump slot is used as a normal map only when it looks like
+  one (mostly blue). A height map is left out rather than lighting the surface
+  wrongly.
+- An opacity texture makes the material **Clip** (cut out), which suits leaves,
+  hair and fences. Switch it to **Blend** in the Inspector for glass.
+
+Loading these textures is part of opening the file, not an edit, so Undo does not
+take them back.
+
 ## The texture pool
 
 All the textures for a scene live in one shared pool. Each image is read from

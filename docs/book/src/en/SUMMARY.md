@@ -65,5 +65,6 @@
 # Reference
 
 - [Keyboard and mouse](keyboard.md)
+- [Thumbnails and previews in File Explorer](explorer.md)
 - [Windows and macOS](platforms.md)
 - [About](about.md)

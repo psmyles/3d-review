@@ -226,6 +226,22 @@ pub fn install(app_crate: &'static str) {
     }
 }
 
+/// Where `product`'s logs are kept — the one folder the viewer and its shell
+/// extensions all write to. Logs describe this machine rather than the user, so
+/// they stay out of the roaming profile the settings live in:
+///
+/// - Windows: `%LOCALAPPDATA%\<product>\logs`
+/// - macOS: `~/Library/Logs/<product>`, where Console.app looks for them
+///
+/// `cfg!` rather than `#[cfg]`, so both arms are compiled on both platforms.
+pub fn standard_dir(product: &str) -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        dirs::home_dir().map(|home| home.join("Library").join("Logs").join(product))
+    } else {
+        dirs::data_local_dir().map(|local| local.join(product).join("logs"))
+    }
+}
+
 /// Open today's file in `dir`, creating the folder if need be, and write it
 /// everything logged so far under a session header. Before that, every earlier
 /// day's file in `dir` is deleted, so no log outlives the day it was written on.

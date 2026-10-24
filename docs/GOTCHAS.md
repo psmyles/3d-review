@@ -20,6 +20,7 @@ under.
 - [Loading, undo and the Opt run](#loading-undo-and-the-opt-run)
 - [Tools and builds](#tools-and-builds)
 - [Baked assets](#baked-assets)
+- [The Explorer shell extension](#the-explorer-shell-extension)
 
 ---
 
@@ -613,6 +614,30 @@ arrives through `pbr.metalness` anyway. The export's Phong fallback still writes
 the viewer's metallic to `ReflectionFactor` (the closest slot Phong has); that is
 deliberately **one-way**, so do not "restore symmetry" by reading it back.
 `a_classic_material_imports_as_a_dielectric` pins it.
+
+### A classic material's shininess texture is a gloss map
+
+ufbx reads a Lambert or Phong material's `ShininessExponent` into `pbr.roughness`,
+converting the *value* from a specular exponent. The *texture* connected there is
+what Maya's cosine power and 3ds Max's Glossiness map export as — brighter is
+shinier — so binding it as a roughness map inverted it and turned every such
+asset into polished plastic (measured on a Max character: every gloss map read as
+mirror-smooth). The bridge records that texture as `MaterialMap::Glossiness`,
+which binds into the roughness slot with the material switched to the smoothness
+workflow. **Blender is the exception**: its exporter writes the *roughness*
+texture into that same slot (its own source says "will be inverted in fact"), and
+ufbx reports which tool wrote the file, so a Blender file keeps it as roughness.
+
+### A connected texture replaces the color it is connected to
+
+FBX stores a color property's value even when a texture drives it, and the value
+is whatever the color was before the connection: Maya's 0.5 grey, often black for
+emission. Every DCC shows the texture in its place, so binding an imported base
+color or emission map sets the factor it is multiplied by to white (emission: the
+material's emission *strength*, `MaterialImportDefaults::emission_factor`,
+carried for exactly this). Multiplying by the stored value showed every textured
+asset half as bright as its DCC did. A texture assigned by hand in the viewer
+keeps the color the user set — that one *is* an edit.
 
 ### UV and vertex-colour layers go out `ByPolygonVertex` + `IndexToDirect`
 
@@ -1378,3 +1403,80 @@ stamped by `git checkout` at the same instant.
 and the installer build runs it. `build.rs` additionally warns when `review.glsl`
 is newer than everything generated from it — the one thing the manifest cannot see,
 namely that you edited the shader and never ran `scripts/gen-shaders`.
+
+---
+
+## The Explorer shell extension
+
+### A preview handler's calls arrive on threads that never pump messages
+
+`prevhost.exe` creates a preview handler in the **neutral apartment**, so each call
+Explorer makes runs on whichever RPC thread is free, and none of those threads
+runs a message loop. A window created inside `DoPreview` received the messages
+*sent* to it while it was being created, and then nothing — no `WM_PAINT`, no
+timer, no message the load worker posted — for six seconds, until the next call
+into the handler (`Unload`) happened to run on its thread. In-process (a test
+host calling it directly) the same code worked, which is what made it look like
+the harness was at fault. Every pane window therefore lives on
+`preview/ui.rs`'s own thread, and the handler's methods *post* work to it rather
+than wait on it: a waiting call could deadlock against Explorer, which is blocked
+in that very call while the window being made sends messages to its parent there.
+One consequence is settled rather than fixed: keystrokes reach that thread's loop,
+not the host's, so `TranslateAccelerator` never sees one, and Explorer's own
+shortcuts do not work while the pane has the keyboard.
+
+### A pane window takes its parent's DPI awareness, or lands in the wrong place
+
+A window's DPI awareness is its thread's at the moment it is created, and a child
+whose awareness differs from its parent's is placed through the system's
+mixed-mode scaling. Hosted by a DPI-unaware test harness, the pane came out at
+*half the host window's screen position* inside it - (20, 20) for a host at
+(40, 40), (100, 60) at (200, 120) - at 100% display scaling, with `SetWindow`'s
+rectangle and `CREATESTRUCT` both saying (0, 0). `window::create` therefore
+switches its thread to the parent's context (`GetWindowDpiAwarenessContext`) for
+the creation and back after. Explorer is per-monitor aware and may never have
+shown it, but a host that is not would have.
+
+### A thumbnail handler gets bytes with no path, and every way round that was tried
+
+The thumbnail provider is `IInitializeWithStream`, which is what puts it in
+Explorer's isolated COM Surrogate rather than in `explorer.exe`. The stream's
+`Stat` name is the bare file name, so textures beside the model cannot be found
+(embedded ones, and absolute paths that still exist, can). Measured, so as not to
+be tried again: the stream answers `E_NOINTERFACE` to `IPersistFile`, `IPersist`,
+`IServiceProvider`, `IObjectWithSite`, `IShellItem` and `IPropertyStore`; offered
+`IInitializeWithItem` beside the stream, the surrogate takes the stream; offered
+the item alone, extraction fails (`0x8004B200`); `DisableProcessIsolation = 1`
+passes an item by loading the handler into the *calling* process — `explorer.exe`
+for a folder view — and giving the class an AppID with a surrogate does not move
+it back out. A GPU device and a C parser inside Explorer is what the isolation is
+for. The preview pane, which does get the path, finds every texture.
+
+### The thumbnail cache keeps straight alpha, and reads back top row first
+
+Windows' own PNG thumbnailer, handed a half-transparent red PNG, stores
+`R 255, A 128` in the cache — straight alpha — so the provider hands over straight
+alpha too (`WTSAT_ARGB`) and the two match on screen. When checking a thumbnail
+through `IShellItemImageFactory::GetImage`, note that the bitmap it returns
+reports a *positive* height yet stores its top row first: read it bottom-up, as a
+positive height says, and every thumbnail looks upside down. A red-over-blue PNG
+is the control that settles it in one run.
+
+### The shell DLL must never abort
+
+Explorer's COM Surrogate hosts other vendors' thumbnail providers beside ours, and
+a Rust panic that unwinds into a COM vtable shim — an `extern "system"` function —
+aborts the process. So every entry point and the window procedure run inside
+`guard::guarded`, and the DLL is built with the `release-shell` profile
+(`panic = "unwind"`); the workspace's `release` aborts on panic, which would make
+every guard a no-op. A panic inside a draw also drops the GPU host, since a frame
+abandoned mid-pass leaves nothing on the device worth trusting.
+
+### A registered DLL is locked by the process that loaded it
+
+A surrogate keeps the DLL loaded long after the folder that needed it is closed,
+so `cargo build` cannot overwrite a DLL that is registered in place.
+`scripts/register-shell.ps1` registers a *copy* under `target/shell-registered/`,
+and each run registers a fresh one. The installer relies on Setup's Restart
+Manager pass to close a surrogate holding the old copy; Explorer starts a new one
+on demand.

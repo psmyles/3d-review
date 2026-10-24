@@ -16,6 +16,7 @@ use crate::material::{
     AlphaMode, MaterialChange, MaterialEdit, MaterialSnapshot, MaterialState, TextureBinding,
 };
 use crate::texture::DecodedImage;
+use crate::texture::imported::{ImportedBinding, LoadedTextures};
 use crate::texture::{ChannelSelect, TextureSlot};
 
 impl Renderer {
@@ -124,6 +125,56 @@ impl Renderer {
             state.alpha_mode = AlphaMode::Blend;
         }
         self.material_revision = self.material_revision.wrapping_add(1);
+    }
+
+    /// Bind a texture the model's own materials name ([`crate::imported_textures`])
+    /// as `binding` says: the slot and channel, plus what the source implies
+    /// beside them — the color factor a connected texture replaces, the
+    /// smoothness workflow of a glossiness map, an opacity map's cutout. One
+    /// revision bump, like any other edit.
+    pub fn bind_imported_texture(
+        &mut self,
+        binding: &ImportedBinding,
+        path: PathBuf,
+        image: Arc<DecodedImage>,
+    ) {
+        let Some(state) = self.material_states.get_mut(binding.material) else {
+            return;
+        };
+        state.textures[binding.slot.index()] = Some(TextureBinding {
+            path,
+            image,
+            channel: binding.channel,
+        });
+        if let Some(workflow) = binding.workflow {
+            state.workflow = workflow;
+        }
+        if let Some(alpha_mode) = binding.alpha_mode {
+            state.alpha_mode = alpha_mode;
+        }
+        if let Some(base_color) = binding.base_color {
+            state.base_color = base_color;
+        }
+        if let Some(emissive) = binding.emissive {
+            state.emissive = emissive;
+        }
+        self.material_revision = self.material_revision.wrapping_add(1);
+    }
+
+    /// Bind every decoded texture of `loaded` to every use it binds for. What a
+    /// caller with no texture pool of its own does in place of
+    /// [`Self::bind_imported_texture`] per image.
+    pub fn bind_imported_textures(&mut self, loaded: &LoadedTextures) {
+        for (texture, image) in loaded.planned.textures.iter().zip(&loaded.images) {
+            let Ok(image) = image else {
+                continue;
+            };
+            for texture_use in &texture.uses {
+                if let Some(binding) = texture_use.binding(&texture.key, image) {
+                    self.bind_imported_texture(&binding, texture.key.clone(), Arc::clone(image));
+                }
+            }
+        }
     }
 
     /// Clear a material's texture slot back to the shader's neutral fallback.

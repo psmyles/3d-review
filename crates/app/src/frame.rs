@@ -623,6 +623,8 @@ impl App {
                         hover,
                         hover_bone,
                         background,
+                        // The swapchain shows no alpha; a thumbnail is what wants it.
+                        transparent_background: false,
                         pose,
                         pose_revision,
                         scene_bounds,

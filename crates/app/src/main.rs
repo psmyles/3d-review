@@ -14,6 +14,7 @@ mod events;
 mod flycam;
 mod frame;
 mod gate;
+mod imported_textures;
 mod input;
 mod loading;
 mod logging;
@@ -857,6 +858,9 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::ModelLoadProgress(message) => self.handle_model_load_progress(message),
             UserEvent::ModelMeasured(message) => self.handle_model_measured(*message),
             UserEvent::SourceExtrasReady(message) => self.handle_source_extras_ready(*message),
+            UserEvent::ImportedTexturesLoaded(message) => {
+                self.handle_imported_textures_loaded(*message);
+            }
             UserEvent::DialogDone(answer) => self.handle_dialog_done(answer),
             UserEvent::OpenPath(path) => self.open_model_from_path(&path),
             UserEvent::MenuCommand(command) => self.handle_menu_command(command),

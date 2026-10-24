@@ -56,6 +56,8 @@ pub fn demo_cube_model() -> ModelData {
             smoothness: 0.6,
             metallic: 0.0,
             emissive: Vec3::ZERO,
+            emission_factor: 1.0,
+            maps: [None; crate::MaterialMap::COUNT],
         }],
         ..Default::default()
     };

@@ -105,6 +105,17 @@ unsafe extern "C" {
         progress_user: *mut c_void,
     ) -> c_int;
 
+    fn review_import_load_fbx_memory(
+        data: *const c_void,
+        size: usize,
+        filename: *const c_char,
+        out_scene: *mut ReviewImportScene,
+        out_extras: *mut ReviewImportExtras,
+        out_error: *mut ReviewImportError,
+        progress: Option<ReviewImportProgressFn>,
+        progress_user: *mut c_void,
+    ) -> c_int;
+
     fn review_import_free_scene(scene: *mut ReviewImportScene);
 
     fn review_import_free_extras(extras: *mut ReviewImportExtras);
@@ -143,13 +154,29 @@ unsafe extern "C" fn report_read_progress(user: *mut c_void, done: u64, total: u
     CONTINUE
 }
 
+/// What a load parses: a file on disk, or a file's bytes already in memory.
+#[derive(Clone, Copy)]
+pub(crate) enum FbxInput<'a> {
+    Path(&'a Path),
+    /// `name` is the file's own path when it is known, or just its name: what
+    /// the model is named after and what ufbx resolves relative texture paths
+    /// against.
+    Bytes {
+        bytes: &'a [u8],
+        name: &'a Path,
+    },
+}
+
 pub(crate) fn load_fbx(
-    path: &Path,
+    input: FbxInput<'_>,
     progress: crate::ProgressSink<'_>,
     capture_extras: bool,
     cancel: Option<&CancelToken>,
 ) -> Result<StagedImport, ImportError> {
     let _z = crate::prof::zone!("Load FBX");
+    let path = match input {
+        FbxInput::Path(path) | FbxInput::Bytes { name: path, .. } => path,
+    };
     let path_string = path.to_string_lossy();
     let c_path = CString::new(path_string.as_bytes())
         .map_err(|_| ImportError::LoadFailed("path contains embedded NUL byte".to_owned()))?;
@@ -188,16 +215,30 @@ pub(crate) fn load_fbx(
         // `progress_user` is a pointer to this stack borrow of the caller's
         // sink, which the bridge only dereferences from within this call.
         // `extras` is either null (no capture) or a live boxed struct the
-        // bridge fills and this call's handle then owns.
+        // bridge fills and this call's handle then owns. For the memory entry
+        // point, `bytes` is a live slice borrowed for the whole call, and the
+        // bridge reads exactly `bytes.len()` bytes from its start.
         unsafe {
-            review_import_load_fbx(
-                c_path.as_ptr(),
-                scene.as_mut_ptr(),
-                extras_ptr,
-                &mut error,
-                Some(report_read_progress),
-                (&raw mut callback).cast::<c_void>(),
-            )
+            match input {
+                FbxInput::Path(_) => review_import_load_fbx(
+                    c_path.as_ptr(),
+                    scene.as_mut_ptr(),
+                    extras_ptr,
+                    &mut error,
+                    Some(report_read_progress),
+                    (&raw mut callback).cast::<c_void>(),
+                ),
+                FbxInput::Bytes { bytes, .. } => review_import_load_fbx_memory(
+                    bytes.as_ptr().cast::<c_void>(),
+                    bytes.len(),
+                    c_path.as_ptr(),
+                    scene.as_mut_ptr(),
+                    extras_ptr,
+                    &mut error,
+                    Some(report_read_progress),
+                    (&raw mut callback).cast::<c_void>(),
+                ),
+            }
         }
     };
 

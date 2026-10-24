@@ -365,14 +365,16 @@ static float review_import_material_metallic(const ufbx_material *material)
 }
 
 /* Resolve the material's emissive color (linear RGB) = emission_color scaled by
-   emission_factor, defaulting to black when the material declares none. */
-static void review_import_material_emissive(const ufbx_material *material, float out_color[3])
+   emission_factor, defaulting to black when the material declares none. The
+   factor alone goes to `out_factor`. */
+static void review_import_material_emissive(const ufbx_material *material, float out_color[3], float *out_factor)
 {
     float factor = 1.0f;
 
     out_color[0] = 0.0f;
     out_color[1] = 0.0f;
     out_color[2] = 0.0f;
+    *out_factor = factor;
 
     if (!material) {
         return;
@@ -381,6 +383,7 @@ static void review_import_material_emissive(const ufbx_material *material, float
     if (material->pbr.emission_factor.has_value) {
         factor = review_import_finite_or(material->pbr.emission_factor.value_real, 0.0f);
     }
+    *out_factor = factor;
 
     if (material->pbr.emission_color.has_value) {
         out_color[0] = review_import_finite_or(material->pbr.emission_color.value_vec4.x, 0.0f) * factor;
@@ -416,6 +419,99 @@ static float review_import_material_smoothness(const ufbx_material *material)
     return smoothness;
 }
 
+/* The file texture behind `texture`, or NULL. A layered or shader texture is
+   a graph over file textures; ufbx lists the files it reads in
+   `file_textures`, and the first is what the map shows at full weight in the
+   common case of one image under a layer node. */
+static const ufbx_texture *review_import_file_texture(const ufbx_texture *texture)
+{
+    if (!texture) {
+        return NULL;
+    }
+    if (texture->type == UFBX_TEXTURE_FILE) {
+        return texture;
+    }
+    if (texture->file_textures.count > 0) {
+        return texture->file_textures.data[0];
+    }
+    return NULL;
+}
+
+/* The typed id of the file texture feeding the first of `maps` that has one,
+   or -1. The typed id indexes `scene->textures`, which is the table the extras
+   capture writes in the same order, so the Rust side resolves it there. */
+static int32_t review_import_map_texture(const ufbx_scene *scene, const ufbx_material_map *first,
+                                         const ufbx_material_map *second)
+{
+    const ufbx_material_map *candidates[2];
+    size_t index;
+    candidates[0] = first;
+    candidates[1] = second;
+    for (index = 0; index < 2; index++) {
+        const ufbx_texture *texture = candidates[index] ? review_import_file_texture(candidates[index]->texture) : NULL;
+        if (texture && texture->typed_id < scene->textures.count && texture->typed_id <= INT32_MAX) {
+            return (int32_t)texture->typed_id;
+        }
+    }
+    return -1;
+}
+
+/* Which texture feeds each map of `material`. ufbx has already resolved the
+   shading model's own property names into `pbr`, so that is read first; the
+   legacy `fbx` maps are the fallback for a classic Lambert/Phong whose PBR view
+   left a slot empty. The bump map is kept apart from the normal map: game
+   exports often put a tangent-space normal map in the Bump slot, but a real
+   height map read as normals would be wrong, so the Rust side decides once it
+   has seen the pixels.
+
+   A classic material's roughness texture is really a gloss map. ufbx reads a
+   Lambert/Phong's `ShininessExponent` into `pbr.roughness` (converting the
+   *value* from a specular exponent), but the texture connected there is what
+   Maya's cosine power and 3ds Max's Glossiness map export as: brighter is
+   shinier. Bound as roughness it turned every such asset into polished
+   plastic. Blender is the exception — its exporter writes the roughness
+   texture into that same slot, as roughness — and ufbx says which tool wrote
+   the file. */
+static void review_import_material_maps(const ufbx_scene *scene, const ufbx_material *material,
+                                        int32_t out_maps[REVIEW_IMPORT_MAP_COUNT])
+{
+    size_t index;
+    int classic;
+    int from_blender;
+    int32_t roughness;
+    for (index = 0; index < REVIEW_IMPORT_MAP_COUNT; index++) {
+        out_maps[index] = -1;
+    }
+    if (!material) {
+        return;
+    }
+    classic = material->shader_type == UFBX_SHADER_UNKNOWN || material->shader_type == UFBX_SHADER_FBX_LAMBERT ||
+        material->shader_type == UFBX_SHADER_FBX_PHONG;
+    from_blender = scene->metadata.exporter == UFBX_EXPORTER_BLENDER_BINARY ||
+        scene->metadata.exporter == UFBX_EXPORTER_BLENDER_ASCII;
+    out_maps[REVIEW_IMPORT_MAP_BASE_COLOR] =
+        review_import_map_texture(scene, &material->pbr.base_color, &material->fbx.diffuse_color);
+    out_maps[REVIEW_IMPORT_MAP_NORMAL] =
+        review_import_map_texture(scene, &material->pbr.normal_map, &material->fbx.normal_map);
+    out_maps[REVIEW_IMPORT_MAP_BUMP] = review_import_map_texture(scene, &material->fbx.bump, NULL);
+    roughness = review_import_map_texture(scene, &material->pbr.roughness, NULL);
+    out_maps[REVIEW_IMPORT_MAP_GLOSSINESS] = review_import_map_texture(scene, &material->pbr.glossiness, NULL);
+    if (classic && !from_blender) {
+        if (out_maps[REVIEW_IMPORT_MAP_GLOSSINESS] < 0) {
+            out_maps[REVIEW_IMPORT_MAP_GLOSSINESS] = roughness;
+        }
+    } else {
+        out_maps[REVIEW_IMPORT_MAP_ROUGHNESS] = roughness;
+    }
+    out_maps[REVIEW_IMPORT_MAP_METALNESS] = review_import_map_texture(scene, &material->pbr.metalness, NULL);
+    out_maps[REVIEW_IMPORT_MAP_AMBIENT_OCCLUSION] =
+        review_import_map_texture(scene, &material->pbr.ambient_occlusion, NULL);
+    out_maps[REVIEW_IMPORT_MAP_EMISSION] =
+        review_import_map_texture(scene, &material->pbr.emission_color, &material->fbx.emission_color);
+    out_maps[REVIEW_IMPORT_MAP_OPACITY] =
+        review_import_map_texture(scene, &material->pbr.opacity, &material->fbx.transparency_color);
+}
+
 /* The material slot for `material`, adding one the first time it is seen.
 
    Keyed on the ufbx material itself, not on its name. Two distinct materials
@@ -423,7 +519,8 @@ static float review_import_material_smoothness(const ufbx_material *material)
    kept only the first one's properties and textures, so the export wrote the
    same material out for both and the second one's animated properties had no
    target. An unnamed material is shown as "Default" but stays its own slot. */
-static uint32_t review_import_add_material(review_import_scene *scene, const ufbx_material *material)
+static uint32_t review_import_add_material(const ufbx_scene *source_scene, review_import_scene *scene,
+                                           const ufbx_material *material)
 {
     size_t index;
     const char *name_data = material ? material->name.data : NULL;
@@ -478,7 +575,8 @@ static uint32_t review_import_add_material(review_import_scene *scene, const ufb
         review_import_material_base_color_linear(material, slot->base_color);
         slot->smoothness = review_import_material_smoothness(material);
         slot->metallic = review_import_material_metallic(material);
-        review_import_material_emissive(material, slot->emissive);
+        review_import_material_emissive(material, slot->emissive, &slot->emission_factor);
+        review_import_material_maps(source_scene, material, slot->maps);
         slot->source = material;
         scene->material_count += 1;
     }
@@ -1073,7 +1171,7 @@ static int review_import_fill_pass(
                 /* Resolve the material slot first so each triangle can record it
                    into the parallel `tri_material` array below. */
                 if (face_material_ptr) {
-                    material_slot = review_import_add_material(out_scene, face_material_ptr);
+                    material_slot = review_import_add_material(scene, out_scene, face_material_ptr);
                     if (material_slot == UINT32_MAX) {
                         review_import_set_error(out_error, "out of memory while recording FBX materials");
                         free(triangle_buffer);
@@ -1920,8 +2018,15 @@ static ufbx_progress_result review_import_progress_cb(void *user, const ufbx_pro
     return UFBX_PROGRESS_CONTINUE;
 }
 
-int review_import_load_fbx(
+/* The one load both entry points share: `path` names the file to read, or, when
+   `data` is non-NULL, the `size` bytes there are the file and `path` (which may
+   be NULL) is only the name ufbx resolves relative texture paths against.
+   Everything after the parse — the count/fill extraction and the capture — is
+   the same walk either way (invariant 7). */
+static int review_import_load(
     const char *path,
+    const void *data,
+    size_t size,
     review_import_scene *out_scene,
     review_import_extras *out_extras,
     review_import_error *out_error,
@@ -1946,7 +2051,7 @@ int review_import_load_fbx(
     }
     review_import_set_error(out_error, NULL);
 
-    if (!path || !out_scene) {
+    if ((!path && !data) || !out_scene) {
         review_import_set_error(out_error, "invalid import arguments");
         return 0;
     }
@@ -1979,7 +2084,17 @@ int review_import_load_fbx(
            profile of the parse. */
         load_opts.progress_interval_hint = 512 * 1024;
     }
-    scene = ufbx_load_file(path, &load_opts, &error);
+    if (data) {
+        /* ufbx resolves each texture's `filename` against this, exactly as it
+           does against the path `ufbx_load_file` is given. */
+        if (path) {
+            load_opts.filename.data = path;
+            load_opts.filename.length = strlen(path);
+        }
+        scene = ufbx_load_memory(data, size, &load_opts, &error);
+    } else {
+        scene = ufbx_load_file(path, &load_opts, &error);
+    }
     if (!scene) {
         char buffer[256];
         /* A cancelled parse is not a failure to report: the caller asked for it,
@@ -2100,4 +2215,34 @@ cleanup:
         ufbx_free_scene(scene);
     }
     return success;
+}
+
+int review_import_load_fbx(
+    const char *path,
+    review_import_scene *out_scene,
+    review_import_extras *out_extras,
+    review_import_error *out_error,
+    review_import_progress_fn progress,
+    void *progress_user
+)
+{
+    return review_import_load(path, NULL, 0, out_scene, out_extras, out_error, progress, progress_user);
+}
+
+int review_import_load_fbx_memory(
+    const void *data,
+    size_t size,
+    const char *filename,
+    review_import_scene *out_scene,
+    review_import_extras *out_extras,
+    review_import_error *out_error,
+    review_import_progress_fn progress,
+    void *progress_user
+)
+{
+    if (!data) {
+        review_import_set_error(out_error, "invalid import arguments");
+        return 0;
+    }
+    return review_import_load(filename, data, size, out_scene, out_extras, out_error, progress, progress_user);
 }

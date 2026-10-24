@@ -1727,10 +1727,13 @@ layout(binding=0) uniform post_params {
     // GTAO, tone map or sRGB encode. Set for the buffer-inspection view, whose scene
     // shader emits faithful final pixels itself.
     int passthrough;
-    // Viewport background fill, in display (sRGB) space (`xyz`; `w` unused). The
-    // composite paints `mix(bg_top, bg_bottom, v)` wherever the scene's coverage is
-    // below 1, so the chosen color is the exact displayed value (after, not before,
-    // tone mapping). A flat preset sets both equal; the gradient sets distinct ends.
+    // Viewport background fill, in display (sRGB) space (`xyz`). The composite
+    // paints `mix(bg_top, bg_bottom, v)` wherever the scene's coverage is below 1,
+    // so the chosen color is the exact displayed value (after, not before, tone
+    // mapping). A flat preset sets both equal; the gradient sets distinct ends.
+    // `bg_top.w` is the background's opacity: 1 for every viewport preset, 0 for a
+    // transparent render (a thumbnail), whose alpha is then the scene's coverage
+    // and whose color is the surface's own, unblended. `bg_bottom.w` is unused.
     vec4 bg_top;
     vec4 bg_bottom;
 };
@@ -1844,6 +1847,16 @@ vec3 agx_tonemap(vec3 color_in) {
     return clamp(color, 0.0, 1.0);
 }
 
+// The surface over the background by coverage, as straight (unpremultiplied)
+// alpha: `bg_alpha` 1 is the plain `mix` with an opaque result, `bg_alpha` 0
+// leaves the surface's own color with coverage as its alpha. One expression for
+// both, so the viewport's opaque output is the blend it always was.
+vec4 over_background(vec3 surface, float coverage, vec3 bg, float bg_alpha) {
+    float alpha = coverage + bg_alpha * (1.0 - coverage);
+    vec3 color = (surface * coverage + bg * bg_alpha * (1.0 - coverage)) / max(alpha, 1e-4);
+    return vec4(color, alpha);
+}
+
 // Select the operator (indices match `TonemapOperator::shader_index`). When tone
 // mapping is off the linear radiance passes straight to the sRGB encode.
 vec3 apply_tonemap(vec3 color) {
@@ -1877,7 +1890,7 @@ void main() {
     // so pass them through unchanged (faithful — the shown value is the data),
     // composited over the chosen background where no geometry covers the pixel.
     if (passthrough != 0) {
-        frag_color = vec4(mix(bg, surface, coverage), 1.0);
+        frag_color = over_background(surface, coverage, bg, bg_top.w);
         return;
     }
     if (gtao_enabled != 0) {
@@ -1887,7 +1900,7 @@ void main() {
         surface = lit / max(coverage, 1e-4);
     }
     vec3 scene_srgb = linear_to_srgb(apply_tonemap(surface));
-    frag_color = vec4(mix(bg, scene_srgb, coverage), 1.0);
+    frag_color = over_background(scene_srgb, coverage, bg, bg_top.w);
 }
 @end
 

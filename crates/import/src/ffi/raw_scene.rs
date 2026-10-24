@@ -28,6 +28,10 @@ pub(super) struct ReviewImportMaterial {
     pub(super) smoothness: f32,
     pub(super) metallic: f32,
     pub(super) emissive: [f32; 3],
+    pub(super) emission_factor: f32,
+    /// Per `review_model::MaterialMap`, the texture's index in the extras
+    /// capture's table, or `-1`.
+    pub(super) maps: [i32; review_model::MaterialMap::COUNT],
     /// The bridge's own back-reference to the ufbx material; opaque here.
     pub(super) _source: *const c_void,
 }

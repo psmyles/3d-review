@@ -10,10 +10,12 @@ members = [
     "crates/log",
     "crates/model",
     "crates/optimize",
+    "crates/preview",
     "crates/prof",
     "crates/psd",
     "crates/render",
     "crates/shell-macos",
+    "crates/shell-windows",
     "crates/snapshot",
     "crates/ui",
 ]
@@ -192,6 +194,10 @@ zune-image = { version = "0.5", default-features = false, features = ["jpeg", "s
 # the C client.
 tracy-client = { version = "0.19", features = ["manual-lifetime", "ondemand"] }
 windows = "0.62.2"
+# `windows`' own core, named directly by the shell extension: its `#[implement]`
+# macro (the COM classes Explorer creates) expands to paths through
+# `::windows_core`. The same version `windows` 0.62 already pulls.
+windows-core = "0.62.2"
 windows-sys = "0.52"
 
 # --- macOS platform leaf: the CAMetalLayer sokol_gfx draws through
@@ -228,3 +234,13 @@ lto = "thin"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# The Explorer shell extension (`crates/shell-windows`): `release` in every way
+# but one. It is a DLL loaded into processes Explorer owns — its COM Surrogate,
+# which hosts other vendors' thumbnail providers beside ours, and a preview host —
+# where an abort kills the process and everything else in it. With unwinding, its
+# every entry point catches a panic and answers an HRESULT instead
+# (`shell-windows/src/guard.rs`). Builds into `target/release-shell/`.
+[profile.release-shell]
+inherits = "release"
+panic = "unwind"

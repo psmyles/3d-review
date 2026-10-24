@@ -67,6 +67,17 @@ app-notifications-reloading = Reloading { $file }...
 app-notifications-texture-loaded = Loaded { $file }
 app-notifications-texture-reloaded = Reloaded { $file }
 app-notifications-texture-failed = Couldn't load { $file }
+# The textures the model's own materials name, found where the file says they are
+# (or beside it) or embedded in it, and bound as the model loads.
+app-notifications-loading-textures = Loading the model's textures...
+# A card listing the textures the model names that could not be loaded, one per
+# line under it.
+app-notifications-textures-not-loaded = { $count ->
+        [one] One texture { $model } uses could not be loaded
+       *[other] { $count } textures { $model } uses could not be loaded
+    }
+app-notifications-texture-not-found = { $file } was not found where the model says it is, or beside it
+app-notifications-texture-unreadable = { $file } could not be read: { $detail }
 
 ## Opt
 

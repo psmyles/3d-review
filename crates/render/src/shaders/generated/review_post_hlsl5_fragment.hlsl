@@ -1,11 +1,11 @@
 cbuffer post_params : register(b0)
 {
-    int _378_gtao_enabled : packoffset(c0);
-    int _378_tonemap_enabled : packoffset(c0.y);
-    int _378_tonemap_op : packoffset(c0.z);
-    int _378_passthrough : packoffset(c0.w);
-    float4 _378_bg_top : packoffset(c1);
-    float4 _378_bg_bottom : packoffset(c2);
+    int _416_gtao_enabled : packoffset(c0);
+    int _416_tonemap_enabled : packoffset(c0.y);
+    int _416_tonemap_op : packoffset(c0.z);
+    int _416_passthrough : packoffset(c0.w);
+    float4 _416_bg_top : packoffset(c1);
+    float4 _416_bg_bottom : packoffset(c2);
 };
 
 Texture2D<float4> scene_color : register(t0);
@@ -26,32 +26,38 @@ struct SPIRV_Cross_Output
     float4 frag_color : SV_Target0;
 };
 
+float4 over_background(float3 surface, float coverage, float3 bg, float bg_alpha)
+{
+    float _388 = coverage + (bg_alpha * (1.0f - coverage));
+    return float4(((surface * coverage) + ((bg * bg_alpha) * (1.0f - coverage))) / max(_388, 9.9999997473787516355514526367188e-05f).xxx, _388);
+}
+
 float3 pbr_neutral_tonemap(float3 color_in)
 {
     float3 color = color_in;
-    float _77 = min(color_in.x, min(color_in.y, color_in.z));
-    float _83;
-    if (_77 < 0.07999999821186065673828125f)
+    float _85 = min(color_in.x, min(color_in.y, color_in.z));
+    float _91;
+    if (_85 < 0.07999999821186065673828125f)
     {
-        _83 = _77 - ((6.25f * _77) * _77);
+        _91 = _85 - ((6.25f * _85) * _85);
     }
     else
     {
-        _83 = 0.039999999105930328369140625f;
+        _91 = 0.039999999105930328369140625f;
     }
-    float3 _96 = color;
-    float3 _99 = _96 - _83.xxx;
-    color = _99;
-    float _108 = max(_99.x, max(_99.y, _99.z));
-    if (_108 < 0.7599999904632568359375f)
+    float3 _104 = color;
+    float3 _107 = _104 - _91.xxx;
+    color = _107;
+    float _116 = max(_107.x, max(_107.y, _107.z));
+    if (_116 < 0.7599999904632568359375f)
     {
         return color;
     }
-    float _128 = 1.0f - (0.057599999010562896728515625f / (_108 + (-0.519999980926513671875f)));
-    float3 _129 = color;
-    float3 _133 = _129 * (_128 / _108);
-    color = _133;
-    return lerp(_133, 1.0f.xxx * _128, (1.0f - (1.0f / ((0.1500000059604644775390625f * (_108 - _128)) + 1.0f))).xxx);
+    float _136 = 1.0f - (0.057599999010562896728515625f / (_116 + (-0.519999980926513671875f)));
+    float3 _137 = color;
+    float3 _141 = _137 * (_136 / _116);
+    color = _141;
+    return lerp(_141, 1.0f.xxx * _136, (1.0f - (1.0f / ((0.1500000059604644775390625f * (_116 - _136)) + 1.0f))).xxx);
 }
 
 float3 reinhard_tonemap(float3 color)
@@ -72,9 +78,9 @@ float3 aces_tonemap(float3 color_in)
 
 float3 agx_contrast_approx(float3 x)
 {
-    float3 _238 = x * x;
-    float3 _242 = _238 * _238;
-    return (((((((_242 * 15.5f) * _238) - ((_242 * 40.1399993896484375f) * x)) + (_242 * 31.95999908447265625f)) - ((_238 * 6.868000030517578125f) * x)) + (_238 * 0.4298000037670135498046875f)) + (x * 0.119099996984004974365234375f)) - 0.002319999970495700836181640625f.xxx;
+    float3 _246 = x * x;
+    float3 _250 = _246 * _246;
+    return (((((((_250 * 15.5f) * _246) - ((_250 * 40.1399993896484375f) * x)) + (_250 * 31.95999908447265625f)) - ((_246 * 6.868000030517578125f) * x)) + (_246 * 0.4298000037670135498046875f)) + (x * 0.119099996984004974365234375f)) - 0.002319999970495700836181640625f.xxx;
 }
 
 float3 agx_tonemap(float3 color_in)
@@ -85,11 +91,11 @@ float3 agx_tonemap(float3 color_in)
 
 float3 apply_tonemap(float3 color)
 {
-    if (_378_tonemap_enabled == 0)
+    if (_416_tonemap_enabled == 0)
     {
         return color;
     }
-    switch (_378_tonemap_op)
+    switch (_416_tonemap_op)
     {
         case 0:
         {
@@ -130,28 +136,36 @@ float3 linear_to_srgb(float3 c)
 
 void frag_main()
 {
-    float4 _439 = scene_color.Sample(scene_sampler, v_uv);
-    float3 _442 = _439.xyz;
-    float3 lit = _442;
-    float _446 = _439.w;
-    float3 _452 = max(_446, 9.9999997473787516355514526367188e-05f).xxx;
-    float3 surface = _442 / _452;
-    float3 _469 = lerp(_378_bg_top.xyz, _378_bg_bottom.xyz, clamp(v_uv.y, 0.0f, 1.0f).xxx);
-    if (_378_passthrough != 0)
+    float4 _477 = scene_color.Sample(scene_sampler, v_uv);
+    float3 _480 = _477.xyz;
+    float3 lit = _480;
+    float _484 = _477.w;
+    float3 _489 = max(_484, 9.9999997473787516355514526367188e-05f).xxx;
+    float3 surface = _480 / _489;
+    float3 _506 = lerp(_416_bg_top.xyz, _416_bg_bottom.xyz, clamp(v_uv.y, 0.0f, 1.0f).xxx);
+    if (_416_passthrough != 0)
     {
-        frag_color = float4(lerp(_469, surface, _446.xxx), 1.0f);
+        float3 param = surface;
+        float param_1 = _484;
+        float3 param_2 = _506;
+        float param_3 = _416_bg_top.w;
+        frag_color = over_background(param, param_1, param_2, param_3);
         return;
     }
-    if (_378_gtao_enabled != 0)
+    if (_416_gtao_enabled != 0)
     {
-        float3 _509 = lit;
-        float3 _515 = max(_509 - (ambient_texture.Sample(scene_sampler, v_uv).xyz * (1.0f - gtao_texture.Sample(scene_sampler, v_uv).x)), 0.0f.xxx);
-        lit = _515;
-        surface = _515 / _452;
+        float3 _548 = lit;
+        float3 _554 = max(_548 - (ambient_texture.Sample(scene_sampler, v_uv).xyz * (1.0f - gtao_texture.Sample(scene_sampler, v_uv).x)), 0.0f.xxx);
+        lit = _554;
+        surface = _554 / _489;
     }
-    float3 param = surface;
-    float3 param_1 = apply_tonemap(param);
-    frag_color = float4(lerp(_469, linear_to_srgb(param_1), _446.xxx), 1.0f);
+    float3 param_4 = surface;
+    float3 param_5 = apply_tonemap(param_4);
+    float3 param_6 = linear_to_srgb(param_5);
+    float param_7 = _484;
+    float3 param_8 = _506;
+    float param_9 = _416_bg_top.w;
+    frag_color = over_background(param_6, param_7, param_8, param_9);
 }
 
 SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)

@@ -33,6 +33,25 @@
 #ifndef MyAppUrl
   #define MyAppUrl "https://github.com/psmyles/3d-review"
 #endif
+; The Explorer shell extension (crates\shell-windows): product.json's
+; shellExtension. The GUIDs come without their braces, because Inno reads a "{" in
+; a value as the start of a constant; each use below writes "{{" for the brace.
+#ifndef MyShellDll
+  #define MyShellDll "3d-review-shell.dll"
+#endif
+#ifndef MyThumbnailGuid
+  #define MyThumbnailGuid "2B5CBA72-DC44-464E-AEFD-DEBD0A3F8066"
+#endif
+#ifndef MyPreviewGuid
+  #define MyPreviewGuid "D0953A88-C253-4DD5-B547-AD9B2E5471CA"
+#endif
+#ifndef MyPreviewAppGuid
+  #define MyPreviewAppGuid "9D74B0F7-5CA1-4539-B0A1-AE72A382E283"
+#endif
+; The shell's own slots a handler registers under: IThumbnailProvider and
+; IPreviewHandler.
+#define ThumbnailSlot "e357fccd-a995-4576-b01f-234630154e96"
+#define PreviewSlot "8895b1c6-b41f-4c1c-a562-0d564250836f"
 
 [Setup]
 ; A stable GUID keeps upgrades/uninstall tied to the same app across versions.
@@ -62,6 +81,10 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; uninstaller) tell open Explorer windows and terminals started from them to
 ; reload it, rather than leave the change unseen until the next sign-in.
 ChangesEnvironment=yes
+; The "shellext" task registers a thumbnail provider and a preview handler for
+; .fbx: this has Explorer re-read the associations, so a folder already open picks
+; them up without a sign-out.
+ChangesAssociations=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -69,6 +92,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "associate"; GroupDescription: "File associations:"; \
   Description: "Associate .fbx files with {#MyAppName}"
+Name: "shellext"; GroupDescription: "File associations:"; \
+  Description: "Show .fbx thumbnails and previews in File Explorer"
 Name: "addtopath"; GroupDescription: "Command line:"; \
   Description: "Add {#MyAppName} to my PATH, so ""review-cli"" runs from any terminal"; \
   Flags: unchecked
@@ -89,6 +114,13 @@ Source: "..\target\release\review-cli.exe"; DestDir: "{app}"; Flags: ignoreversi
 ; An install without them still shows every page — each image renders as its
 ; alt text — which is why this entry is allowed to find nothing.
 Source: "..\docs\book\src\en\images\*"; DestDir: "{app}\docs\en\images"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+; The Explorer shell extension: a COM DLL Explorer loads into its COM Surrogate
+; (thumbnails) and into a prevhost.exe of its own (the preview pane). Built with
+; the release-shell profile, which unwinds on panic rather than aborting a process
+; Explorer owns. A surrogate holding the old copy is closed by Setup's Restart
+; Manager pass on an upgrade; Explorer starts a new one on demand.
+Source: "..\target\release-shell\review_shell.dll"; DestDir: "{app}"; DestName: "{#MyShellDll}"; \
+  Flags: ignoreversion; Tasks: shellext
 ; --- license notices ---------------------------------------------------------
 ; The exe is statically linked, so it contains code from every project listed in
 ; docs\THIRD-PARTY-NOTICES.md. Their licenses require the notices to travel with
@@ -121,6 +153,45 @@ Root: HKA; Subkey: "Software\Classes\{#MyAppProgId}\shell\open\command"; ValueTy
   ValueData: """{app}\{#MyAppExe}"" ""%1"""; Tasks: associate
 Root: HKA; Subkey: "Software\Classes\.fbx\OpenWithProgIds"; ValueType: string; ValueName: "{#MyAppProgId}"; \
   ValueData: ""; Flags: uninsdeletevalue; Tasks: associate
+
+; The shell extension (crates\shell-windows). scripts\register-shell.ps1 writes
+; the same keys for a development build; keep the two in step.
+;
+; The thumbnail provider: Explorer runs it isolated in its COM Surrogate.
+Root: HKA; Subkey: "Software\Classes\CLSID\{{{#MyThumbnailGuid}}"; ValueType: string; ValueName: ""; \
+  ValueData: "{#MyAppName} Thumbnail Provider"; Flags: uninsdeletekey; Tasks: shellext
+Root: HKA; Subkey: "Software\Classes\CLSID\{{{#MyThumbnailGuid}}\InprocServer32"; ValueType: string; ValueName: ""; \
+  ValueData: "{app}\{#MyShellDll}"; Tasks: shellext
+Root: HKA; Subkey: "Software\Classes\CLSID\{{{#MyThumbnailGuid}}\InprocServer32"; ValueType: string; \
+  ValueName: "ThreadingModel"; ValueData: "Apartment"; Tasks: shellext
+; The preview handler, in a prevhost.exe of its own AppID so it never shares a
+; process with another vendor's handler.
+Root: HKA; Subkey: "Software\Classes\CLSID\{{{#MyPreviewGuid}}"; ValueType: string; ValueName: ""; \
+  ValueData: "{#MyAppName} Preview Handler"; Flags: uninsdeletekey; Tasks: shellext
+Root: HKA; Subkey: "Software\Classes\CLSID\{{{#MyPreviewGuid}}"; ValueType: string; ValueName: "DisplayName"; \
+  ValueData: "{#MyAppName} Preview Handler"; Tasks: shellext
+Root: HKA; Subkey: "Software\Classes\CLSID\{{{#MyPreviewGuid}}"; ValueType: string; ValueName: "AppID"; \
+  ValueData: "{{{#MyPreviewAppGuid}}"; Tasks: shellext
+Root: HKA; Subkey: "Software\Classes\CLSID\{{{#MyPreviewGuid}}\InprocServer32"; ValueType: string; ValueName: ""; \
+  ValueData: "{app}\{#MyShellDll}"; Tasks: shellext
+Root: HKA; Subkey: "Software\Classes\CLSID\{{{#MyPreviewGuid}}\InprocServer32"; ValueType: string; \
+  ValueName: "ThreadingModel"; ValueData: "Apartment"; Tasks: shellext
+Root: HKA; Subkey: "Software\Classes\AppID\{{{#MyPreviewAppGuid}}"; ValueType: expandsz; ValueName: "DllSurrogate"; \
+  ValueData: "%SystemRoot%\system32\prevhost.exe"; Flags: uninsdeletekey; Tasks: shellext
+Root: HKA; Subkey: "Software\Microsoft\Windows\CurrentVersion\PreviewHandlers"; ValueType: string; \
+  ValueName: "{{{#MyPreviewGuid}}"; ValueData: "{#MyAppName} Preview Handler"; Flags: uninsdeletevalue; Tasks: shellext
+; Both handlers under the extension (whoever the default app is) and under our
+; ProgID (which Explorer looks under first when 3D Review is the default app).
+; Not uninsdeletekey: another program may have owned the extension's slot before
+; us, and the [Code] below removes each only while it still names our class.
+Root: HKA; Subkey: "Software\Classes\.fbx\ShellEx\{{{#ThumbnailSlot}}"; ValueType: string; ValueName: ""; \
+  ValueData: "{{{#MyThumbnailGuid}}"; Tasks: shellext
+Root: HKA; Subkey: "Software\Classes\.fbx\ShellEx\{{{#PreviewSlot}}"; ValueType: string; ValueName: ""; \
+  ValueData: "{{{#MyPreviewGuid}}"; Tasks: shellext
+Root: HKA; Subkey: "Software\Classes\{#MyAppProgId}\ShellEx\{{{#ThumbnailSlot}}"; ValueType: string; ValueName: ""; \
+  ValueData: "{{{#MyThumbnailGuid}}"; Tasks: shellext
+Root: HKA; Subkey: "Software\Classes\{#MyAppProgId}\ShellEx\{{{#PreviewSlot}}"; ValueType: string; ValueName: ""; \
+  ValueData: "{{{#MyPreviewGuid}}"; Tasks: shellext
 
 [Run]
 Filename: "{app}\{#MyAppExe}"; Description: "Launch {#MyAppName}"; \
@@ -242,8 +313,38 @@ begin
     AddToUserPath(ExpandConstant('{app}'));
 end;
 
+// Remove a shell-extension slot only while it still names our class: another
+// program may have registered its own handler there since.
+procedure RemoveOwnSlot(const Owner, Slot, Clsid: string);
+var
+  Key, Current: string;
+begin
+  Key := 'Software\Classes\' + Owner + '\ShellEx\' + Slot;
+  if RegQueryStringValue(HKA, Key, '', Current) and (CompareText(Current, Clsid) = 0) then
+    RegDeleteKeyIncludingSubkeys(HKA, Key);
+end;
+
+procedure RemoveShellExtensionSlots;
+var
+  Owners: array[0..1] of string;
+  I: Integer;
+begin
+  Owners[0] := '.fbx';
+  Owners[1] := '{#MyAppProgId}';
+  // Braces by concatenation: "{{" is the escape in the setup sections only, and
+  // a Pascal string keeps both.
+  for I := 0 to 1 do
+  begin
+    RemoveOwnSlot(Owners[I], '{' + '{#ThumbnailSlot}' + '}', '{' + '{#MyThumbnailGuid}' + '}');
+    RemoveOwnSlot(Owners[I], '{' + '{#PreviewSlot}' + '}', '{' + '{#MyPreviewGuid}' + '}');
+  end;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
+  begin
     RemoveFromUserPath(ExpandConstant('{app}'));
+    RemoveShellExtensionSlots;
+  end;
 end;

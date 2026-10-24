@@ -26,32 +26,39 @@ struct main0_in
 };
 
 static inline __attribute__((always_inline))
+float4 over_background(thread const float3& surface, thread const float& coverage, thread const float3& bg, thread const float& bg_alpha)
+{
+    float _388 = coverage + (bg_alpha * (1.0 - coverage));
+    return float4(((surface * coverage) + ((bg * bg_alpha) * (1.0 - coverage))) / float3(fast::max(_388, 9.9999997473787516355514526367188e-05)), _388);
+}
+
+static inline __attribute__((always_inline))
 float3 pbr_neutral_tonemap(thread const float3& color_in)
 {
     float3 color = color_in;
-    float _77 = fast::min(color_in.x, fast::min(color_in.y, color_in.z));
-    float _83;
-    if (_77 < 0.07999999821186065673828125)
+    float _85 = fast::min(color_in.x, fast::min(color_in.y, color_in.z));
+    float _91;
+    if (_85 < 0.07999999821186065673828125)
     {
-        _83 = _77 - ((6.25 * _77) * _77);
+        _91 = _85 - ((6.25 * _85) * _85);
     }
     else
     {
-        _83 = 0.039999999105930328369140625;
+        _91 = 0.039999999105930328369140625;
     }
-    float3 _96 = color;
-    float3 _99 = _96 - float3(_83);
-    color = _99;
-    float _108 = fast::max(_99.x, fast::max(_99.y, _99.z));
-    if (_108 < 0.7599999904632568359375)
+    float3 _104 = color;
+    float3 _107 = _104 - float3(_91);
+    color = _107;
+    float _116 = fast::max(_107.x, fast::max(_107.y, _107.z));
+    if (_116 < 0.7599999904632568359375)
     {
         return color;
     }
-    float _128 = 1.0 - (0.057599999010562896728515625 / (_108 + (-0.519999980926513671875)));
-    float3 _129 = color;
-    float3 _133 = _129 * (_128 / _108);
-    color = _133;
-    return mix(_133, float3(1.0) * _128, float3(1.0 - (1.0 / ((0.1500000059604644775390625 * (_108 - _128)) + 1.0))));
+    float _136 = 1.0 - (0.057599999010562896728515625 / (_116 + (-0.519999980926513671875)));
+    float3 _137 = color;
+    float3 _141 = _137 * (_136 / _116);
+    color = _141;
+    return mix(_141, float3(1.0) * _136, float3(1.0 - (1.0 / ((0.1500000059604644775390625 * (_116 - _136)) + 1.0))));
 }
 
 static inline __attribute__((always_inline))
@@ -76,9 +83,9 @@ float3 aces_tonemap(thread const float3& color_in)
 static inline __attribute__((always_inline))
 float3 agx_contrast_approx(thread const float3& x)
 {
-    float3 _238 = x * x;
-    float3 _242 = _238 * _238;
-    return (((((((_242 * 15.5) * _238) - ((_242 * 40.1399993896484375) * x)) + (_242 * 31.95999908447265625)) - ((_238 * 6.868000030517578125) * x)) + (_238 * 0.4298000037670135498046875)) + (x * 0.119099996984004974365234375)) - float3(0.002319999970495700836181640625);
+    float3 _246 = x * x;
+    float3 _250 = _246 * _246;
+    return (((((((_250 * 15.5) * _246) - ((_250 * 40.1399993896484375) * x)) + (_250 * 31.95999908447265625)) - ((_246 * 6.868000030517578125) * x)) + (_246 * 0.4298000037670135498046875)) + (x * 0.119099996984004974365234375)) - float3(0.002319999970495700836181640625);
 }
 
 static inline __attribute__((always_inline))
@@ -89,13 +96,13 @@ float3 agx_tonemap(thread const float3& color_in)
 }
 
 static inline __attribute__((always_inline))
-float3 apply_tonemap(thread const float3& color, constant post_params& _378)
+float3 apply_tonemap(thread const float3& color, constant post_params& _416)
 {
-    if (_378.tonemap_enabled == 0)
+    if (_416.tonemap_enabled == 0)
     {
         return color;
     }
-    switch (_378.tonemap_op)
+    switch (_416.tonemap_op)
     {
         case 0:
         {
@@ -135,31 +142,39 @@ float3 linear_to_srgb(thread const float3& c)
     return mix((powr(fast::max(c, float3(0.0)), float3(0.4166666567325592041015625)) * 1.05499994754791259765625) - float3(0.054999999701976776123046875), c * 12.9200000762939453125, step(c, float3(0.003130800090730190277099609375)));
 }
 
-fragment main0_out main0(main0_in in [[stage_in]], constant post_params& _378 [[buffer(0)]], texture2d<float> scene_color [[texture(0)]], texture2d<float> gtao_texture [[texture(1)]], texture2d<float> ambient_texture [[texture(2)]], sampler scene_sampler [[sampler(0)]])
+fragment main0_out main0(main0_in in [[stage_in]], constant post_params& _416 [[buffer(0)]], texture2d<float> scene_color [[texture(0)]], texture2d<float> gtao_texture [[texture(1)]], texture2d<float> ambient_texture [[texture(2)]], sampler scene_sampler [[sampler(0)]])
 {
     main0_out out = {};
-    float4 _439 = scene_color.sample(scene_sampler, in.v_uv);
-    float3 _442 = _439.xyz;
-    float3 lit = _442;
-    float _446 = _439.w;
-    float3 _452 = float3(fast::max(_446, 9.9999997473787516355514526367188e-05));
-    float3 surface = _442 / _452;
-    float3 _469 = mix(_378.bg_top.xyz, _378.bg_bottom.xyz, float3(fast::clamp(in.v_uv.y, 0.0, 1.0)));
-    if (_378.passthrough != 0)
+    float4 _477 = scene_color.sample(scene_sampler, in.v_uv);
+    float3 _480 = _477.xyz;
+    float3 lit = _480;
+    float _484 = _477.w;
+    float3 _489 = float3(fast::max(_484, 9.9999997473787516355514526367188e-05));
+    float3 surface = _480 / _489;
+    float3 _506 = mix(_416.bg_top.xyz, _416.bg_bottom.xyz, float3(fast::clamp(in.v_uv.y, 0.0, 1.0)));
+    if (_416.passthrough != 0)
     {
-        out.frag_color = float4(mix(_469, surface, float3(_446)), 1.0);
+        float3 param = surface;
+        float param_1 = _484;
+        float3 param_2 = _506;
+        float param_3 = _416.bg_top.w;
+        out.frag_color = over_background(param, param_1, param_2, param_3);
         return out;
     }
-    if (_378.gtao_enabled != 0)
+    if (_416.gtao_enabled != 0)
     {
-        float3 _509 = lit;
-        float3 _515 = fast::max(_509 - (ambient_texture.sample(scene_sampler, in.v_uv).xyz * (1.0 - gtao_texture.sample(scene_sampler, in.v_uv).x)), float3(0.0));
-        lit = _515;
-        surface = _515 / _452;
+        float3 _548 = lit;
+        float3 _554 = fast::max(_548 - (ambient_texture.sample(scene_sampler, in.v_uv).xyz * (1.0 - gtao_texture.sample(scene_sampler, in.v_uv).x)), float3(0.0));
+        lit = _554;
+        surface = _554 / _489;
     }
-    float3 param = surface;
-    float3 param_1 = apply_tonemap(param, _378);
-    out.frag_color = float4(mix(_469, linear_to_srgb(param_1), float3(_446)), 1.0);
+    float3 param_4 = surface;
+    float3 param_5 = apply_tonemap(param_4, _416);
+    float3 param_6 = linear_to_srgb(param_5);
+    float param_7 = _484;
+    float3 param_8 = _506;
+    float param_9 = _416.bg_top.w;
+    out.frag_color = over_background(param_6, param_7, param_8, param_9);
     return out;
 }
 

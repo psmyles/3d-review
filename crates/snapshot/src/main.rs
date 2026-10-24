@@ -123,6 +123,7 @@ fn run() -> Result<()> {
         args.size,
         args.chrome,
         args.background,
+        args.transparent,
         args.grid,
         args.skeleton,
         args.curve_style,

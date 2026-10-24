@@ -2699,7 +2699,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "review-app"
-version = "0.7.4"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2805,6 +2805,7 @@ name = "review-log"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "dirs",
  "log",
  "review-prof",
 ]
@@ -2827,6 +2828,18 @@ dependencies = [
  "review-prof",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "review-preview"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "log",
+ "review-import",
+ "review-model",
+ "review-render",
  "thiserror 2.0.18",
 ]
 
@@ -2884,6 +2897,22 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "review-localization",
  "review-localization-build",
+]
+
+[[package]]
+name = "review-shell-windows"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "log",
+ "review-localization",
+ "review-localization-build",
+ "review-log",
+ "review-preview",
+ "serde_json",
+ "windows",
+ "windows-core",
+ "winresource",
 ]
 
 [[package]]

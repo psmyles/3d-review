@@ -385,6 +385,11 @@ pub(super) fn marshal_materials(
             smoothness: material.smoothness,
             metallic: material.metallic,
             emissive: Vec3::from_array(material.emissive),
+            emission_factor: material.emission_factor,
+            // A negative code is "no texture"; one the extras capture does not
+            // have is caught where it is resolved, which is the one place that
+            // holds both tables.
+            maps: material.maps.map(|texture| u32::try_from(texture).ok()),
         })
         .collect())
 }

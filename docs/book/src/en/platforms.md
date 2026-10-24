@@ -14,6 +14,9 @@ differ:
   using `open`, or dropping a file on the Dock icon all open it.
 - **How it is installed.** Windows gets an installer that also teaches the
   system that `.fbx` files belong to 3D Review. macOS gets a signed `.dmg`.
+- **File browser pictures.** On Windows, File Explorer can show `.fbx`
+  [thumbnails and a live preview](explorer.md). Finder thumbnails and Quick Look
+  on macOS are planned but not available yet.
 - **Where settings are kept.** Window position and preferences are saved in
   `%APPDATA%\3D Review` on Windows and
   `~/Library/Application Support/3D Review` on macOS.

@@ -286,6 +286,8 @@ impl App {
                 // waits for the capture, but Opt does not, so it runs again.
                 if landed {
                     self.opt_capture_landed();
+                    // The capture is what names the model's own textures.
+                    self.load_imported_textures();
                 }
             }
             Err(error) => {
