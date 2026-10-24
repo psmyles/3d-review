@@ -2900,6 +2900,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "review-shell-quicklook"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "log",
+ "review-localization",
+ "review-localization-build",
+ "review-log",
+ "review-preview",
+ "serde_json",
+]
+
+[[package]]
 name = "review-shell-windows"
 version = "0.1.0"
 dependencies = [

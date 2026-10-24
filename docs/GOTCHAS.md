@@ -21,6 +21,7 @@ under.
 - [Tools and builds](#tools-and-builds)
 - [Baked assets](#baked-assets)
 - [The Explorer shell extension](#the-explorer-shell-extension)
+- [The Quick Look extensions](#the-quick-look-extensions)
 
 ---
 
@@ -1489,3 +1490,72 @@ so `cargo build` cannot overwrite a DLL that is registered in place.
 and each run registers a fresh one. The installer relies on Setup's Restart
 Manager pass to close a surrogate holding the old copy; Explorer starts a new one
 on demand.
+
+## The Quick Look extensions
+
+### A second renderer on one windowless GPU ran out of shaders
+
+sokol's resource pools are fixed at `sg_setup`, and its defaults (32 shaders, 64
+pipelines) fit the viewer's one `Renderer`. Every pipeline here owns its shader and
+one renderer creates about twenty, so the preview session's renderer — opened beside
+the thumbnail viewport's in the same host — failed every pipeline with
+`SHADER_POOL_EXHAUSTED` (sokol log item 156; a release build logs only the number).
+`Gpu::headless` therefore sizes every pool for `HEADLESS_RENDERERS` (8) renderers.
+The Explorer preview host can hold two panes and would have hit it too. A message
+that reads only `sg: [id N]` is an index into sokol_gfx.h's `_SG_LOG_ITEMS` list.
+
+### sokol's Metal swapchain pass takes nothing but a real drawable
+
+`sg_metal_swapchain.current_drawable` must be a `CAMetalDrawable`: sokol reads its
+`texture` and ends the pass with `presentDrawable:`. A windowless frame on Metal
+therefore draws its one pass into a sokol colour-attachment image instead
+(`Swapchain::pass_attachment`), rather than into an object made to look like a
+drawable — what Metal does with one of those at present time is undocumented. The
+image is `BGRA8` like the window's, so the RGBA promise of `Gpu::read_back` is a
+swizzle on the way out.
+
+### The sandbox lets the extension see a texture beside the model, not read it
+
+Quick Look extensions must be sandboxed, and the sandbox grants the one file Quick
+Look hands over. Measured with a model naming a PNG beside it: the existence check
+passes, the read fails with `EPERM`, and the log says the texture "did not decode".
+So a Finder thumbnail or preview shows a model's embedded textures (and none of its
+loose ones) unless the extensions are given a read-only temporary-exception
+entitlement — a choice D23 leaves open. Run outside the sandbox
+(`scripts/quicklook-check.sh`), the same model finds its texture.
+
+### `convertToBacking` flips y in a flipped view
+
+The preview view is flipped so pointer positions count down from the top, as the
+viewer's do. `convertToBacking` then hands back a *negated* y — backing space
+counts up from the bottom whatever the view's flipping (measured: (10, 90) in a
+flipped view at 2x converts to (20, -180)) — and every vertical drag, orbit, pan
+and `Option`+right zoom, ran backwards while horizontal ones looked right. Scale
+by `backingScaleFactor` instead.
+
+### A dev bundle outside /Applications needs `pluginkit -a`
+
+`lsregister -f` registers the app and its document types, but PlugInKit did not list
+its extensions until they were added explicitly (`pluginkit -a <appex>`), which
+`scripts/dev-app.sh` does. `pluginkit -m -v -i <bundle id>` shows whether one is
+known and elected (`+`).
+
+### The thumbnails agent keeps the extension list it started with
+
+Observed, and not yet settled: after registering the extensions, Quick Look's
+preview chose ours over SceneKit's (which claims all of `public.3d-content`; ours
+names `com.autodesk.mac.fbx` exactly), but `com.apple.quicklook.ThumbnailsAgent`
+kept launching SceneKit's thumbnailer and never mentioned ours. The agent had been
+running for ten days; registering re-listed *preview* extensions in its log but not
+thumbnail ones. It cannot be restarted from a shell (SIP refuses `launchctl
+kickstart`, and it ignores `SIGTERM` while Finder keeps it busy), and `qlmanage -r`
+does not restart it. Log out and back in after first registering the extensions,
+then check with `qlmanage -t -x -s 512 -o <dir> <model.fbx>`.
+
+### Reading an extension's log
+
+The extensions log to their own containers, `~/Library/Containers/<extension
+id>/Data/Library/Logs/3D Review/`. The system's side — which extension Quick Look
+launched, and why one failed — is in the unified log: `/usr/bin/log show --last 5m
+--predicate 'process CONTAINS "ThumbnailsAgent"'`. Spell out `/usr/bin/log` in zsh,
+where `log` is a builtin that takes the arguments and prints nothing.

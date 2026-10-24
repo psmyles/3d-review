@@ -10,7 +10,8 @@
   "fileAssociation": {
     "extension": ".fbx",
     "progId": "3DReview.fbx",
-    "typeName": "FBX 3D Model"
+    "typeName": "FBX 3D Model",
+    "macContentType": "com.autodesk.mac.fbx"
   },
   "shellExtension": {
     "dllName": "3d-review-shell.dll",

@@ -381,8 +381,11 @@ independent of the API underneath it.
 device and sokol setup as the viewer's, with the swapchain swapped for an
 offscreen backbuffer that `Gpu::read_back` copies to the CPU. Everything above it
 — `Frame`, the one swapchain pass, the `Renderer` — runs unchanged, which is the
-point: the [`snapshot`](#snapshot--review-snapshot) tool's images are the
-viewer's own frames.
+point: the [`snapshot`](#snapshot--review-snapshot) tool's images and the shell
+extensions' thumbnails are the viewer's own frames. Its sokol pools are sized for
+eight renderers (`HEADLESS_RENDERERS`) rather than sokol's defaults, which fit the
+viewer's one: every pipeline owns its shader, and a second renderer — a preview
+beside a thumbnail, two preview panes in one host — exhausted the 32-shader pool.
 
 `Frame` carries a `Drop` guard that closes an abandoned pass, so one bad frame
 cannot wedge the next. `SwapchainJob` is a draw *recorded* before the swapchain
@@ -396,10 +399,16 @@ only platform GPU code in the workspace. `d3d11.rs` creates the device, points
 render-target view per frame, presents, and answers `supported_sample_counts`
 (sokol only reports MSAA as a yes/no). `metal.rs` does the same with a
 `CAMetalLayer`. Each also carries the leaves for what sokol has no notion of:
-`GpuTimer` (timestamp queries) and, gated on `bake`, `read_image_subresource`;
-gated on `headless`, `Swapchain::offscreen` + `read_back` (the Metal twin is a
-stub that reports itself unimplemented). Both readbacks share one staging-copy
-helper.
+`GpuTimer` (timestamp queries) and, gated on `bake` or `headless`,
+`read_image_subresource`; gated on `headless`, `Swapchain::offscreen` +
+`read_back`, which reuse that readback. The offscreen backbuffer differs by OS for
+a reason: D3D11 hands sokol a render-target view of a plain texture, so even a
+windowless frame is an ordinary swapchain pass, but sokol's Metal swapchain pass
+takes only a `CAMetalDrawable` and ends in `presentDrawable:`. So Metal's is a
+sokol colour-attachment image (`BGRA8`, swizzled to RGBA on read), and the frame's
+one pass attaches it in place of a swapchain (`Swapchain::pass_attachment`, `None`
+on D3D11) — a pass every swapchain pipeline already matches. Both leaves are
+`Send`, so a windowless `Gpu` can live behind a shell's process-wide lock.
 
 The two modules are twins aliased as `backend`, **not a trait**: anything added to
 one must be added to the other.
@@ -883,8 +892,21 @@ windowless GPU: the safe, host-agnostic core of the shell extensions.
   size and halved alpha-weighted, AO converged.
 - `interaction.rs` — pointer input to camera moves at the viewer's own rates
   (`review_render::gesture`): left orbits, right and middle pan, `Alt`+right
-  zooms, the wheel zooms. Right pans rather than looking around, because the
-  viewer's look drag exists to steer a flycam a preview has no keys for.
+  zooms, the wheel and a trackpad pinch zoom. Right pans rather than looking
+  around, because the viewer's look drag exists to steer a flycam a preview has no
+  keys for.
+- `shared.rs` — the process's one `Host` behind a lock, brought up on first use
+  and dropped by a reaper thread after 30 s idle with no viewport open; a panic
+  inside a draw drops the host rather than trusting a device left mid-pass.
+- `session.rs` — `Session`, one interactive preview: the load on a worker (its
+  callback called exactly once), the viewport opened and framed on first draw,
+  pointer input, the settle ticks while a glide or AO is still changing the
+  picture, and the last frame laid over the shell's backdrop.
+
+`shared` and `Session` are the platform-neutral halves of a shell, and
+`shell-quicklook` is built on them. `shell-windows` predates them and keeps its
+own `host.rs` and `preview/pane.rs`, the same logic in `HRESULT` shape; moving it
+onto these is a change to make — and test — on Windows.
 
 Offscreen plus readback, not a swapchain on the pane's window: a preview pane is a
 child of another process's window, two can share a host, and the host decides when
@@ -925,6 +947,52 @@ build for the current user, `scripts/shell-thumbnail.ps1` asks the shell for a
 file's thumbnail through the real thumbnail cache and surrogate, and
 `scripts/shell-preview.ps1` hosts the preview handler out of process, as Explorer
 does, drives it with the pointer and captures each step.
+
+### `shell-quicklook` — `review-shell-quicklook`
+
+Finder's thumbnails and Quick Look preview for `.fbx` (D23): the macOS twin of
+`shell-windows`, without COM. A C-ABI dylib over `review-preview`
+(`include/review_quicklook.h`, hand-kept against the `extern "C"` functions) and
+two small Swift app extensions that call it (`extension/`), built with `swiftc` and
+no Xcode project by `scripts/build-quicklook.sh`:
+
+```
+3D Review.app/Contents/
+  Frameworks/libreview_quicklook.dylib   the renderer and its embedded assets, once
+  PlugIns/ReviewThumbnail.appex          QLThumbnailProvider
+  PlugIns/ReviewPreview.appex            QLPreviewingController (view-based)
+```
+
+Both extensions find the dylib through an rpath into the containing app, so the
+renderer ships once rather than per extension. Built with the `release-shell`
+profile (D24) for the same reason as the Windows DLL: every entry point runs inside
+`guard::guarded`, because unwinding into Swift is undefined.
+
+- `thumbnail.rs` — `review_ql_thumbnail`: the file loaded from its *path* (the
+  extension is handed a URL, not a stream), drawn by `render_thumbnail`, returned
+  as straight-alpha RGBA the extension draws into Quick Look's reply context.
+- `preview.rs` — a `review_preview::Session` behind an opaque handle; the load's
+  callback reaches the view through a retained token that holds it weakly, so a
+  preview closed mid-load is simply not woken.
+- `image.rs` — `ReviewQlImage`, owned (a thumbnail, freed by
+  `review_ql_image_free`) or borrowed (a preview frame, valid until the next call).
+- `extension/PreviewViewController.swift` — the view: a layer showing each frame,
+  a 16 ms settle timer while the picture changes, and mouse, trackpad and key
+  events in pixels (left orbits, right or Control-click or middle pans,
+  `Option`+right drags a zoom, the wheel and a pinch zoom, double-click / `F` /
+  Home reframe). The status line comes from the catalog through the dylib.
+
+Both extensions are sandboxed, as Quick Look requires
+(`extension/QuickLook.entitlements`). The sandbox grants the file Quick Look hands
+over and nothing beside it: a texture named by a relative path can be `stat`-ed
+but not read (`EPERM`), so a model draws untextured unless it embeds its textures.
+Logs go to the extension's container (`~/Library/Containers/<extension id>/Data/
+Library/Logs/3D Review`), not the viewer's folder.
+
+It is checked without Finder: `scripts/quicklook-check.sh` drives the dylib exactly
+as the extensions do — a thumbnail, then a preview loaded, orbited, zoomed and
+reframed — and writes every step as a PNG. `scripts/dev-app.sh` bundles, signs
+(ad hoc) and registers the extensions so `qlmanage -t` / `qlmanage -p` reach them.
 
 ### `prof` — `review-prof`
 
@@ -1119,15 +1187,15 @@ apparent size on a 2× display while the native `Window`/`Panel` chrome beside i
 did not. Don't reintroduce a px-to-point conversion.
 
 **9. All unsafe and all C/FFI lives in `import`, `psd` and `optimize`** — plus the
-scoped GPU site below, `shell-macos`'s one Objective-C hook and `shell-windows`'
-COM server. No unsafe leaks into `model` or `ui`, nor into `render`'s geometry,
+scoped GPU site below, `shell-macos`'s one Objective-C hook, `shell-windows`' COM
+server and `shell-quicklook`'s C ABI. No unsafe leaks into `model` or `ui`, nor into `render`'s geometry,
 material or camera modules.
 Before `slice::from_raw_parts`, null-check the pointer and treat len 0 as empty
 (`checked_slice`). Free the C scene on **both** success and error paths.
 
 **The compiler enforces it.** `app`, `model`, `ui`, `audit`, `log`, `prof`,
 `preview` and `localization` are `#![forbid(unsafe_code)]`. `render`, `import`,
-`optimize` and `shell-windows` are `#![deny(unsafe_code)]` at the crate root, and each sanctioned module opts
+`optimize`, `shell-windows` and `shell-quicklook` are `#![deny(unsafe_code)]` at the crate root, and each sanctioned module opts
 back in with a scoped `#![allow(unsafe_code, reason = "...")]` saying why — so a
 new `unsafe` anywhere else is a build error, and the list of `allow`s *is* the
 list of unsafe modules:
@@ -1146,6 +1214,8 @@ list of unsafe modules:
   `preview/window.rs` (the pane's window procedure and GDI) and `preview/ui.rs`
   (the window thread's message loop). `host.rs`, `guard.rs` and `preview/pane.rs`
   are safe: the scene, the camera and the pixels are `review-preview`'s.
+- `shell-quicklook`: `thumbnail.rs`, `preview.rs` and `image.rs` — the pointers
+  the extensions pass across the C ABI. `guard.rs` is safe.
 
 The workspace also denies `clippy::undocumented_unsafe_blocks`, which is what
 makes "every unsafe carries a `// SAFETY:` rationale" a build error rather than a
@@ -1184,6 +1254,10 @@ The sanctioned exceptions:
   uses. Every entry point runs inside `guard::guarded`, which turns a panic into an
   `HRESULT`, because a panic unwinding into a COM vtable shim aborts a process
   Explorer owns (D24).
+- **The Quick Look extensions' dylib** (`crates/shell-quicklook`). A C ABI is raw
+  pointers by definition — paths, out-images, an opaque handle, a callback and its
+  context — so the crate holds that surface and nothing else; the Swift extensions
+  are AppKit glue over it, and everything drawn is safe code in `review-preview`.
 
 Every unsafe in `render` touches only GPU plumbing — never model geometry, camera
 math or material logic, which stay safe.
@@ -1406,7 +1480,7 @@ one settled.
 | D20 | The swapchain is plain UNORM, not an sRGB format — the flip model disallows `*_SRGB` — so the composite, egui and Tex shaders encode sRGB themselves. |
 | D21 | `vendor/sokol-rust` is a pinned upstream checkout, `exclude`d in the root manifest so `-D warnings` does not lint it. `--exclude` on the command line is not enough: cargo lints every path dependency inside the workspace directory as local. |
 | D22 | psd_sdk is vendored as source and compiled with `cc` beside a C-ABI wrapper, with committed hand-kept bindings, so a clean checkout links without a prebuilt library. |
-| D23 | Explorer integration is a COM DLL over a shared, safe core (`crates/preview`) that the macOS Quick Look extension will call too. The thumbnail provider is **stream-initialized and isolated** in Explorer's COM Surrogate, and accepts that a stream has no directory: textures beside the model reach the preview pane, not the thumbnail (measured alternatives in GOTCHAS). The preview handler gets a `prevhost.exe` of its own AppID and a window thread of its own. Both render offscreen and read back. |
+| D23 | Explorer integration is a COM DLL over a shared, safe core (`crates/preview`) that the macOS Quick Look extensions call too, through a C-ABI dylib (`crates/shell-quicklook`) and two Swift app extensions. The thumbnail provider is **stream-initialized and isolated** in Explorer's COM Surrogate, and accepts that a stream has no directory: textures beside the model reach the preview pane, not the thumbnail (measured alternatives in GOTCHAS). The preview handler gets a `prevhost.exe` of its own AppID and a window thread of its own. Both render offscreen and read back. |
 | D24 | The shell DLL builds with the `release-shell` profile: `release` with `panic = "unwind"`, so `guard::guarded` can answer a panic with an `HRESULT` instead of aborting a surrogate Explorer shares with other vendors' handlers. |
 
 The structural rules the decisions add up to:
@@ -1415,5 +1489,5 @@ The structural rules the decisions add up to:
 | --- | --- |
 | **`rhi` owns the backend** | Nothing outside `render/src/rhi/` names an `sg::` type, a backend pixel format or a window handle. Every resource goes through a wrapper, every format is `Format`, every failure is a `GpuError`, and invalid input (a zero dimension, a refused drawable) is an error there rather than a sokol validation abort. |
 | **One swapchain pass** | Exactly one swapchain pass per frame — Metal presents inside `sg_end_pass`, so a second one would double-present. Everything a `Renderer::render_*` draws onscreen is therefore recorded as a deferred `SwapchainJob` and replayed when that pass opens; offscreen passes are issued directly. |
-| **Platform leaves** | The complete inventory of per-OS code: `rhi/backend/{d3d11,metal}.rs` (device, swapchain, GPU timer, bake readback), `crates/shell-macos` (open-file events, menu bar, CLI-on-PATH link), `crates/shell-windows` (Explorer's thumbnail provider and preview handler), and the packaging scripts. Elsewhere an OS is named only for a convention, never a capability: the primary modifier (`app/shortcuts.rs`, `ui/lib.rs`), where per-user files live and how paths compare (`app/logging.rs`, `window_state.rs`, `paths.rs`), and the file dialog's owner window on Windows (`app/dialog.rs`). |
+| **Platform leaves** | The complete inventory of per-OS code: `rhi/backend/{d3d11,metal}.rs` (device, swapchain, GPU timer, bake readback), `crates/shell-macos` (open-file events, menu bar, CLI-on-PATH link), `crates/shell-windows` (Explorer's thumbnail provider and preview handler), `crates/shell-quicklook` (the Quick Look extensions' dylib and their Swift sources), and the packaging scripts. Elsewhere an OS is named only for a convention, never a capability: the primary modifier (`app/shortcuts.rs`, `ui/lib.rs`), where per-user files live and how paths compare (`app/logging.rs`, `window_state.rs`, `paths.rs`), and the file dialog's owner window on Windows (`app/dialog.rs`). |
 | **Toolchain** | `rust-toolchain.toml` tracks stable rather than pinning a version, and shader edits are the only thing that needs a platform shader compiler (D5): a checkout that does not touch `review.glsl` builds from the committed bytecode. |

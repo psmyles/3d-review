@@ -39,7 +39,7 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::NSView;
 use objc2_foundation::CGSize;
-#[cfg(feature = "bake")]
+#[cfg(any(feature = "bake", feature = "headless"))]
 use objc2_metal::{
     MTLBlitCommandEncoder, MTLBuffer, MTLCommandEncoder, MTLOrigin, MTLResourceOptions, MTLSize,
     MTLTexture,
@@ -54,6 +54,8 @@ use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
 use crate::rhi::error::{GpuError, GpuResult};
+#[cfg(feature = "headless")]
+use crate::rhi::error::{ResourceKind, require_valid};
 use crate::rhi::format::Format;
 use crate::rhi::gpu_profiler::{TIMESTAMP_SLOTS, Zone};
 use crate::rhi::present::PresentStatus;
@@ -138,19 +140,108 @@ impl Device {
     }
 }
 
-/// The window's `CAMetalLayer` and the drawable it is currently rendering into.
+/// The window's `CAMetalLayer` and the drawable it is currently rendering into — or,
+/// for a windowless GPU, the offscreen image that stands in for both.
 pub(crate) struct Swapchain {
+    surface: Surface,
+    width: u32,
+    height: u32,
+}
+
+/// What a [`Swapchain`]'s frames land in.
+enum Surface {
+    /// The window's layer — the viewer's only kind.
+    Window(WindowSurface),
+    /// A sokol render-target image nothing presents, for the windowless `Gpu`
+    /// (`review-snapshot`, and the Quick Look extensions over `review-preview`).
+    /// Created on demand like the D3D11 twin's texture, and dropped on resize.
+    #[cfg(feature = "headless")]
+    Offscreen(Option<OffscreenTarget>),
+}
+
+struct WindowSurface {
     layer: Retained<CAMetalLayer>,
-    /// This frame's drawable, held from [`Self::acquire`] to [`Self::present`]. sokol
-    /// keeps only a borrowed pointer to it across the pass, so it must stay alive
-    /// until the command buffer that presents it has been committed.
+    /// This frame's drawable, held from [`Swapchain::acquire`] to
+    /// [`Swapchain::present`]. sokol keeps only a borrowed pointer to it across the
+    /// pass, so it must stay alive until the command buffer that presents it has
+    /// been committed.
     drawable: Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
     /// What `displaySyncEnabled` is currently set to, so a frame that asks for the
     /// same thing does not touch Core Animation at all.
     vsync: bool,
-    width: u32,
-    height: u32,
 }
+
+/// The windowless backbuffer: a plain `SWAPCHAIN_FORMAT` colour attachment.
+///
+/// **Not a fake drawable**, which is the obvious twin of the D3D11 side's
+/// render-target view and the wrong one. sokol's swapchain pass on Metal takes a
+/// `CAMetalDrawable` and ends in `presentDrawable:`, and what Metal does with an
+/// object that only *looks* like a drawable there is undocumented. So the frame's one
+/// pass attaches this image instead ([`Swapchain::pass_attachment`]) — an ordinary
+/// sokol offscreen pass, which every pipeline drawing into the swapchain already
+/// matches: same format, single-sample, no depth.
+#[cfg(feature = "headless")]
+struct OffscreenTarget {
+    image: sg::Image,
+    view: sg::View,
+}
+
+#[cfg(feature = "headless")]
+impl OffscreenTarget {
+    fn new(width: u32, height: u32) -> GpuResult<Self> {
+        let mut desc = sg::ImageDesc::new();
+        desc._type = sg::ImageType::Dim2;
+        desc.usage.color_attachment = true;
+        desc.width = width as i32;
+        desc.height = height as i32;
+        desc.num_mipmaps = 1;
+        desc.sample_count = 1;
+        desc.pixel_format = SWAPCHAIN_FORMAT;
+        desc.label = c"offscreen backbuffer".as_ptr();
+        let image = sg::make_image(&desc);
+        let mut view_desc = sg::ViewDesc::new();
+        view_desc.color_attachment.image = image;
+        view_desc.label = desc.label;
+        let target = Self {
+            image,
+            view: sg::make_view(&view_desc),
+        };
+        // Built first, so a failure below still frees both through `Drop`.
+        require_valid(
+            sg::query_image_state(target.image),
+            ResourceKind::Swapchain,
+            "offscreen backbuffer",
+        )?;
+        require_valid(
+            sg::query_view_state(target.view),
+            ResourceKind::Swapchain,
+            "offscreen backbuffer view",
+        )?;
+        Ok(target)
+    }
+}
+
+#[cfg(feature = "headless")]
+impl Drop for OffscreenTarget {
+    fn drop(&mut self) {
+        // After `sg_shutdown` (the `Gpu`'s device field drops first) both ids are
+        // already gone with the rest of sokol's pools.
+        if sg::isvalid() {
+            sg::destroy_view(self.view);
+            sg::destroy_image(self.image);
+        }
+    }
+}
+
+// SAFETY: moving a swapchain to another thread, never sharing one (it is not
+// `Sync`). The drawable and the offscreen image are Metal objects, thread-safe by
+// specification. The layer is attached to its `NSView` on the main thread in
+// `new`, and what this type does with it afterwards — `nextDrawable`,
+// `drawableSize`, `displaySyncEnabled`, `contentsScale` — is the part of
+// `CAMetalLayer` built to be driven from a rendering thread. The D3D11 twin is
+// `Send` through its COM wrappers; this is what lets a windowless `Gpu` live
+// behind a shell's process-wide lock (`review_preview::shared`).
+unsafe impl Send for Swapchain {}
 
 impl Swapchain {
     /// Attach a `width`×`height` Metal layer to `window`'s view: vsync-paced, two
@@ -204,32 +295,68 @@ impl Swapchain {
         }
 
         Ok(Swapchain {
-            layer,
-            drawable: None,
-            vsync: true,
+            surface: Surface::Window(WindowSurface {
+                layer,
+                drawable: None,
+                vsync: true,
+            }),
             width,
             height,
         })
     }
 
-    /// The twin of the D3D11 leaf's windowless backbuffer for the headless
-    /// `review-snapshot` tool. Not built on Metal yet: it would be a private
-    /// `MTLTexture` handed over as the pass's render target, read back through the
-    /// same blit [`read_image_subresource`] uses.
+    /// A `width`×`height` backbuffer with no window behind it: an offscreen
+    /// render-target image in the swapchain format, which [`Self::present`] leaves
+    /// alone and [`Self::read_back`] copies to the CPU. Everything the frame draws
+    /// reaches it exactly as it would reach the window's drawable.
     #[cfg(feature = "headless")]
     pub(crate) fn offscreen(device: &Device, width: u32, height: u32) -> GpuResult<Self> {
-        let _ = (device, width, height);
-        Err(GpuError::Backend(
-            "headless rendering is not implemented on Metal yet".into(),
-        ))
+        let _ = device;
+        let (width, height) = (width.max(1), height.max(1));
+        // Created now rather than on the first frame, so a device that cannot make
+        // the target fails here, where the caller can report it.
+        Ok(Swapchain {
+            surface: Surface::Offscreen(Some(OffscreenTarget::new(width, height)?)),
+            width,
+            height,
+        })
     }
 
-    /// See [`Self::offscreen`]: nothing on Metal can be read back yet.
+    /// The offscreen backbuffer's pixels as tight `R8G8B8A8` rows, top row first —
+    /// what the last frame drew, once [`crate::rhi::Frame::finish`] has committed it.
+    ///
+    /// The image is `BGRA8` (the swapchain format), so the rows are swizzled on the
+    /// way out: `Gpu::read_back` promises RGBA on both OSes.
     #[cfg(feature = "headless")]
     pub(crate) fn read_back(&mut self) -> GpuResult<Vec<u8>> {
-        Err(GpuError::Backend(
-            "headless rendering is not implemented on Metal yet".into(),
-        ))
+        let Surface::Offscreen(target) = &mut self.surface else {
+            return Err(GpuError::invalid_arg(
+                "only an offscreen swapchain can be read back",
+            ));
+        };
+        if target.is_none() {
+            *target = Some(OffscreenTarget::new(self.width, self.height)?);
+        }
+        let image = target.as_ref().map(|target| target.image);
+        let image = image.ok_or_else(|| GpuError::invalid_arg("no offscreen backbuffer"))?;
+        let mut rgba =
+            read_image_subresource(image, 0, 0, self.width, self.height, Format::Swapchain, 4)?;
+        for texel in rgba.as_chunks_mut::<4>().0 {
+            texel.swap(0, 2);
+        }
+        Ok(rgba)
+    }
+
+    /// The colour attachment the frame's one pass draws into *instead of* a
+    /// swapchain: `Some` only for an offscreen backbuffer (see [`OffscreenTarget`]).
+    /// The D3D11 twin always answers `None` — its offscreen texture is handed over as
+    /// an ordinary render-target view.
+    pub(crate) fn pass_attachment(&self) -> Option<sg::View> {
+        match &self.surface {
+            Surface::Window(_) => None,
+            #[cfg(feature = "headless")]
+            Surface::Offscreen(target) => target.as_ref().map(|target| target.view),
+        }
     }
 
     /// The backbuffer size in physical pixels.
@@ -245,13 +372,21 @@ impl Swapchain {
     pub(crate) fn resize(&mut self, width: u32, height: u32) {
         self.width = width;
         self.height = height;
-        if width == 0 || height == 0 {
-            return;
-        }
-        // SAFETY: a documented property on a live layer.
-        unsafe {
-            self.layer
-                .setDrawableSize(CGSize::new(f64::from(width), f64::from(height)));
+        match &mut self.surface {
+            Surface::Window(window) => {
+                if width == 0 || height == 0 {
+                    return;
+                }
+                // SAFETY: a documented property on a live layer.
+                unsafe {
+                    window
+                        .layer
+                        .setDrawableSize(CGSize::new(f64::from(width), f64::from(height)));
+                }
+            }
+            // Recreated at the new size on the next acquire.
+            #[cfg(feature = "headless")]
+            Surface::Offscreen(target) => *target = None,
         }
     }
 
@@ -268,7 +403,11 @@ impl Swapchain {
     /// The D3D11 twin's is empty: DXGI has no notion of a scale between the swapchain
     /// and the window, so its buffer size is the whole story.
     pub(crate) fn set_scale_factor(&mut self, scale: f64) {
-        self.layer.setContentsScale(scale);
+        match &self.surface {
+            Surface::Window(window) => window.layer.setContentsScale(scale),
+            #[cfg(feature = "headless")]
+            Surface::Offscreen(_) => {}
+        }
     }
 
     /// Acquire this frame's drawable and point `sc` at it, reporting whether there is
@@ -276,19 +415,36 @@ impl Swapchain {
     /// means skip the frame rather than draw into nothing.
     ///
     /// This is where a Metal frame waits on the display; the D3D11 twin waits in
-    /// `Present` instead.
+    /// `Present` instead. An offscreen backbuffer waits on nothing and leaves `sc`
+    /// alone: its pass attaches the image instead ([`Self::pass_attachment`]).
     pub(crate) fn acquire(&mut self, sc: &mut sg::Swapchain) -> bool {
+        let window = match &mut self.surface {
+            Surface::Window(window) => window,
+            #[cfg(feature = "headless")]
+            Surface::Offscreen(target) => {
+                if target.is_none() {
+                    match OffscreenTarget::new(self.width, self.height) {
+                        Ok(made) => *target = Some(made),
+                        Err(err) => {
+                            log::error!("offscreen backbuffer: {err}");
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            }
+        };
         // SAFETY: a documented method on a live layer. `nextDrawable` returns nil
         // rather than blocking forever when the layer is off-screen or the wait times
         // out.
-        let drawable = unsafe { self.layer.nextDrawable() };
+        let drawable = unsafe { window.layer.nextDrawable() };
         let Some(drawable) = drawable else {
-            self.drawable = None;
+            window.drawable = None;
             return false;
         };
         sc.metal.current_drawable = Retained::as_ptr(&drawable).cast();
         // Held until `present`: sokol_gfx only borrows the pointer across the pass.
-        self.drawable = Some(drawable);
+        window.drawable = Some(drawable);
         true
     }
 
@@ -306,11 +462,17 @@ impl Swapchain {
     /// There is no `DeviceLost` to report: Metal has no device-removed HRESULT, and a
     /// GPU fault kills the process rather than handing back a status.
     pub(crate) fn present(&mut self, vsync: bool) -> PresentStatus {
-        self.drawable = None;
-        if vsync != self.vsync {
-            self.vsync = vsync;
+        let window = match &mut self.surface {
+            Surface::Window(window) => window,
+            // Nothing to show it on; the frame stays in the image for `read_back`.
+            #[cfg(feature = "headless")]
+            Surface::Offscreen(_) => return PresentStatus::Presented,
+        };
+        window.drawable = None;
+        if vsync != window.vsync {
+            window.vsync = vsync;
             // SAFETY: a documented property on a live layer.
-            unsafe { self.layer.setDisplaySyncEnabled(vsync) };
+            unsafe { window.layer.setDisplaySyncEnabled(vsync) };
         }
         PresentStatus::Presented
     }
@@ -377,6 +539,10 @@ pub(crate) struct GpuTimer {
     /// opened no window of its own must not close one.
     open: bool,
 }
+
+// SAFETY: a command queue and command buffers, which Metal makes thread-safe by
+// specification; moved with the `Gpu` that owns this, never shared.
+unsafe impl Send for GpuTimer {}
 
 impl GpuTimer {
     /// Take a retained handle on sokol's queue. Fails if sokol is not on Metal or has
@@ -485,7 +651,8 @@ fn seconds_to_nanos(seconds: f64) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// The readback leaf, for the offline bake only (Platform decisions D19)
+// The readback leaf, for the offline bake (Platform decisions D19) and the
+// windowless `Gpu` only
 // ---------------------------------------------------------------------------
 
 /// Row alignment for the destination of a texture→buffer blit.
@@ -494,24 +661,27 @@ fn seconds_to_nanos(seconds: f64) -> u64 {
 /// size, and requires 256 on some device families. 256 satisfies every one of them
 /// and costs only the padding stripped off below — the same shape as the D3D11 twin,
 /// which de-pads the staging texture's `RowPitch`.
-#[cfg(feature = "bake")]
+#[cfg(any(feature = "bake", feature = "headless"))]
 const BLIT_ROW_ALIGNMENT: usize = 256;
 
 /// Copy one subresource of a sokol image back to the CPU as tight, row-padding-free
 /// bytes.
 ///
 /// sokol_gfx has no readback of any kind — it is a rendering API, and every path that
-/// draws needs none — so this is a leaf, and it is compiled only into the `bake` tool.
+/// draws needs none — so this is a leaf, compiled only into the `bake` tool and the
+/// windowless `Gpu`.
 ///
 /// The blit runs on **sokol's own queue** and is committed *after* `sg_commit` (the
-/// bake calls `Baker::flush` before every readback), so queue order is what guarantees
-/// the passes that filled this image have finished. `waitUntilCompleted` then blocks
-/// until the copy itself is done, which is exactly right for an offline tool.
+/// bake calls `Baker::flush` before every readback; a windowless frame has finished
+/// before its `read_back`), so queue order is what guarantees the passes that filled
+/// this image have finished. `waitUntilCompleted` then blocks until the copy itself is
+/// done — right for an offline tool, and for a thumbnail or preview that wants exactly
+/// this frame's pixels.
 ///
 /// `slice` is the cube face (or array layer). Unlike the D3D11 twin there is no
 /// subresource arithmetic to get wrong: Metal addresses the face and the mip as two
 /// separate arguments.
-#[cfg(feature = "bake")]
+#[cfg(any(feature = "bake", feature = "headless"))]
 pub(crate) fn read_image_subresource(
     image: sg::Image,
     mip: u32,
@@ -534,8 +704,9 @@ pub(crate) fn read_image_subresource(
         .unwrap_or(std::ptr::null());
     // SAFETY: sokol hands back pointers to the objects it owns for the life of the
     // image and the device; `retain` takes references of our own, so nothing sokol
-    // owns is released when these are dropped. The bake holds every target until it
-    // has written its file, so the image outlives this call.
+    // owns is released when these are dropped. The image outlives this call: the bake
+    // holds every target until it has written its file, and `Swapchain::read_back`
+    // holds its backbuffer through `&mut self`.
     let (texture, device, queue) = unsafe {
         (
             Retained::retain(texture.cast_mut().cast::<ProtocolObject<dyn MTLTexture>>()),
@@ -596,8 +767,8 @@ pub(crate) fn read_image_subresource(
     }
     blit.endEncoding();
     command_buffer.commit();
-    // SAFETY: blocking on a committed command buffer. This is an offline tool; there
-    // is no frame to stall.
+    // SAFETY: blocking on a committed command buffer. An offline tool or a readback
+    // the caller is waiting on; there is no on-screen frame to stall.
     unsafe { command_buffer.waitUntilCompleted() };
 
     let mut out = Vec::with_capacity(tight_row * height as usize);

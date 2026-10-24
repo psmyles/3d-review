@@ -87,6 +87,7 @@ copyright="$(meta copyright)"
 exe="$(meta exeName)"
 file_ext="$(meta fileAssociation.extension)"; file_ext="${file_ext#.}"
 file_type_name="$(meta fileAssociation.typeName)"
+content_type="$(meta fileAssociation.macContentType)"
 bundle_id="com.psmyles.3d-review"
 # The `xcrun notarytool store-credentials` profile to use when none is named.
 #
@@ -295,6 +296,13 @@ cp "$repo"/licenses/*.txt "$app/Contents/Resources/licenses/"
 # The four-byte type/creator file. Vestigial, but its absence still confuses some tools.
 printf 'APPL????' > "$app/Contents/PkgInfo"
 
+# Finder's thumbnails and Quick Look preview of an .fbx (D23): the shared dylib in
+# Contents/Frameworks and the two extensions in Contents/PlugIns. Built unsigned here;
+# section 6 signs them with everything else, inside out.
+ql_args=(--no-sign)
+[[ $do_build -eq 1 ]] || ql_args+=(--no-build)
+"$repo/scripts/build-quicklook.sh" "$app" "$bundle_id" "${ql_args[@]}"
+
 # `LSHandlerRank = Alternate` rather than Owner is deliberate (D12): 3D Review
 # volunteers for .fbx and appears in "Open With", but does not take the extension away
 # from whatever already claims it. The user chooses, in Get Info → Change All.
@@ -333,10 +341,33 @@ cat > "$app/Contents/Info.plist" <<PLIST
             <key>CFBundleTypeRole</key>       <string>Viewer</string>
             <key>LSHandlerRank</key>          <string>Alternate</string>
             <key>CFBundleTypeIconFile</key>   <string>$name</string>
-            <key>CFBundleTypeExtensions</key>
+            <key>LSItemContentTypes</key>
             <array>
-                <string>$file_ext</string>
+                <string>$content_type</string>
             </array>
+        </dict>
+    </array>
+    <!-- The type .fbx is. Quick Look extensions register by type, not by extension, so
+         this is what the two in PlugIns/ name. Imported, not exported: the identifier
+         is Autodesk's, and current macOS already declares it in CoreTypes — this is
+         the declaration for a system that does not. -->
+    <key>UTImportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>       <string>$content_type</string>
+            <key>UTTypeDescription</key>      <string>$file_type_name</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+                <string>public.3d-content</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>$file_ext</string>
+                </array>
+            </dict>
         </dict>
     </array>
 </dict>
@@ -364,11 +395,20 @@ if [[ $do_sign -eq 1 ]]; then
     # `--options runtime` is the hardened runtime, which notarization requires;
     # `--timestamp` gets a secure timestamp from Apple, which it also requires and
     # which is what keeps the signature valid after the certificate expires. No
-    # entitlements: the viewer needs none, and every entitlement is a hole to justify.
+    # entitlements on the viewer: it needs none, and every entitlement is a hole to
+    # justify. The Quick Look extensions carry the sandbox, which Quick Look demands.
     # Nested code is signed first and on its own: notarization refuses an unsigned
     # executable inside the bundle, and `--deep` signing is what Apple says not to do.
     codesign --force --options runtime --timestamp --sign "$sign_id" \
         "$app/Contents/MacOS/review-cli"
+    # The Quick Look extensions: the dylib they share, then each extension with the
+    # sandbox Quick Look requires of it. They are the bundle's only entitled code.
+    codesign --force --options runtime --timestamp --sign "$sign_id" \
+        "$app/Contents/Frameworks/libreview_quicklook.dylib"
+    for appex in "$app/Contents/PlugIns/"*.appex; do
+        codesign --force --options runtime --timestamp --sign "$sign_id" \
+            --entitlements "$repo/crates/shell-quicklook/extension/QuickLook.entitlements" "$appex"
+    done
     codesign --force --options runtime --timestamp --sign "$sign_id" "$app"
     codesign --verify --deep --strict --verbose=2 "$app"
 else
@@ -435,110 +475,8 @@ if [[ $do_notarize -eq 1 ]]; then
 fi
 
 # ---------------------------------------------------------------------------------------------
-# 9. The .dmg's own Finder icon
+# 9. Verify what actually ships
 # ---------------------------------------------------------------------------------------------
-# Without this the .dmg gets the generic disk-image document icon. What goes on instead
-# is that same generic icon with the cube composited over its disk graphic, so it still
-# reads as a disk image at a glance and is unmistakably ours. The base comes from
-# NSWorkspace rather than a checked-in PNG, so it is whatever the running macOS draws
-# for a .dmg and cannot go stale.
-#
-# This runs *last*, after stapling, because a custom file icon is not in the file's
-# data: it is a resource fork in the `com.apple.ResourceFork` xattr plus a flag in
-# `com.apple.FinderInfo`, and codesign, notarytool and stapler all rewrite the .dmg.
-# Applied here it costs the signature nothing — section 10 re-checks it to prove that.
-#
-# Know one limit before relying on it: xattrs travel only where the transport carries
-# them, which means AirDrop, a `ditto`-made zip, or a copy between Macs. A plain HTTPS
-# download strips the fork and the .dmg lands generic again. This is
-# cosmetic-on-your-Mac, not branding for the web.
-
-say "dmg icon"
-dmg_iconset="$tmp/dmg.iconset"
-mkdir -p "$dmg_iconset"
-cat > "$tmp/dmg-icon.js" <<'JS'
-ObjC.import('AppKit');
-
-// The cube's edge, and its centre measured from the top-left, as fractions of the
-// icon's edge. It replaces the generic download arrow, and it has to stay inside the
-// disk graphic drawn on the document — the cube overhanging that frame reads as a
-// mistake rather than as a badge.
-//
-// Fitted to the disk's interior, measured off the system artwork at 512²: x 165..348
-// and y 146..338 (338 being the top of the darker bar along its bottom), so a
-// 183 x 192 opening. Unlike a tall narrow logo this master is full-bleed in *both*
-// directions — its ink is 996 x 1024 of 1024² — so both dimensions bind at once and
-// the horizontal margin is the tighter of the two: 0.33 draws the ink 169 tall and
-// 164 wide, leaving ~12px on every side. Raising it much past 0.35 starts crowding
-// the disk's edge.
-var LOGO_SCALE = 0.33, LOGO_CX = 0.5, LOGO_CY = 0.473;
-
-// argv: <logo.png> <size>:<dst.png>...
-function run(argv) {
-    var img = $.NSImage.alloc.initWithContentsOfFile(argv[0]);
-    if (img.isNil()) throw new Error('cannot read ' + argv[0]);
-    // Deprecated in favour of -iconForContentType:, which does not bridge cleanly
-    // through JXA. It still returns the current system artwork, with reps up to 2048²,
-    // so 1024² is a downsample rather than an upscale.
-    var base = $.NSWorkspace.sharedWorkspace.iconForFileType('dmg');
-
-    argv.slice(1).forEach(function (spec) {
-        var colon = spec.indexOf(':');
-        var size = parseInt(spec.slice(0, colon), 10), dst = spec.slice(colon + 1);
-
-        var rep = $.NSBitmapImageRep.alloc
-            .initWithBitmapDataPlanesPixelsWidePixelsHighBitsPerSampleSamplesPerPixelHasAlphaIsPlanarColorSpaceNameBytesPerRowBitsPerPixel(
-                $(), size, size, 8, 4, true, false, $.NSCalibratedRGBColorSpace, 0, 0);
-        rep = rep.bitmapImageRepByRetaggingWithColorSpace($.NSColorSpace.sRGBColorSpace);
-
-        $.NSGraphicsContext.saveGraphicsState;
-        $.NSGraphicsContext.setCurrentContext(
-            $.NSGraphicsContext.graphicsContextWithBitmapImageRep(rep));
-        $.NSGraphicsContext.currentContext.setImageInterpolation(3); // .high
-        base.drawInRectFromRectOperationFraction(
-            $.NSMakeRect(0, 0, size, size), $.NSZeroRect, $.NSCompositingOperationSourceOver, 1.0);
-        var e = size * LOGO_SCALE;
-        img.drawInRectFromRectOperationFraction(
-            $.NSMakeRect(size * LOGO_CX - e / 2, size * (1 - LOGO_CY) - e / 2, e, e),
-            $.NSZeroRect, $.NSCompositingOperationSourceOver, 1.0);
-        $.NSGraphicsContext.restoreGraphicsState;
-
-        var png = rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $({}));
-        if (!png.writeToFileAtomically(dst, true)) throw new Error('cannot write ' + dst);
-    });
-}
-JS
-
-dmg_renders=()
-for size in 16 32 128 256 512; do
-    dmg_renders+=("$size:$dmg_iconset/icon_${size}x${size}.png")
-    dmg_renders+=("$((size * 2)):$dmg_iconset/icon_${size}x${size}@2x.png")
-done
-# The *transparent* master here, not the flattened tile: the cube is being badged onto
-# the system's disk graphic, and a grey square would cover it.
-osascript -l JavaScript "$tmp/dmg-icon.js" "$repo/assets/icons/application-logo.png" \
-    "${dmg_renders[@]}" || die "could not render the .dmg icon"
-(( $(ls "$dmg_iconset" | wc -l) == ${#dmg_renders[@]} )) || die "the .dmg iconset is short of images"
-dmg_icns="$tmp/dmg.icns"
-iconutil -c icns "$dmg_iconset" -o "$dmg_icns"
-
-# -setIcon:forFile:options: writes the fork and sets the flag in one call, which is the
-# whole reason not to do this with Rez and SetFile.
-osascript -l JavaScript -e '
-    ObjC.import("AppKit");
-    function run(argv) {
-        var img = $.NSImage.alloc.initWithContentsOfFile(argv[0]);
-        if (img.isNil()) throw new Error("cannot read " + argv[0]);
-        if (!$.NSWorkspace.sharedWorkspace.setIconForFileOptions(img, argv[1], 0))
-            throw new Error("setIcon:forFile: refused " + argv[1]);
-    }' "$dmg_icns" "$dmg" || die "could not set the .dmg's Finder icon"
-echo "  applied to $(basename "$dmg")"
-
-# ---------------------------------------------------------------------------------------------
-# 10. Verify what actually ships
-# ---------------------------------------------------------------------------------------------
-# Deliberately after the icon, not before: these have to be true of the bytes that leave
-# the Mac, and the icon is the last thing to touch them.
 
 if [[ $do_sign -eq 1 ]]; then
     say "verify"

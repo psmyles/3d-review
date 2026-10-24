@@ -10,7 +10,7 @@
 
 use glam::Vec2;
 use review_render::gesture::{
-    DRAG_ZOOM_SENSITIVITY, WHEEL_LINE_ZOOM_STEP, WHEEL_PIXELS_PER_ZOOM_STEP,
+    DRAG_ZOOM_SENSITIVITY, PINCH_ZOOM_STEP, WHEEL_LINE_ZOOM_STEP, WHEEL_PIXELS_PER_ZOOM_STEP,
 };
 
 use crate::Viewport;
@@ -96,6 +96,15 @@ impl Interaction {
     /// notch is worth.
     pub fn wheel_pixels(&mut self, viewport: &mut Viewport, pixels: f32) {
         viewport.zoom(pixels / WHEEL_PIXELS_PER_ZOOM_STEP);
+    }
+
+    /// A trackpad pinch of `scale` (a fraction, positive as the fingers spread,
+    /// which zooms in) — the viewer's pinch rate (D16). Not finite is ignored: a
+    /// NaN in the orbit distance would lose the model for good.
+    pub fn pinch(&mut self, viewport: &mut Viewport, scale: f32) {
+        if scale.is_finite() {
+            viewport.zoom(scale * PINCH_ZOOM_STEP);
+        }
     }
 }
 

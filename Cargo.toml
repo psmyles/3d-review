@@ -15,6 +15,7 @@ members = [
     "crates/psd",
     "crates/render",
     "crates/shell-macos",
+    "crates/shell-quicklook",
     "crates/shell-windows",
     "crates/snapshot",
     "crates/ui",

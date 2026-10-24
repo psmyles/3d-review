@@ -3,31 +3,23 @@
 - generate colliders?
 - UV view during opt mode?
 - viewport presets
-- Finder thumbnails + Quick Look preview (the macOS half of the Explorer
-  extension, `docs/ARCHITECTURE.md` D23). The shared core is done
-  (`crates/preview`: load from a path or bytes, `Host`/`Viewport`, thumbnail,
-  `Interaction`); what is left is Mac-only and needs the Mac to build and test:
-  1. `rhi/backend/metal.rs`: `Swapchain::offscreen` + `read_back` (both stubbed
-     with "not implemented on Metal yet") - a private render-target texture and
-     the same blit-to-shared-buffer `read_image_subresource` already does.
-     `Gpu::read_back` promises RGBA rows, so swizzle if the target is BGRA.
-  2. Rebuild the Metal bytecode: `fs_post` changed (transparent background), and
-     only a Mac can compile the `.metallib`; commit it with `bytecode.manifest`.
-  3. Declare an FBX UTI in the app's Info.plist (`UTImportedTypeDeclarations`,
-     e.g. `com.autodesk.fbx`, extension `fbx`, conforming to `public.data` /
-     `public.3d-content`) and name it in `CFBundleDocumentTypes` - Quick Look
-     extensions register by UTI, and there is none today.
-  4. A thin C-ABI or objc2 layer over `review-preview` (a thumbnail call; a
-     preview session: open, size, pointer events, render, close), mirroring
-     `crates/shell-windows` without COM.
-  5. Two app extensions in `Contents/PlugIns/`: a `QLThumbnailProvider` and a
-     view-based `QLPreviewingController` (an NSView blitting the read-back
-     frames, mouse and scroll into `Interaction`). Built by `scripts/build-mac.sh`
-     with `swiftc`/`clang` (no Xcode project), sandboxed
-     (`com.apple.security.app-sandbox`), signed with the Developer ID before the
-     app is re-signed and notarized.
-  6. Sandbox and sibling textures: an extension can read the file it was handed
-     and nothing beside it. Decide on the Mac whether to add a read-only
-     temporary-exception entitlement (allowed for Developer ID distribution, not
-     the App Store) or ship embedded-and-absolute-path textures only, as the
-     Windows thumbnail does.
+-
+- Finder thumbnails + Quick Look preview (the macOS half of D23). Built:
+  Metal offscreen + readback, the Metal `fs_post` bytecode, the FBX UTI and
+  document type in both bundles, `crates/shell-quicklook` (C ABI over
+  `review_preview::{shared, Session}`) and its two Swift extensions, bundled and
+  signed by `scripts/build-quicklook.sh`. `scripts/quicklook-check.sh` passes, and
+  `qlmanage -p` shows our preview. Left:
+  1. Thumbnails through Finder: `ThumbnailsAgent` still launches SceneKit's
+     thumbnailer for `.fbx` (GOTCHAS, "keeps the extension list it started
+     with"). Log out and in, then `qlmanage -t`; if it still picks SceneKit,
+     find out why it prefers a `public.3d-content` extension over an exact type.
+  2. Sibling textures: sandboxed, the extensions read only the file Quick Look
+     hands over (measured: `EPERM` on the texture). Decide whether to add the
+     read-only temporary exception (`QuickLook.entitlements`; Developer ID only);
+     the manual's "What Finder can show" says what happens without it.
+  3. A signed run of `scripts/build-mac.sh` (Developer ID + notarization) with
+     the extensions inside: not run yet.
+  4. Move `shell-windows` onto `review_preview::shared` / `Session` (its
+     `host.rs` and `preview/pane.rs` are the same logic in `HRESULT` shape), and
+     test it on Windows.

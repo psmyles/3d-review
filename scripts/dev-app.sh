@@ -14,15 +14,21 @@
 #   scripts/dev-app.sh assets/.../SM_x.fbx      ... and launch it on that model
 #   scripts/dev-app.sh --debug SM_x.fbx         bundle the debug build instead (faster iteration)
 #   scripts/dev-app.sh --no-build               re-bundle whatever is already built
+#   scripts/dev-app.sh --no-quicklook           leave the Quick Look extensions out
 #
-# Known gaps at this stage, so they are not mistaken for bugs: a generic icon, and no
-# `CFBundleDocumentTypes`, so Finder will not route a double-clicked .fbx here — `open -a` and a
-# drop on the Dock icon do work, because those name the app explicitly.
+# The bundle carries the Quick Look extensions (scripts/build-quicklook.sh), signed ad hoc and
+# registered with Launch Services, so Finder's thumbnails and Space preview of an .fbx come from
+# this build. `qlmanage -r` makes Quick Look forget what it cached from an earlier one.
+#
+# Known gap at this stage, so it is not mistaken for a bug: a generic icon. The bundle declares
+# .fbx at `Alternate` rank, so it appears in "Open With" without taking the extension away from
+# whatever owns it; `open -a` and a drop on the Dock icon name the app explicitly.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 profile=release
 build=1
+quicklook=1
 args=()
 
 while [[ $# -gt 0 ]]; do
@@ -30,7 +36,8 @@ while [[ $# -gt 0 ]]; do
         --debug)    profile=debug; shift ;;
         --release)  profile=release; shift ;;
         --no-build) build=0; shift ;;
-        -h|--help)  sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --no-quicklook) quicklook=0; shift ;;
+        -h|--help)  sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)          args+=("$1"); shift ;;
     esac
 done
@@ -41,6 +48,8 @@ done
 name="$(plutil -extract productName raw -o - "$repo/product.json")"
 version="$(plutil -extract version raw -o - "$repo/product.json")"
 exe="$(plutil -extract exeName raw -o - "$repo/product.json")"
+content_type="$(plutil -extract fileAssociation.macContentType raw -o - "$repo/product.json")"
+file_type_name="$(plutil -extract fileAssociation.typeName raw -o - "$repo/product.json")"
 
 if [[ $build -eq 1 ]]; then
     if [[ $profile == release ]]; then
@@ -80,9 +89,35 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <key>CFBundleVersion</key>            <string>$version</string>
     <key>LSMinimumSystemVersion</key>     <string>11.0</string>
     <key>NSHighResolutionCapable</key>    <true/>
+    <!-- Quick Look picks among the extensions for a type by the apps that declare it, so the
+         dev bundle claims .fbx the way the release one does: Alternate, never the owner. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>       <string>$file_type_name</string>
+            <key>CFBundleTypeRole</key>       <string>Viewer</string>
+            <key>LSHandlerRank</key>          <string>Alternate</string>
+            <key>LSItemContentTypes</key>     <array><string>$content_type</string></array>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST
+
+if [[ $quicklook -eq 1 ]]; then
+    ql_args=()
+    [[ $profile == debug ]] && ql_args+=(--debug)
+    [[ $build -eq 1 ]] || ql_args+=(--no-build)
+    # The `+` form: bash 3.2, which macOS ships, calls an empty array unbound under `set -u`.
+    "$repo/scripts/build-quicklook.sh" "$app" com.psmyles.3d-review.dev ${ql_args[@]+"${ql_args[@]}"}
+    # Ad hoc, like the extensions inside it: Launch Services will not register the extensions of
+    # an app whose own signature does not cover them.
+    codesign --force --sign - "$app"
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+        -f "$app"
+    # Registering the app is not enough for PlugInKit to see a bundle outside /Applications.
+    pluginkit -a "$app/Contents/PlugIns/ReviewThumbnail.appex" "$app/Contents/PlugIns/ReviewPreview.appex"
+fi
 
 echo "bundled $profile build -> $app"
 

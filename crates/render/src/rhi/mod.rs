@@ -110,6 +110,13 @@ impl GpuBringUp {
     }
 }
 
+/// How many renderers a windowless [`Gpu`] has room for at once: `review-preview`'s
+/// host keeps one per open preview plus one for thumbnails, and sokol's pools are
+/// fixed at setup. Past it, a further renderer's pipelines fail to create — an error
+/// that renderer reports, not a crash.
+#[cfg(feature = "headless")]
+const HEADLESS_RENDERERS: i32 = 8;
+
 /// The backend device with sokol_gfx set up on it: the pair whose teardown order is
 /// load-bearing.
 ///
@@ -172,7 +179,7 @@ impl Gpu {
         GpuBringUp(
             std::thread::Builder::new()
                 .name("gpu-bring-up".into())
-                .spawn(Self::bring_up)
+                .spawn(|| Self::bring_up(1))
                 .expect("the GPU bring-up thread must start"),
         )
     }
@@ -184,7 +191,7 @@ impl Gpu {
     /// them. Synchronous — there is no window creation to overlap with.
     #[cfg(feature = "headless")]
     pub fn headless(width: u32, height: u32) -> GpuResult<Gpu> {
-        let device = Self::bring_up()?;
+        let device = Self::bring_up(HEADLESS_RENDERERS)?;
         let swapchain = backend::Swapchain::offscreen(&device, width, height)?;
         Ok(Gpu {
             device,
@@ -201,8 +208,9 @@ impl Gpu {
         self.swapchain.read_back()
     }
 
-    /// The device, and sokol_gfx set up on it. Runs on the bring-up thread.
-    fn bring_up() -> GpuResult<SokolDevice> {
+    /// The device, and sokol_gfx set up on it, with resource pools for
+    /// `renderers` renderers at once. Runs on the bring-up thread.
+    fn bring_up(renderers: i32) -> GpuResult<SokolDevice> {
         // Owned by the guard before sokol ever sees it: an early return below drops
         // the guard, which shuts sokol down (if it came up) before the device goes.
         let device = SokolDevice {
@@ -210,6 +218,18 @@ impl Gpu {
         };
 
         let mut desc = sg::Desc::new();
+        // sokol's default pools (32 shaders, 64 pipelines, 128 images, ...) fit the
+        // viewer's one renderer and are left alone for it (a 0 means "default").
+        // Each further renderer needs as much again: every pipeline owns its shader,
+        // and one renderer's ~20 already leave no room for a second's.
+        if renderers > 1 {
+            desc.buffer_pool_size = 128 * renderers;
+            desc.image_pool_size = 128 * renderers;
+            desc.sampler_pool_size = 64 * renderers;
+            desc.shader_pool_size = 32 * renderers;
+            desc.pipeline_pool_size = 64 * renderers;
+            desc.view_pool_size = 256 * renderers;
+        }
         desc.environment.defaults = sg::EnvironmentDefaults {
             color_format: backend::SWAPCHAIN_FORMAT,
             depth_format: sg::PixelFormat::None,
@@ -556,7 +576,13 @@ impl Frame<'_> {
     pub fn begin_swapchain_pass(&mut self) {
         debug_assert!(!self.pass_open, "the swapchain pass is already open");
         let mut pass = sg::Pass::new();
-        pass.swapchain = self.swapchain;
+        // A windowless Metal frame draws into an image rather than a drawable (see
+        // the backend's `pass_attachment`); every pipeline aimed at the swapchain
+        // matches it, so nothing downstream can tell the two apart.
+        match self.gpu.swapchain.pass_attachment() {
+            Some(view) => pass.attachments.colors[0] = view,
+            None => pass.swapchain = self.swapchain,
+        }
         pass.action.colors[0] = sg::ColorAttachmentAction {
             load_action: sg::LoadAction::Clear,
             store_action: sg::StoreAction::Store,

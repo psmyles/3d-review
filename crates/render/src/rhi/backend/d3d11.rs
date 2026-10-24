@@ -327,6 +327,15 @@ impl Swapchain {
         )
     }
 
+    /// The colour attachment the frame's one pass draws into instead of a swapchain.
+    /// Always `None` here: the offscreen texture is handed to sokol as an ordinary
+    /// render-target view, so even a windowless frame is a swapchain pass. The Metal
+    /// twin answers `Some` for its offscreen image, because sokol's Metal swapchain
+    /// pass takes nothing but a `CAMetalDrawable`.
+    pub(crate) fn pass_attachment(&self) -> Option<sg::View> {
+        None
+    }
+
     /// The texture the frame draws into: the chain's buffer 0, or the offscreen
     /// texture (created if a resize dropped it).
     fn backbuffer(&mut self) -> GpuResult<ID3D11Texture2D> {

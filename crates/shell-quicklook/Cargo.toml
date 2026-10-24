@@ -1,0 +1,38 @@
+[package]
+name = "review-shell-quicklook"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Finder's thumbnails and Quick Look preview for FBX files, drawn by the viewer's own renderer"
+publish = false
+
+# The macOS half of the shell extensions (D23), the twin of `shell-windows`
+# without COM: a C-ABI dylib over `review-preview` that two small Swift app
+# extensions call — a Quick Look thumbnail provider and a view-based Quick Look
+# preview (`extension/`, built by `scripts/build-quicklook.sh`). Installed once,
+# as `3D Review.app/Contents/Frameworks/libreview_quicklook.dylib`, and linked
+# by both extensions, so the renderer and its embedded assets ship once.
+#
+# Build it with the `release-shell` profile, not `release`: the workspace's
+# release profile aborts on panic, and every entry point here catches one
+# instead (`guard.rs`). See that profile in the workspace manifest.
+[lib]
+name = "review_quicklook"
+crate-type = ["cdylib"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+glam.workspace = true
+log.workspace = true
+review-localization.workspace = true
+review-log.workspace = true
+review-preview = { path = "../preview" }
+
+[build-dependencies]
+# The `shell-preview-` message keys, generated on every host for the reason
+# `shell-macos/build.rs` gives; the script itself decides from the target.
+review-localization-build.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

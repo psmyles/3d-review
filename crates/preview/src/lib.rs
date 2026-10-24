@@ -18,17 +18,22 @@
 //!
 //! One [`Host`] per process: sokol_gfx is a process singleton, so every
 //! viewport lives inside the one host and the shell's lock on it is what
-//! serializes the GPU (see [`Host`]).
+//! serializes the GPU (see [`Host`]). [`shared`] is that lock, with the reaper
+//! that drops an idle host, and [`Session`] one interactive preview drawn
+//! through it — the halves a shell would otherwise write for itself.
 
 #![forbid(unsafe_code)]
 
 mod interaction;
 mod scene;
+mod session;
+pub mod shared;
 mod thumbnail;
 mod viewport;
 
 pub use interaction::{Button, Interaction, Modifiers};
 pub use review_render::{GpuError, GpuResult};
 pub use scene::{LoadError, PreviewScene, SceneSource};
+pub use session::{Session, Status};
 pub use thumbnail::render_thumbnail;
 pub use viewport::{Host, HostedViewport, Image, Viewport, ViewportId};

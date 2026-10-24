@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Both Quick Look extensions' entitlements. Quick Look loads only sandboxed
+  extensions, and the sandbox grants read access to the one file it hands over -
+  not to textures beside it. Measured: the existence check passes, the read fails
+  with EPERM, and the model draws untextured (docs/GOTCHAS.md). Reading them would
+  take a read-only temporary exception
+  (com.apple.security.temporary-exception.files.absolute-path.read-only), which
+  Developer ID distribution allows and the App Store does not; D23 leaves that
+  choice open.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+</dict>
+</plist>
