@@ -104,6 +104,9 @@ pub(crate) struct OptimizeArgs {
     pub(crate) format: Option<FbxFormat>,
     pub(crate) suffix: String,
     pub(crate) if_exists: IfExists,
+    /// `--replace-models`: a model's results may be written over the model
+    /// itself.
+    pub(crate) replace_models: bool,
 }
 
 /// `--lods`: the chain to make, or none at all.
@@ -183,6 +186,7 @@ const HIERARCHY: &str = "--hierarchy";
 const FORMAT: &str = "--format";
 const SUFFIX: &str = "--suffix";
 const IF_EXISTS: &str = "--if-exists";
+const REPLACE_MODELS: &str = "--replace-models";
 const PROFILE: &str = "--profile";
 const FAIL_ON: &str = "--fail-on";
 const RECURSE: &str = "--recurse";
@@ -276,6 +280,12 @@ const SPECS: &[Spec] = &[
         name: IF_EXISTS,
         takes: Takes::Choice(IF_EXISTS_CHOICES),
         help: k::HELP_OPTION_IF_EXISTS,
+        on: OPTIMIZE,
+    },
+    Spec {
+        name: REPLACE_MODELS,
+        takes: Takes::Nothing,
+        help: k::HELP_OPTION_REPLACE_MODELS,
         on: OPTIMIZE,
     },
     Spec {
@@ -576,6 +586,7 @@ fn optimize_args(given: &Given) -> Result<OptimizeArgs, String> {
             Some("replace") => IfExists::Replace,
             _ => IfExists::Fail,
         },
+        replace_models: given.flag(REPLACE_MODELS),
     })
 }
 
@@ -757,7 +768,7 @@ mod tests {
         let parsed = run(
             "optimize a.fbx props --out out --preset p.json --lods 50%,0.25 --reduce 0.8 \
              --packaging file-per-lod --hierarchy flat --format ASCII --suffix _low \
-             --if-exists skip --recurse --report r.json --progress-bar on",
+             --if-exists skip --replace-models --recurse --report r.json --progress-bar on",
         );
         assert_eq!(
             parsed.common.inputs,
@@ -778,6 +789,7 @@ mod tests {
         assert_eq!(args.format, Some(FbxFormat::Ascii));
         assert_eq!(args.suffix, "_low");
         assert_eq!(args.if_exists, IfExists::Skip);
+        assert!(args.replace_models);
     }
 
     #[test]

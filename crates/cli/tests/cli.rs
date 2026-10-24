@@ -260,6 +260,60 @@ fn optimize_never_writes_over_a_model_it_reads() {
     assert_eq!(std::fs::read(&model).expect("read"), before);
 }
 
+/// `--replace-models` lets a model's results replace it, whatever
+/// `--if-exists` says - but never another model of the run.
+#[test]
+fn replace_models_lets_a_model_replace_only_itself() {
+    let Some(cube) = cube() else { return };
+    let folder = scratch("replace-models");
+    let model = folder.join("meter_cube.fbx");
+    std::fs::copy(&cube, &model).expect("copied");
+    let before = std::fs::read(&model).expect("read");
+    let report_path = folder.join("report.json");
+    let output = run(&[
+        "optimize",
+        text(&model),
+        "--out",
+        text(&folder),
+        "--lods",
+        "0.5",
+        "--if-exists",
+        "fail",
+        "--replace-models",
+        "--report",
+        text(&report_path),
+    ]);
+    assert_eq!(status(&output), 0, "{}", stdout(&output));
+    assert_eq!(report(&report_path)["done"], 1);
+    assert_ne!(std::fs::read(&model).expect("read"), before);
+
+    // `other_LOD1.fbx` is a model of the run, and `other.fbx`'s second level
+    // under file-per-lod: it is still refused.
+    let other = folder.join("other.fbx");
+    let level = folder.join("other_LOD1.fbx");
+    std::fs::copy(&cube, &other).expect("copied");
+    std::fs::copy(&cube, &level).expect("copied");
+    let level_before = std::fs::read(&level).expect("read");
+    let output = run(&[
+        "optimize",
+        text(&other),
+        text(&level),
+        "--out",
+        text(&folder),
+        "--lods",
+        "0.5",
+        "--packaging",
+        "file-per-lod",
+        "--replace-models",
+        "--if-exists",
+        "replace",
+        "--report",
+        text(&report_path),
+    ]);
+    assert_eq!(status(&output), 1, "{}", stdout(&output));
+    assert_eq!(std::fs::read(&level).expect("read"), level_before);
+}
+
 /// The output is always `<stem>.fbx` in lower case, and NTFS and APFS ignore
 /// case: `Rock.FBX` written out as `Rock.fbx` is the model itself, and so is
 /// `rock.fbx` typed for it.

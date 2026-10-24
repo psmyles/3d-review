@@ -103,6 +103,7 @@ workspace's Export does.
 | `--format binary\|ascii` | The FBX encoding. |
 | `--suffix <text>` | Added to each file name, before `.fbx` and any `_LOD<n>`. |
 | `--if-exists fail\|skip\|replace` | When a file a model would write is already there. `fail` (the default) fails that model, `skip` leaves the model out, `replace` writes over the file. |
+| `--replace-models` | Let each model's results replace the model itself, when `--out` and `--suffix` put them there: so an engine that has the model placed in its scenes picks up the new one. There is no undo; keep the models in source control. |
 
 Without `--preset`, the stack is just what `--lods` and `--reduce` ask for, so at
 least one of the three is needed. `--packaging`, `--hierarchy` and `--format`
@@ -113,7 +114,13 @@ changes the triangles after it.
 Two checks run before a model is loaded, whatever `--if-exists` says. A model
 never writes over a file another model of the same run is writing, and never over
 a model the run is reading, so `--out` can be the source folder when a `--suffix`
-keeps the names apart. Both compare files rather than spellings: links and `..`
+keeps the names apart. `--replace-models` relaxes the second for a model's own
+file only: the model is loaded in full before anything is written, and the export
+puts each file in place only once all of it is on disk, so a failed model leaves
+its source as it was. A file that is *another* model of the run is still refused,
+since that model may not have been read yet. A model replaced this way is replaced
+whatever `--if-exists` says; its other files (`file-per-lod`'s levels) still go by
+it. Both compare files rather than spellings: links and `..`
 are resolved, a folder `--out` creates during the run makes no difference, and on
 Windows and macOS, whose file systems ignore case, names differing only in case
 are one file. The output is always `.fbx` in lower case, so `Rock.FBX` written

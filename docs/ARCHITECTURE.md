@@ -1052,7 +1052,7 @@ draws, so a run measures and writes exactly what the viewer would, with no GPU.
   over it, then per model the rebind, the run and `export_fbx`. Every file a model
   will write is known before it loads (`export::planned_files`, the export's own
   naming), so `--if-exists` costs nothing and no model can write over another, or
-  over a model being read.
+  over a model being read (`--replace-models` lets a model replace itself).
 - `audit.rs` — each model checked against one profile, its entry carrying the
   `3d-review.audit-report` document; `--fail-on` is the run's verdict.
 - `info.rs` — the stats card's counts.

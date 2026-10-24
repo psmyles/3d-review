@@ -8,7 +8,7 @@
 //! `export_fbx`. What it writes, and where, is settled before the model is even
 //! loaded, so a model whose files are already there costs nothing to skip and a
 //! batch can never write one model over another - or over a model it is
-//! reading.
+//! reading, but for a model replacing itself under `--replace-models`.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -243,7 +243,7 @@ struct Batch<'a> {
     stack: &'a OptStack,
     args: &'a OptimizeArgs,
     /// Every model being read, by [`inputs::identity`]: none of them may be
-    /// written over.
+    /// written over, but by its own results under `--replace-models`.
     sources: HashSet<PathBuf>,
     /// Every file a model of this run is to write, by [`inputs::identity`],
     /// with that model.
@@ -398,6 +398,12 @@ impl Batch<'_> {
     /// model of this run, another model of this run is to write one, or one is
     /// already there and `--if-exists` does not say to replace it.
     ///
+    /// `--replace-models` lets one of them be `model` itself, whatever
+    /// `--if-exists` says: the model is loaded in full before anything is
+    /// written, and the export puts a file in place only once it is all on
+    /// disk. Another model of the run is still refused - it may not have been
+    /// read yet.
+    ///
     /// The first two are asked of each file's identity, not its spelling: the
     /// output's `.fbx` is lower case whatever the source's, `Rock.FBX` and
     /// `Rock.fbx` are one file on Windows and macOS, and a folder `--out`
@@ -407,9 +413,14 @@ impl Batch<'_> {
     /// never as one `--if-exists replace` would let it overwrite.
     fn claim(&mut self, model: &Model, files: &[PathBuf]) -> Result<(), (Status, String)> {
         let resolved: Vec<PathBuf> = files.iter().map(|file| inputs::identity(file)).collect();
+        let itself = inputs::identity(&model.path);
+        let replaces_itself = |resolved: &PathBuf| self.args.replace_models && *resolved == itself;
         for (file, resolved) in files.iter().zip(&resolved) {
             let shown = file.display().to_string();
-            if self.sources.contains(resolved) {
+            if *resolved == itself && !replaces_itself(resolved) {
+                return Err((Status::Failed, k::optimize_is_this_model(shown)));
+            }
+            if *resolved != itself && self.sources.contains(resolved) {
                 return Err((Status::Failed, k::optimize_is_a_model(shown)));
             }
             if let Some(other) = self.claimed.get(resolved)
@@ -421,10 +432,14 @@ impl Batch<'_> {
                 ));
             }
         }
-        for resolved in resolved {
-            self.claimed.insert(resolved, model.label());
+        let existing = files
+            .iter()
+            .zip(&resolved)
+            .find(|(file, resolved)| !replaces_itself(resolved) && file.exists());
+        for resolved in &resolved {
+            self.claimed.insert(resolved.clone(), model.label());
         }
-        let Some(existing) = files.iter().find(|file| file.exists()) else {
+        let Some((existing, _)) = existing else {
             return Ok(());
         };
         let shown = existing.display().to_string();
@@ -522,6 +537,7 @@ mod tests {
             format: None,
             suffix: String::new(),
             if_exists: IfExists::Fail,
+            replace_models: false,
         }
     }
 

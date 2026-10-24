@@ -6,6 +6,7 @@
 //!            [--lods <ratios>|none] [--reduce <ratio>]
 //!            [--packaging single-file|file-per-lod] [--hierarchy rebuild|flat]
 //!            [--format binary|ascii] [--suffix <text>] [--if-exists fail|skip|replace]
+//!            [--replace-models]
 //! review-cli audit <models or folders>... [--profile unity|unreal|generic|<file>]
 //!            [--fail-on error|warning|info|never]
 //! review-cli info <models or folders>...
