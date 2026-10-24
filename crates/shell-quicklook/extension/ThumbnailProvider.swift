@@ -5,9 +5,9 @@
 // into pixels, ask the dylib for a straight-alpha RGBA image, and draw it into
 // the reply's context. The scene, the textures and the GPU are the dylib's.
 
-import CoreGraphics
-import Foundation
+import AppKit
 import QuickLookThumbnailing
+import os
 
 // Named for the Objective-C runtime, so the extension's Info.plist can name the
 // principal class without a Swift module prefix.
@@ -26,17 +26,36 @@ final class ThumbnailProvider: QLThumbnailProvider {
             handler(nil, CocoaError(.fileReadCorruptFile))
             return
         }
-        // The dylib caps the side, so the image can be smaller than asked for;
-        // the reply's size is the image's, which is never larger than the maximum.
-        let size = CGSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
-        let reply = QLThumbnailReply(contextSize: size) { context -> Bool in
-            context.interpolationQuality = .high
-            context.draw(image, in: CGRect(origin: .zero, size: size))
+        // The whole square tile Quick Look asked for, as its header recommends, drawn
+        // through AppKit's current context: the variant Xcode's own template uses,
+        // set up in points at the request's scale. The CGContext variant was not:
+        // drawn into its `contextSize` the model came out a quarter of the tile, in
+        // its bottom-left corner, and sized from its bitmap's extent instead it came
+        // out empty. The dylib caps the side, so the image is scaled up to fit.
+        let edge = min(request.maximumSize.width, request.maximumSize.height)
+        let tile = NSRect(x: 0, y: 0, width: edge, height: edge)
+        let reply = QLThumbnailReply(contextSize: tile.size) { () -> Bool in
+            guard let context = NSGraphicsContext.current else { return false }
+            log.debug(
+                "thumbnail context: \(context.cgContext.width)x\(context.cgContext.height) px, ctm \(String(describing: context.cgContext.ctm)), clip \(String(describing: context.cgContext.boundingBoxOfClipPath)), tile \(edge) pt")
+            context.imageInterpolation = .high
+            context.cgContext.draw(image, in: tile)
             return true
+        }
+        // Plain, so Finder lays the model over its own background as the viewer
+        // draws it, rather than on the white page it gives a document. Private
+        // (`iconFlavor`, Quick Look's legacy flavor numbering, 0 = plain), so set
+        // only when the reply answers to it; without it the page simply returns.
+        if reply.responds(to: Selector(("setIconFlavor:"))) {
+            reply.setValue(0, forKey: "iconFlavor")
         }
         handler(reply, nil)
     }
 }
+
+/// The unified log (`/usr/bin/log show --predicate 'subsystem == "com.psmyles.3d-review"'`):
+/// unlike the dylib's file, readable without opening the sandbox container.
+private let log = Logger(subsystem: "com.psmyles.3d-review", category: "thumbnail")
 
 /// `url`'s thumbnail, `side` pixels square, or nil when there is none.
 private func thumbnail(of url: URL, side: UInt32) -> CGImage? {

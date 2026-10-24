@@ -1533,6 +1533,36 @@ flipped view at 2x converts to (20, -180)) — and every vertical drag, orbit, p
 and `Option`+right zoom, ran backwards while horizontal ones looked right. Scale
 by `backingScaleFactor` instead.
 
+### Draw a thumbnail through AppKit's current context
+
+`QLThumbnailReply(contextSize:drawing:)` hands its block a `CGContext` whose user
+space was not what its header suggests: drawn into a `contextSize` rect (points), the
+model filled a `qlmanage -t` tile at scale 1 but came out a quarter of the tile, in its
+bottom-left corner, in Finder's Retina icon view; sized from the context's own bitmap
+extent instead, every thumbnail came out empty. The provider uses
+`QLThumbnailReply(contextSize:currentContextDrawing:)`, the variant Xcode's template
+uses, which is set up in points at the request's scale, and asks for the whole square
+tile. Check at scale 2 with `QLThumbnailGenerator` (`iconMode = true`), not only with
+`qlmanage`, which renders at 1.
+
+### Finder puts a white page under a document's thumbnail
+
+Icon view lays a thumbnail over a white rounded page unless the reply's private
+`iconFlavor` (an `Int`, defaulting to `INT_MAX`, "this type's default") says
+otherwise; 0 is the legacy plain flavor, and with it the icon-mode thumbnail is the
+model alone, transparent around it. The provider sets it only when the reply answers
+`setIconFlavor:`, so a macOS without it brings the page back rather than failing.
+
+### An installed copy shadows the dev bundle's extensions
+
+With a release build in `/Applications`, the thumbnails agent kept launching *its*
+extension (`com.psmyles.3d-review.thumbnail`) and never the dev bundle's
+(`...dev.thumbnail`), even with the installed one set to `pluginkit -e ignore` — the
+agent holds its choice for as long as it runs (below). Check which one answered with
+`/usr/bin/log show --last 5m --predicate 'process CONTAINS "ThumbnailsAgent" AND
+eventMessage CONTAINS "Launching process"'` before reading anything into a result;
+to test a change, install it over the `/Applications` copy.
+
 ### A dev bundle outside /Applications needs `pluginkit -a`
 
 `lsregister -f` registers the app and its document types, but PlugInKit did not list
