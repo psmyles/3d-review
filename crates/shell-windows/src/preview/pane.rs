@@ -21,13 +21,20 @@ const MAX_TEXTURE_SIDE: u32 = 2048;
 /// does not make the next tick jump to the end.
 const MAX_TICK_SECONDS: f32 = 0.1;
 
+/// What the model is laid over (sRGB): the viewer's own default backdrop
+/// (`ViewportBackground::Black`), so the pane shows a model as the viewer
+/// would, in either Explorer theme.
+pub(super) const BACKGROUND: [u8; 3] = [0, 0, 0];
+/// The status line's color on [`BACKGROUND`].
+pub(super) const TEXT: [u8; 3] = [160, 160, 160];
+
 enum Status {
     Loading,
     Ready(PreviewScene),
     Failed,
 }
 
-/// A loaded frame, already laid over the pane's background: `BGRA` rows, top
+/// A loaded frame, already laid over [`BACKGROUND`]: `BGRA` rows, top
 /// row first, the layout a 32-bit DIB takes.
 pub(super) struct Frame {
     pub(super) width: u32,
@@ -45,17 +52,13 @@ pub(super) struct Pane {
     interaction: Interaction,
     size: (u32, u32),
     frame: Option<Frame>,
-    /// The pane's own colors (sRGB): what the model is laid over, and what the
-    /// status line is written in.
-    pub(super) background: [u8; 3],
-    pub(super) text: [u8; 3],
     /// A camera glide or the ambient occlusion is still changing the picture.
     settling: bool,
     last_tick: Option<Instant>,
 }
 
 impl Pane {
-    pub(super) fn new(background: [u8; 3], text: [u8; 3]) -> Self {
+    pub(super) fn new() -> Self {
         Self {
             status: Status::Loading,
             loaded: Arc::default(),
@@ -63,8 +66,6 @@ impl Pane {
             interaction: Interaction::default(),
             size: (1, 1),
             frame: None,
-            background,
-            text,
             settling: false,
             last_tick: None,
         }
@@ -209,7 +210,6 @@ impl Pane {
     /// Draw the model at the pane's size into [`Self::frame`].
     pub(super) fn draw(&mut self) {
         let size = self.size;
-        let background = self.background;
         let drawn = self.with_view(|view, scene, _| -> GpuResult<_> {
             view.render(scene, size)?;
             let image = view.read_back()?;
@@ -217,7 +217,7 @@ impl Pane {
         });
         match drawn {
             Some(Ok((image, settling))) => {
-                let over = image.over(background);
+                let over = image.over(BACKGROUND);
                 self.frame = Some(Frame {
                     width: over.width,
                     height: over.height,

@@ -1437,6 +1437,15 @@ switches its thread to the parent's context (`GetWindowDpiAwarenessContext`) for
 the creation and back after. Explorer is per-monitor aware and may never have
 shown it, but a host that is not would have.
 
+### A dark-mode Explorer gives its preview pane a white background
+
+A handler that takes the colors `IPreviewHandlerVisuals` offers came up white in a
+dark-mode Explorer on Windows 11, model and all. The test harness never showed it,
+because the harness handed the handler a dark background itself. The handler no
+longer implements that interface: the pane is the viewer's own black backdrop
+(`preview/pane.rs`'s `BACKGROUND`) in either theme, and the harness no longer sets
+colors, so it shows what Explorer shows.
+
 ### A thumbnail handler gets bytes with no path, and every way round that was tried
 
 The thumbnail provider is `IInitializeWithStream`, which is what puts it in

@@ -13,9 +13,13 @@
 //! and the path is what lets textures beside the model be found.
 //!
 //! The COM object is a record of what Explorer has said — the file, the parent,
-//! the rectangle, the colors. The window and the pane behind it live on the
-//! preview window thread ([`ui`]): every method that touches the window posts
-//! the change there and returns, and the thread applies them in order.
+//! the rectangle. The window and the pane behind it live on the preview window
+//! thread ([`ui`]): every method that touches the window posts the change there
+//! and returns, and the thread applies them in order.
+//!
+//! It does not take Explorer's colors (`IPreviewHandlerVisuals`): a dark-mode
+//! Explorer left the pane white, and the pane is the viewer's dark viewport
+//! whatever the theme ([`pane::BACKGROUND`]).
 //!
 //! Keystrokes reach that window's own message loop, not the host's, so
 //! `TranslateAccelerator` sees none of them and answers that it handled
@@ -35,10 +39,7 @@ use std::ffi::c_void;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use windows::Win32::Foundation::{
-    COLORREF, E_FAIL, E_INVALIDARG, E_NOTIMPL, E_POINTER, HWND, RECT, S_FALSE,
-};
-use windows::Win32::Graphics::Gdi::LOGFONTW;
+use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, E_NOTIMPL, E_POINTER, HWND, RECT, S_FALSE};
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::Ole::{
     IObjectWithSite, IObjectWithSite_Impl, IOleWindow, IOleWindow_Impl,
@@ -47,16 +48,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
 use windows::Win32::UI::Shell::PropertiesSystem::{IInitializeWithFile, IInitializeWithFile_Impl};
 use windows::Win32::UI::Shell::{
     IInitializeWithItem, IInitializeWithItem_Impl, IPreviewHandler, IPreviewHandler_Impl,
-    IPreviewHandlerVisuals, IPreviewHandlerVisuals_Impl, IShellItem, SIGDN_FILESYSPATH,
+    IShellItem, SIGDN_FILESYSPATH,
 };
 use windows::Win32::UI::WindowsAndMessaging::MSG;
 use windows::core::{BOOL, Error, GUID, IUnknown, Interface, PCWSTR, Ref, Result, implement};
 
 use crate::guard::guarded;
-
-/// The pane's colors before Explorer says otherwise: its light theme's.
-const DEFAULT_BACKGROUND: [u8; 3] = [255, 255, 255];
-const DEFAULT_TEXT: [u8; 3] = [0, 0, 0];
 
 /// A window handle as a number: what crosses to the window thread, since an
 /// `HWND` is not `Send`.
@@ -87,24 +84,12 @@ struct State {
     rect: RECT,
     pane: Option<Arc<Pane>>,
     site: Option<IUnknown>,
-    background: Option<[u8; 3]>,
-    text: Option<[u8; 3]>,
-}
-
-impl State {
-    fn colors(&self) -> ([u8; 3], [u8; 3]) {
-        (
-            self.background.unwrap_or(DEFAULT_BACKGROUND),
-            self.text.unwrap_or(DEFAULT_TEXT),
-        )
-    }
 }
 
 /// A `Mutex` rather than a `RefCell`: in the neutral apartment `prevhost.exe`
 /// puts the handler in, its calls arrive on any thread.
 #[implement(
     IPreviewHandler,
-    IPreviewHandlerVisuals,
     IOleWindow,
     IObjectWithSite,
     IInitializeWithFile,
@@ -152,20 +137,6 @@ impl PreviewHandler {
             }
         });
     }
-
-    /// Hand the window the current colors.
-    fn send_colors(&self) {
-        let (background, text) = self.state().colors();
-        self.on_window(move |window| window::set_colors(window, background, text));
-    }
-}
-
-fn rgb(color: COLORREF) -> [u8; 3] {
-    [
-        (color.0 & 0xFF) as u8,
-        ((color.0 >> 8) & 0xFF) as u8,
-        ((color.0 >> 16) & 0xFF) as u8,
-    ]
 }
 
 impl IInitializeWithFile_Impl for PreviewHandler_Impl {
@@ -239,7 +210,7 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
 
     fn DoPreview(&self) -> Result<()> {
         guarded("DoPreview", || {
-            let (path, parent, rect, colors, pane) = {
+            let (path, parent, rect, pane) = {
                 let mut state = self.state();
                 if state.pane.is_some() {
                     return Ok(());
@@ -249,15 +220,13 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
                 };
                 let pane = Arc::new(Pane::default());
                 state.pane = Some(Arc::clone(&pane));
-                (path, parent, state.rect, state.colors(), pane)
+                (path, parent, state.rect, pane)
             };
             log::debug!("preview of {}", path.display());
-            ui::post(
-                move || match window::create(hwnd(parent), rect, path, colors) {
-                    Ok(window) => *pane.slot() = Some(window.0 as Handle),
-                    Err(error) => log::error!("no preview window: {error}"),
-                },
-            );
+            ui::post(move || match window::create(hwnd(parent), rect, path) {
+                Ok(window) => *pane.slot() = Some(window.0 as Handle),
+                Err(error) => log::error!("no preview window: {error}"),
+            });
             Ok(())
         })
     }
@@ -296,30 +265,6 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
     /// host's loop, so there is nothing here to translate.
     fn TranslateAccelerator(&self, _message: *const MSG) -> Result<()> {
         Err(Error::from_hresult(S_FALSE))
-    }
-}
-
-impl IPreviewHandlerVisuals_Impl for PreviewHandler_Impl {
-    fn SetBackgroundColor(&self, color: COLORREF) -> Result<()> {
-        guarded("SetBackgroundColor", || {
-            self.state().background = Some(rgb(color));
-            self.send_colors();
-            Ok(())
-        })
-    }
-
-    fn SetFont(&self, _font: *const LOGFONTW) -> Result<()> {
-        // The status line keeps the system font; the pane's own is for text it
-        // lays out, which a picture is not.
-        Ok(())
-    }
-
-    fn SetTextColor(&self, color: COLORREF) -> Result<()> {
-        guarded("SetTextColor", || {
-            self.state().text = Some(rgb(color));
-            self.send_colors();
-            Ok(())
-        })
     }
 }
 

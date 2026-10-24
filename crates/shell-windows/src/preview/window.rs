@@ -50,7 +50,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{Error, PCWSTR, Result, w};
 
-use super::pane::Pane;
+use super::pane::{self, Pane};
 use crate::guard::guarded;
 
 const CLASS_NAME: PCWSTR = w!("3DReviewPreviewPane");
@@ -75,16 +75,11 @@ struct Window {
 
 /// Create the pane's window as a child of `parent`, covering `rect`, and start
 /// loading `path` into it.
-pub(super) fn create(
-    parent: HWND,
-    rect: RECT,
-    path: PathBuf,
-    colors: ([u8; 3], [u8; 3]),
-) -> Result<HWND> {
+pub(super) fn create(parent: HWND, rect: RECT, path: PathBuf) -> Result<HWND> {
     let instance = module()?;
     register_class(instance)?;
     let window = Box::new(Window {
-        pane: RefCell::new(Pane::new(colors.0, colors.1)),
+        pane: RefCell::new(Pane::new()),
     });
     let raw = Box::into_raw(window);
     // A window takes its DPI awareness from its thread's at creation, and a child
@@ -173,16 +168,6 @@ pub(super) fn set_rect(hwnd: HWND, rect: RECT) {
 pub(super) fn set_parent(hwnd: HWND, parent: HWND) {
     // SAFETY: plain window-management call on a window this thread created.
     let _ = unsafe { SetParent(hwnd, Some(parent)) };
-}
-
-/// The pane's colors changed: redraw over the new background.
-pub(super) fn set_colors(hwnd: HWND, background: [u8; 3], text: [u8; 3]) {
-    with_pane(hwnd, |pane| {
-        pane.background = background;
-        pane.text = text;
-        pane.draw();
-    });
-    invalidate(hwnd);
 }
 
 pub(super) fn focus(hwnd: HWND) {
@@ -485,9 +470,9 @@ fn paint(hwnd: HWND) {
             let mut rect = RECT::default();
             // SAFETY: plain query on this window.
             let _ = unsafe { GetClientRect(hwnd, &mut rect) };
-            fill(hdc, &rect, pane.background);
+            fill(hdc, &rect, pane::BACKGROUND);
             if let Some(text) = pane.status_text() {
-                write(hdc, &mut rect, &text, pane.text);
+                write(hdc, &mut rect, &text, pane::TEXT);
             }
         }
     });

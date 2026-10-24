@@ -8,7 +8,7 @@ shows them, with the same lighting, materials and textures.
   background, so it sits on Explorer's own background in light and dark mode.
 - **The preview pane.** Turn on Explorer's preview pane (**View > Preview pane**,
   or **Alt+P**) and select an `.fbx` file. The model appears with every texture
-  it uses, and you can look around it:
+  it uses, on the viewer's black background, and you can look around it:
   - drag with the left button to orbit around the model;
   - drag with the right or middle button to pan;
   - roll the wheel, or hold **Alt** and drag with the right button, to zoom;

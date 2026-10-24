@@ -908,7 +908,9 @@ Its identity — the DLL name, both CLSIDs, the preview's AppID — is
   `ui.rs` the thread every pane window lives on, which the handler posts work to
   (the handler's own calls arrive on threads that never pump messages — GOTCHAS);
   `window.rs` the pane's window procedure and GDI; `pane.rs` its safe state (the
-  load, the viewport, the last frame laid over the pane's background).
+  load, the viewport, the last frame laid over the viewer's black backdrop, which
+  the pane keeps in either Explorer theme rather than taking Explorer's colors -
+  GOTCHAS).
 - `host.rs` — the process's one `Host`, behind a lock, dropped by a reaper thread
   after 30 s idle with no pane open, so a surrogate Explorer keeps alive holds no
   GPU memory.

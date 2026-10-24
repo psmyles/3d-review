@@ -48,8 +48,6 @@ public static class ReviewPreviewHost {
     }
     [ComImport, Guid("b7d14566-0509-4cce-a71f-0a554233bd9b"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     public interface IInitializeWithFile { void Initialize([MarshalAs(UnmanagedType.LPWStr)] string path, uint mode); }
-    [ComImport, Guid("196bf9a5-b346-4ef0-aa1e-5dcdb76768b1"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    public interface IPreviewHandlerVisuals { void SetBackgroundColor(uint color); void SetFont(IntPtr font); void SetTextColor(uint color); }
     [DllImport("ole32.dll")] public static extern int CoCreateInstance([MarshalAs(UnmanagedType.LPStruct)] Guid clsid, IntPtr outer, uint context, [MarshalAs(UnmanagedType.LPStruct)] Guid iid, [MarshalAs(UnmanagedType.IUnknown)] out object instance);
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string windowClass, string title);
@@ -75,9 +73,6 @@ public static class ReviewPreviewHost {
         int result = CoCreateInstance(new Guid(clsid), IntPtr.Zero, inproc ? 1u : 4u, typeof(IPreviewHandler).GUID, out instance);
         if (result != 0) throw new Exception("CoCreateInstance failed: 0x" + result.ToString("X8"));
         ((IInitializeWithFile)instance).Initialize(path, 0);
-        // Explorer's dark theme.
-        ((IPreviewHandlerVisuals)instance).SetBackgroundColor(0x00202020);
-        ((IPreviewHandlerVisuals)instance).SetTextColor(0x00F0F0F0);
         handler = (IPreviewHandler)instance;
         RECT rect = new RECT(); rect.Right = width; rect.Bottom = height;
         handler.SetWindow(window.Handle, ref rect);
