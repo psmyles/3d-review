@@ -58,7 +58,7 @@ pub(crate) fn primary_modifier() -> std::borrow::Cow<'static, str> {
 }
 
 // What a typed audit value or a DCC unit is called lives in `review-labels`,
-// shared with `review-cli` (invariant 12); the chrome reaches it under the
+// shared with `3d-review-cli` (invariant 12); the chrome reaches it under the
 // module names it has always used.
 use review_labels::audit as audit_labels;
 use review_labels::units;

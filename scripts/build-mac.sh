@@ -223,12 +223,12 @@ fi
 
 bin="$repo/target/release/$exe"
 [[ -x "$bin" ]] || die "no release binary at $bin — drop --no-build?"
-cli="$repo/target/release/review-cli"
-[[ -x "$cli" ]] || die "no release review-cli at $cli — drop --no-build?"
+cli="$repo/target/release/3d-review-cli"
+[[ -x "$cli" ]] || die "no release 3d-review-cli at $cli — drop --no-build?"
 
 archs="$(lipo -archs "$bin")"
 [[ "$archs" == *arm64* ]] || die "the binary is '$archs', not arm64 (D11 is Apple Silicon only)"
-[[ "$(lipo -archs "$cli")" == *arm64* ]] || die "review-cli is not arm64"
+[[ "$(lipo -archs "$cli")" == *arm64* ]] || die "3d-review-cli is not arm64"
 
 # ---------------------------------------------------------------------------------------------
 # 4. The icon
@@ -269,8 +269,8 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/$name"
 # The console tool lives beside the viewer's own binary, where a script or Launcher
-# finds it as "<app>/Contents/MacOS/review-cli" from the bundle id.
-cp "$cli" "$app/Contents/MacOS/review-cli"
+# finds it as "<app>/Contents/MacOS/3d-review-cli" from the bundle id.
+cp "$cli" "$app/Contents/MacOS/3d-review-cli"
 cp "$icns" "$app/Contents/Resources/$name.icns"
 cp "$car" "$app/Contents/Resources/Assets.car"
 
@@ -400,7 +400,7 @@ if [[ $do_sign -eq 1 ]]; then
     # Nested code is signed first and on its own: notarization refuses an unsigned
     # executable inside the bundle, and `--deep` signing is what Apple says not to do.
     codesign --force --options runtime --timestamp --sign "$sign_id" \
-        "$app/Contents/MacOS/review-cli"
+        "$app/Contents/MacOS/3d-review-cli"
     # The Quick Look extensions: the dylib they share, then each extension with the
     # sandbox Quick Look requires of it. They are the bundle's only entitled code.
     codesign --force --options runtime --timestamp --sign "$sign_id" \

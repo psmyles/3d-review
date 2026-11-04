@@ -1,5 +1,5 @@
 ### The optimizer's typed values, as every surface that prints them names them:
-### the viewer's Opt workspace and `review-cli optimize` alike (`crates/labels`).
+### the viewer's Opt workspace and `3d-review-cli optimize` alike (`crates/labels`).
 ###
 ### The optimizer hands these over as values (`OpKind`, `OptWarning`, `ExportNote`,
 ### `OptError`). A `{ $detail }` is the library's own diagnostic, kept in English as

@@ -111,7 +111,7 @@ app-notifications-update-check-failed = Couldn't check for updates: { $detail }
 
 ## The command-line tool (macOS)
 
-# At launch, while no review-cli is on the PATH. The menu path is the
+# At launch, while no 3d-review-cli is on the PATH. The menu path is the
 # application menu's own item (menu-install-command-line-tool).
 app-notifications-cli-not-on-path =
     The { $command } command is not on your PATH. Choose { $product } > Install

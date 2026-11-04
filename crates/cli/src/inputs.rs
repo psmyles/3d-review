@@ -179,7 +179,8 @@ mod tests {
 
     #[test]
     fn a_folder_gives_its_models_in_name_order_and_recursing_keeps_their_place() {
-        let root = std::env::temp_dir().join(format!("review-cli-inputs-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("3d-review-cli-inputs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for file in [
             "b.fbx",
@@ -222,7 +223,8 @@ mod tests {
     /// model of two writing `build/body.fbx` wrote over the first.
     #[test]
     fn a_files_identity_does_not_change_when_its_folder_appears() {
-        let root = std::env::temp_dir().join(format!("review-cli-identity-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("3d-review-cli-identity-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("root");
         let file = root.join("build").join("props").join("body.fbx");
@@ -243,8 +245,10 @@ mod tests {
     #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn names_differing_only_in_case_are_one_file_where_case_is_ignored() {
-        let root =
-            std::env::temp_dir().join(format!("review-cli-identity-case-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "3d-review-cli-identity-case-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("root");
         let source = root.join("Rock.FBX");

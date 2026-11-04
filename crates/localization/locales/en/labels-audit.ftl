@@ -1,5 +1,5 @@
 ### The audit's typed values, as every surface that prints them names them: the
-### viewer's Aud workspace and `review-cli audit` alike (`crates/labels`).
+### viewer's Aud workspace and `3d-review-cli audit` alike (`crates/labels`).
 ###
 ### Every check has four messages - its name, what it checks, why it matters
 ### (worded per target engine through `$engine`: unity, unreal or generic), and a

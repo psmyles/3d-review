@@ -14,7 +14,7 @@ menu-clear-recent-files = Clear Recent Files
 menu-close-window = Close Window
 menu-about = About { $product }
 menu-remember-settings = Remember Settings
-# Links the bundled review-cli onto the PATH. macOS only, since Setup does it on
+# Links the bundled 3d-review-cli onto the PATH. macOS only, since Setup does it on
 # Windows and the .dmg has no installer to.
 menu-install-command-line-tool = Install Command Line Tool...
 menu-hide = Hide { $product }

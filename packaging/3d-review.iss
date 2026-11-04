@@ -95,7 +95,7 @@ Name: "associate"; GroupDescription: "File associations:"; \
 Name: "shellext"; GroupDescription: "File associations:"; \
   Description: "Show .fbx thumbnails and previews in File Explorer"
 Name: "addtopath"; GroupDescription: "Command line:"; \
-  Description: "Add {#MyAppName} to my PATH, so ""review-cli"" runs from any terminal"; \
+  Description: "Add {#MyAppName} to my PATH, so ""3d-review-cli"" runs from any terminal"; \
   Flags: unchecked
 Name: "desktopicon"; GroupDescription: "Additional icons:"; \
   Description: "Create a desktop shortcut"; Flags: unchecked
@@ -108,7 +108,7 @@ Source: "..\target\release\{#MyAppExe}"; DestDir: "{app}"; Flags: ignoreversion
 ; The console tool (docs\cli.md): the Opt and Aud workspaces for scripts,
 ; pipelines and Launcher. Beside the viewer, so anything that finds the install
 ; through its Uninstall key's InstallLocation finds this too.
-Source: "..\target\release\review-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\target\release\3d-review-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; The manual's images are the one exception (invariant 12): embedding
 ; screenshots would put megabytes in a binary whose startup time is a feature.
 ; An install without them still shows every page — each image renders as its
@@ -134,6 +134,11 @@ Source: "..\licenses\*.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 ; No external tools to ship: PSD is decoded in-process by the prebuilt psd_sdk FFI
 ; crate (review-psd), JPEG by zune, and the rest by the Rust `image` crate — the
 ; old bundled ImageMagick CLI is gone.
+
+[InstallDelete]
+; The console tool was review-cli.exe up to 0.8.0. An upgrade only overwrites the
+; files it ships, so the old name would linger beside 3d-review-cli.exe.
+Type: files; Name: "{app}\review-cli.exe"
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"
@@ -198,11 +203,11 @@ Filename: "{app}\{#MyAppExe}"; Description: "Launch {#MyAppName}"; \
   Flags: nowait postinstall skipifsilent
 
 [Code]
-// The PATH entry behind the "addtopath" task, so `review-cli` runs from any
+// The PATH entry behind the "addtopath" task, so `3d-review-cli` runs from any
 // terminal. Only the per-user PATH is touched, whichever install scope was
 // chosen: an all-users install would need the machine variable, and appending to
 // that from a setup that may be running unelevated is not safe. Launcher and other
-// tools need none of it - they find review-cli.exe beside the viewer through the
+// tools need none of it - they find 3d-review-cli.exe beside the viewer through the
 // Uninstall key. The entry is removed on uninstall. (The same code as Bite's
 // installer.)
 

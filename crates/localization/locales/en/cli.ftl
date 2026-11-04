@@ -1,4 +1,4 @@
-### `review-cli`: what the console tool prints.
+### `3d-review-cli`: what the console tool prints.
 ###
 ### Option names (`--out`, `--if-exists`) and the words a choice takes (`skip`,
 ### `file-per-lod`) are the command line's own syntax and stay as they are in every
@@ -13,11 +13,11 @@ cli-help-usage = Usage:
 cli-help-commands = Commands:
 cli-help-options = Options:
 cli-help-models = Give any mix of models and folders. A folder stands for the FBX files in it.
-cli-help-more = Run review-cli <command> --help to see a command's options.
-cli-help-usage-main = review-cli <command> <models or folders>... [options]
-cli-help-usage-optimize = review-cli optimize <models or folders>... --out <folder> [options]
-cli-help-usage-audit = review-cli audit <models or folders>... [options]
-cli-help-usage-info = review-cli info <models or folders>... [options]
+cli-help-more = Run 3d-review-cli <command> --help to see a command's options.
+cli-help-usage-main = 3d-review-cli <command> <models or folders>... [options]
+cli-help-usage-optimize = 3d-review-cli optimize <models or folders>... --out <folder> [options]
+cli-help-usage-audit = 3d-review-cli audit <models or folders>... [options]
+cli-help-usage-info = 3d-review-cli info <models or folders>... [options]
 cli-help-command-optimize = Simplify models, make LODs and save them as FBX.
 cli-help-command-audit = Check models against an engine's rules.
 cli-help-command-info = Show what a model holds: polygons, triangles, vertices and more.

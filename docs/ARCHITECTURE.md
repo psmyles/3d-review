@@ -614,7 +614,7 @@ open groups. A focused finding and a scene selection are exclusive, like the Opt
 stack pane and the Outliner: `select_audit_focus` clears the selection and
 `release_stack_selection` clears the focus. Only the file dialogs travel as an
 `AuditIntent`. The exhaustive map from every typed audit value to catalog text
-(invariant 12) is `review-labels`' `audit` module, shared with `review-cli`, and
+(invariant 12) is `review-labels`' `audit` module, shared with `3d-review-cli`, and
 the chrome reaches it as `audit_labels`; `panels/outliner/issues.rs` is the Issues
 tab and `panels/aud_inspector.rs` the finding, object, summary and profile
 views. The Aud view group follows the 3D tools in the left cluster
@@ -649,7 +649,7 @@ load/save) travel as an `OptIntent`.
 
 Three modules exist for invariant 12: `labels.rs` maps every foreign enum variant
 the chrome alone shows to a catalog message (an operation's name, a rule's, a
-DCC unit's are `review-labels`', because `review-cli` prints them too),
+DCC unit's are `review-labels`', because `3d-review-cli` prints them too),
 `widgets/tooltip.rs` is the one tooltip shape (title, paragraph, manual link), and
 `help.rs` is the in-app manual — a native `egui::Window` over `docs::Page`, the
 page table this crate's `build.rs` generates from `docs/book/src`. Page *text* is
@@ -658,7 +658,7 @@ and one that is not there renders as its alt text.
 
 ### `audit` — `review-audit`
 
-The model audit behind the Aud workspace, as a pure library so `review-cli audit`
+The model audit behind the Aud workspace, as a pure library so `3d-review-cli audit`
 writes the same report the viewer does. `#![forbid(unsafe_code)]`; depends on
 `review-model`, `glam`, `serde` and `review-prof` — deliberately **not** on
 `review-optimize`, which is an FFI site the audit has no need of. It is
@@ -833,7 +833,7 @@ and `ui-`, `app` takes `app-`, `shell-macos` takes `menu-`, `labels` takes
 
 The catalog text for the typed values the libraries hand back, written once
 because two programs print them: the viewer's chrome and notices, and
-`review-cli`. `audit.rs` is every audit value — a check's name, what it checks,
+`3d-review-cli`. `audit.rs` is every audit value — a check's name, what it checks,
 why it matters per engine and how to fix it, a severity, a category, a skip
 reason, a parameter, a measured figure, a profile's name, the **Copy summary**
 text and the actionable `AuditError`s. `opt.rs` is an operation's name and
@@ -864,9 +864,9 @@ requires each to decode correctly or be refused with an error - never a crash.
 ### `shell-macos` — `review-shell-macos`
 
 The macOS shell pieces: the Launch Services open hook, the menu bar, and linking
-the bundled `review-cli` onto the PATH (`cli_install.rs` - the .dmg has no
+the bundled `3d-review-cli` onto the PATH (`cli_install.rs` - the .dmg has no
 installer to do what Setup's PATH task does on Windows, so the application menu's
-Install Command Line Tool symlinks `/usr/local/bin/review-cli` into the bundle,
+Install Command Line Tool symlinks `/usr/local/bin/3d-review-cli` into the bundle,
 through the system's administrator prompt when the folder needs it). Every
 entry point is a no-op stub off macOS, so it is depended on unconditionally with
 no `cfg` at the call site.
@@ -1033,7 +1033,9 @@ report's coverage and any mismatch.
 
 ### `cli` — `review-cli`
 
-The console tool shipped beside the viewer (`docs/cli.md` is its reference):
+The console tool shipped beside the viewer as `3d-review-cli` (`docs/cli.md` is
+its reference; the package keeps the name `review-cli`, since a Cargo package
+name cannot start with a digit, and was the binary's name up to 0.8.0):
 `optimize`, `audit` and `info` over any mix of models and folders, for scripts,
 pipelines and Launcher. It links the libraries the viewer's Opt and Aud
 workspaces call — `import`, `optimize`, `audit`, `labels` — and nothing that

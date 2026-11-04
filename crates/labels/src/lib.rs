@@ -6,7 +6,7 @@
 //! so a variant added to a library is a compile error here rather than English
 //! on a translated screen. They live in their own crate, rather than in `ui`,
 //! because two things print them: the viewer's chrome and notices, and
-//! `review-cli`, which links no egui. One map per value keeps the Inspector, a
+//! `3d-review-cli`, which links no egui. One map per value keeps the Inspector, a
 //! notice and a console line calling the same thing by the same name.
 
 #![forbid(unsafe_code)]

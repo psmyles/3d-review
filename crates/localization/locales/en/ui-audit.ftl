@@ -1,6 +1,6 @@
 ### The Aud workspace's chrome: the Issues tab, the Inspector's finding and
 ### profile views, and the toolbar's findings count. What a check, a severity or a
-### measured value is called is `labels-audit.ftl`'s, shared with `review-cli`.
+### measured value is called is `labels-audit.ftl`'s, shared with `3d-review-cli`.
 
 ## The Issues tab
 

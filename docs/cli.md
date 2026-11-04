@@ -1,25 +1,30 @@
-# review-cli
+# 3d-review-cli
 
-`review-cli` runs the Opt and Aud workspaces' work without opening the viewer:
+`3d-review-cli` runs the Opt and Aud workspaces' work without opening the viewer:
 optimizing models into LODs and FBX files, checking them against an engine's
 rules, and reading their stats. It is a console program shipped beside the viewer,
 built for scripts, build pipelines and Launcher tools. Everything it does is a
 library call the viewer also makes, so a run measures and writes exactly what the
 viewer would.
 
+Up to 0.8.0 it was called `review-cli`; scripts that call it by that name need the
+new one. Setup removes the old `review-cli.exe` from the install folder, and on
+macOS **Install Command Line Tool...** removes an old `/usr/local/bin/review-cli`
+link into the app.
+
 ```text
-review-cli optimize <models or folders>... --out <folder> [options]
-review-cli audit    <models or folders>... [options]
-review-cli info     <models or folders>... [options]
-review-cli --version | --help | <command> --help
+3d-review-cli optimize <models or folders>... --out <folder> [options]
+3d-review-cli audit    <models or folders>... [options]
+3d-review-cli info     <models or folders>... [options]
+3d-review-cli --version | --help | <command> --help
 ```
 
 ## Where it is installed
 
 | | |
 |---|---|
-| Windows | `review-cli.exe` beside `3d-review.exe`, in the install folder the Uninstall key `{B6F4B0E9-2E1B-4C3A-9D2F-3D5E7A1C0F42}_is1` names as `InstallLocation` (`%LOCALAPPDATA%\Programs\3D Review` for a per-user install, `C:\Program Files\3D Review` for all users). Setup's **Add 3D Review to my PATH** task, off by default, puts that folder on the user's PATH. |
-| macOS | `3D Review.app/Contents/MacOS/review-cli`. Find the app by its bundle id, `com.psmyles.3d-review` (`mdfind "kMDItemCFBundleIdentifier == 'com.psmyles.3d-review'"`). A `scripts/dev-app.sh` bundle has it too. The .dmg cannot install anything itself, so the app does it: **3D Review > Install Command Line Tool...** symlinks `/usr/local/bin/review-cli` to that binary, asking for an administrator password when the folder needs one, and a notice says so at launch while no `review-cli` is on the PATH. The link follows the app's updates, and breaks if the app is moved (the launch notice then comes back). |
+| Windows | `3d-review-cli.exe` beside `3d-review.exe`, in the install folder the Uninstall key `{B6F4B0E9-2E1B-4C3A-9D2F-3D5E7A1C0F42}_is1` names as `InstallLocation` (`%LOCALAPPDATA%\Programs\3D Review` for a per-user install, `C:\Program Files\3D Review` for all users). Setup's **Add 3D Review to my PATH** task, off by default, puts that folder on the user's PATH. |
+| macOS | `3D Review.app/Contents/MacOS/3d-review-cli`. Find the app by its bundle id, `com.psmyles.3d-review` (`mdfind "kMDItemCFBundleIdentifier == 'com.psmyles.3d-review'"`). A `scripts/dev-app.sh` bundle has it too. The .dmg cannot install anything itself, so the app does it: **3D Review > Install Command Line Tool...** symlinks `/usr/local/bin/3d-review-cli` to that binary, asking for an administrator password when the folder needs one, and a notice says so at launch while no `3d-review-cli` is on the PATH. The link follows the app's updates, and breaks if the app is moved (the launch notice then comes back). |
 
 ## The contract
 
@@ -85,8 +90,8 @@ fetches it.
 ## optimize
 
 ```text
-review-cli optimize props --recurse --out build/lods --lods 50%,25%,12.5%
-review-cli optimize hero.fbx --preset presets/hero.json --out build --if-exists replace
+3d-review-cli optimize props --recurse --out build/lods --lods 50%,25%,12.5%
+3d-review-cli optimize hero.fbx --preset presets/hero.json --out build --if-exists replace
 ```
 
 Runs an operation stack over each model and writes the result as FBX, as the Opt
@@ -133,8 +138,8 @@ an AO bake, exclude it in the preset.
 ## audit
 
 ```text
-review-cli audit Assets/Models --recurse --profile unity --report audit.json
-review-cli audit hero.fbx --profile team-profile.json --fail-on warning
+3d-review-cli audit Assets/Models --recurse --profile unity --report audit.json
+3d-review-cli audit hero.fbx --profile team-profile.json --fail-on warning
 ```
 
 Checks each model against an engine profile, as the Aud workspace does.
@@ -150,7 +155,7 @@ one line per failing check, worst first.
 ## info
 
 ```text
-review-cli info hero.fbx --report stats.json
+3d-review-cli info hero.fbx --report stats.json
 ```
 
 What each model holds, as the Model Stats panel shows it: polygons, triangles and
@@ -163,7 +168,7 @@ build them, draws, materials, UV sets, bones, animations and the file's unit.
 {
   "schema": "3d-review.cli-report",
   "version": 1,
-  "generator": "review-cli 0.7.0",
+  "generator": "3d-review-cli 0.7.0",
   "created_unix": 1791907669,
   "command": "optimize",
   "ok": false,

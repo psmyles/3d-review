@@ -10,7 +10,7 @@ use std::process::{Command, Output};
 
 use serde_json::Value;
 
-const BINARY: &str = env!("CARGO_BIN_EXE_review-cli");
+const BINARY: &str = env!("CARGO_BIN_EXE_3d-review-cli");
 
 fn run(args: &[&str]) -> Output {
     Command::new(BINARY)
@@ -89,7 +89,7 @@ fn a_command_line_it_cannot_follow_exits_2_and_runs_nothing() {
 fn version_and_help_exit_0() {
     let version = run(&["--version"]);
     assert_eq!(status(&version), 0);
-    assert!(stdout(&version).starts_with("review-cli "));
+    assert!(stdout(&version).starts_with("3d-review-cli "));
     let main = run(&["--help"]);
     assert_eq!(status(&main), 0);
     assert!(stdout(&main).contains("optimize"));

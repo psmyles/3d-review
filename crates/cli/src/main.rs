@@ -1,17 +1,17 @@
-//! `review-cli`: the Opt and Aud workspaces' work from a terminal, a script or
+//! `3d-review-cli`: the Opt and Aud workspaces' work from a terminal, a script or
 //! Launcher, without opening the viewer.
 //!
 //! ```text
-//! review-cli optimize <models or folders>... --out <folder> [--preset <file>]
+//! 3d-review-cli optimize <models or folders>... --out <folder> [--preset <file>]
 //!            [--lods <ratios>|none] [--reduce <ratio>]
 //!            [--packaging single-file|file-per-lod] [--hierarchy rebuild|flat]
 //!            [--format binary|ascii] [--suffix <text>] [--if-exists fail|skip|replace]
 //!            [--replace-models]
-//! review-cli audit <models or folders>... [--profile unity|unreal|generic|<file>]
+//! 3d-review-cli audit <models or folders>... [--profile unity|unreal|generic|<file>]
 //!            [--fail-on error|warning|info|never]
-//! review-cli info <models or folders>...
+//! 3d-review-cli info <models or folders>...
 //!     every command: [--recurse] [--report <file.json>] [--progress-bar auto|on|off]
-//! review-cli --version | --help | <command> --help
+//! 3d-review-cli --version | --help | <command> --help
 //! ```
 //!
 //! It keeps the contract every console tool Launcher drives keeps

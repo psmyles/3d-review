@@ -124,7 +124,7 @@ pulldown-cmark = { version = "0.13", default-features = false }
 # has to catch. Both are already in the graph via the serde/thiserror derives.
 proc-macro2 = { version = "1", features = ["span-locations"] }
 # The catalog text for the libraries' typed values (a check, an operation, a
-# warning), shared by the viewer and `review-cli` (invariant 12).
+# warning), shared by the viewer and `3d-review-cli` (invariant 12).
 review-labels = { path = "crates/labels" }
 # The generated typed message keys, and the `tr`/`tr_args` they resolve through.
 review-localization = { path = "crates/localization" }

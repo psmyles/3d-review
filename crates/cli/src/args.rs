@@ -1,4 +1,4 @@
-//! The command line: what `review-cli` was asked to do, or why it cannot tell.
+//! The command line: what `3d-review-cli` was asked to do, or why it cannot tell.
 //!
 //! One table, [`SPECS`], is both what is accepted and what `--help` lists, so
 //! the two cannot disagree. Parsing is all or nothing: a command line with one
@@ -24,7 +24,7 @@ use review_optimize::{FbxFormat, HierarchyMode, LodPackaging};
 use crate::keys::cli as k;
 
 /// The program's name, as a command line names it.
-pub(crate) const PROGRAM: &str = "review-cli";
+pub(crate) const PROGRAM: &str = "3d-review-cli";
 
 /// What the command line asked for.
 #[derive(Debug)]
@@ -152,7 +152,7 @@ pub(crate) enum BarMode {
     Off,
 }
 
-/// A command line `review-cli` cannot follow. Nothing has run.
+/// A command line `3d-review-cli` cannot follow. Nothing has run.
 #[derive(Debug)]
 pub(crate) struct UsageError {
     pub(crate) message: String,

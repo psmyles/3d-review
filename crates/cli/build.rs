@@ -24,7 +24,7 @@ fn main() {
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
         .and_then(|product| product.get("version")?.as_str().map(str::to_owned));
     let version = version.unwrap_or_else(|| {
-        println!("cargo:warning=no version in {PRODUCT_JSON}; review-cli reports 0.0.0");
+        println!("cargo:warning=no version in {PRODUCT_JSON}; 3d-review-cli reports 0.0.0");
         "0.0.0".to_owned()
     });
     println!("cargo:rustc-env=REVIEW_VERSION={version}");

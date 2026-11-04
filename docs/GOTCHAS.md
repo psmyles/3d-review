@@ -1321,7 +1321,7 @@ loaded rather than blaming the stack for the triangles.
 
 ## Tools and builds
 
-### review-cli compares files by identity, not by spelling
+### 3d-review-cli compares files by identity, not by spelling
 
 `inputs::identity` makes a path absolute, canonicalizes the longest part that
 exists and appends the rest, and folds case on Windows and macOS. Comparing
