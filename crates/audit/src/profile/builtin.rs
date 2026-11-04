@@ -182,5 +182,6 @@ pub fn default_config(engine: Engine, rule: RuleId) -> RuleConfig {
         // moment someone switches it on.
         severity: severity.unwrap_or(I),
         params,
+        note: None,
     }
 }

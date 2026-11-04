@@ -428,6 +428,29 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `zune-image` | 0.5.0 | MIT | Copyright (c) zune-image developers |
 | `zune-jpeg` | 0.5.15 | MIT | Copyright (c) zune-image developers |
 
+### Crates in `3d-review-cli` only
+
+`3d-review-cli`, the console tool installed beside the viewer, links a subset of the crates above
+plus these, which the viewer does not: Asset Check's shared rules crate and what it needs to match
+file names and digest rules files. All are MIT (each offered as MIT OR Apache-2.0, or MIT OR
+Unlicense, and 3D Review elects MIT).
+
+| Crate | Version | License | Copyright |
+|---|---|---|---|
+| `aho-corasick` | 1.1.4 | MIT | Copyright (c) 2015 Andrew Gallant |
+| `asset-rules` | 0.1.0 | MIT | Copyright (c) 2026 Chandan Singh |
+| `block-buffer` | 0.12.1 | MIT | Copyright (c) 2018-2025 The RustCrypto Project Developers |
+| `bstr` | 1.13.1 | MIT | Copyright (c) 2018-2019 Andrew Gallant |
+| `cpufeatures` | 0.3.1 | MIT | Copyright (c) 2020-2026 The RustCrypto Project Developers |
+| `crypto-common` | 0.2.2 | MIT | Copyright (c) 2021-2026 RustCrypto Developers |
+| `digest` | 0.11.3 | MIT | Copyright (c) 2017-2025 RustCrypto Developers; Copyright (c) 2017 Artyom Pavlov |
+| `globset` | 0.4.19 | MIT | Copyright (c) 2015 Andrew Gallant |
+| `hybrid-array` | 0.4.15 | MIT | Copyright (c) 2022-2026 The RustCrypto Project Developers |
+| `regex-automata` | 0.4.14 | MIT | Copyright (c) 2014 The Rust Project Developers |
+| `regex-syntax` | 0.8.11 | MIT | Copyright (c) 2014 The Rust Project Developers |
+| `sha2` | 0.11.1 | MIT | Copyright (c) 2016-2026 The RustCrypto Project Developers; Copyright (c) 2016 Artyom Pavlov |
+| `typenum` | 1.20.1 | MIT | Copyright (c) 2014 Paho Lurie-Gregg |
+
 ### Note on `epaint_default_fonts` (OFL-1.1, Ubuntu-font-1.0)
 
 `epaint_default_fonts` is licensed `(MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0`: the code
@@ -540,6 +563,10 @@ dependency are excluded from the table: the first ten are 3D Review, and sokol i
 that the macOS target pulls in crates the Windows one does not (the `objc2` family, `muda`,
 `core-foundation`, `fsevent-sys`, ...) and vice versa (the `windows` family, `clipboard-win`,
 `winapi-util`), which is why both trees are needed.
+
+The "Crates in `3d-review-cli` only" table is the same pair of queries with `-p review-cli`, less
+every crate the viewer's table already lists. `asset-rules` is a git dependency, so its license is
+read from its checkout under `~/.cargo/git/checkouts/`.
 
 The native libraries in section 1 change only when `third_party/`, `crates/psd/vendor/`,
 `vendor/sokol-rust/` or the `tracy-client` pin changes; their versions and commits are recorded in

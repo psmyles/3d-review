@@ -47,10 +47,34 @@ pub(crate) struct Inputs {
 
 /// The models a run works on, every argument it cannot use already said and
 /// recorded as a failed entry. Empty when there is nothing to do, in which case
-/// a run that found nothing at all has said so and recorded it as the run's
-/// problem.
+/// a run that found nothing at all has said so - and, unless the models came
+/// from a `--files-from` list, recorded it as the run's problem: models and
+/// folders given on the line that hold none are a mistake, while a list naming
+/// none is a commit or an import with no models in it.
 pub(crate) fn gather(common: &Common, report: &mut Report) -> Vec<Model> {
-    let inputs = collect(&common.inputs, common.recurse);
+    let mut arguments: Vec<Argument> = common
+        .inputs
+        .iter()
+        .map(|path| Argument {
+            path: path.clone(),
+            listed: false,
+        })
+        .collect();
+    if let Some(list) = &common.files_from {
+        match read_list(list) {
+            Ok(listed) => arguments.extend(
+                listed
+                    .into_iter()
+                    .map(|path| Argument { path, listed: true }),
+            ),
+            Err(problem) => {
+                console::warn(&problem);
+                report.problem(problem);
+                return Vec::new();
+            }
+        }
+    }
+    let inputs = collect_arguments(&arguments, common.recurse);
     report.expect(inputs.models.len() + inputs.unusable.len());
     for unusable in &inputs.unusable {
         console::warn(&unusable.problem);
@@ -58,18 +82,76 @@ pub(crate) fn gather(common: &Common, report: &mut Report) -> Vec<Model> {
         report.add(Status::Failed, entry, Some(unusable.problem.clone()));
     }
     if inputs.models.is_empty() && inputs.unusable.is_empty() {
-        let problem = review_localization::tr(k::NO_MODELS).into_owned();
-        console::warn(&problem);
-        report.problem(problem);
+        let message = review_localization::tr(k::NO_MODELS).into_owned();
+        if common.files_from.is_some() {
+            console::say(&message);
+        } else {
+            console::warn(&message);
+            report.problem(message);
+        }
     }
     inputs.models
 }
 
-pub(crate) fn collect(arguments: &[PathBuf], recurse: bool) -> Inputs {
+/// A model or folder to work on, and whether a `--files-from` list named it.
+struct Argument {
+    path: PathBuf,
+    listed: bool,
+}
+
+/// The paths a `--files-from` list names: one per line, blank lines skipped,
+/// each relative to the current folder as one on the command line is. Read as
+/// UTF-8 - or as UTF-16 when it starts with that byte-order mark, which is what
+/// Windows PowerShell 5's `Out-File` writes.
+fn read_list(list: &Path) -> Result<Vec<PathBuf>, String> {
+    let bytes = std::fs::read(list)
+        .map_err(|error| k::files_from_unreadable(list.display().to_string(), error.to_string()))?;
+    let text = match bytes.as_slice() {
+        [0xFF, 0xFE, rest @ ..] => utf16(rest, u16::from_le_bytes),
+        [0xFE, 0xFF, rest @ ..] => utf16(rest, u16::from_be_bytes),
+        [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8_lossy(rest).into_owned(),
+        all => String::from_utf8_lossy(all).into_owned(),
+    };
+    Ok(text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .collect())
+}
+
+fn utf16(bytes: &[u8], unit: fn([u8; 2]) -> u16) -> String {
+    let (pairs, _odd_byte) = bytes.as_chunks::<2>();
+    let units: Vec<u16> = pairs.iter().map(|&pair| unit(pair)).collect();
+    String::from_utf16_lossy(&units)
+}
+
+/// The models `arguments` given on the command line stand for.
+#[cfg(test)]
+fn collect(arguments: &[PathBuf], recurse: bool) -> Inputs {
+    let arguments: Vec<Argument> = arguments
+        .iter()
+        .map(|path| Argument {
+            path: path.clone(),
+            listed: false,
+        })
+        .collect();
+    collect_arguments(&arguments, recurse)
+}
+
+fn collect_arguments(arguments: &[Argument], recurse: bool) -> Inputs {
     let mut inputs = Inputs::default();
-    for argument in arguments {
+    for Argument {
+        path: argument,
+        listed,
+    } in arguments
+    {
         match std::fs::metadata(argument) {
             Ok(meta) if meta.is_dir() => walk(argument, Path::new(""), recurse, &mut inputs),
+            // A list is often every file an import or a commit touched, so a
+            // file in it is taken only if it is a model, as one in a folder is.
+            Ok(_) if *listed && !is_fbx(argument) => {}
+            Err(_) if *listed && !is_fbx(argument) => {}
             Ok(_) => inputs.models.push(Model {
                 path: argument.clone(),
                 relative: argument
@@ -124,7 +206,7 @@ fn walk(folder: &Path, relative: &Path, recurse: bool, inputs: &mut Inputs) {
     }
 }
 
-fn is_fbx(path: &Path) -> bool {
+pub(crate) fn is_fbx(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("fbx"))
 }

@@ -9,8 +9,8 @@
 //! stands in for the compiler.
 
 use review_audit::{
-    AuditError, AuditProfile, AuditReport, Axis, Category, DiagnosticView, Engine, Measured,
-    RuleId, Severity, Skip, Status, Threshold,
+    AuditError, AuditProfile, AuditReport, Axis, Category, DiagnosticView, ElementKind, Engine,
+    Measured, RuleId, RuleResult, Severity, Skip, Status, Threshold,
 };
 use review_localization::{Key, tr};
 
@@ -376,6 +376,48 @@ pub fn threshold(value: &Threshold) -> Option<String> {
     }
 }
 
+/// What a failing check found, in plain words with its figures - the "what" of
+/// a finding in Asset Check's results (AC10, AC11), where the artist reads it
+/// without the viewer beside them: the check's own sentence, how much of the
+/// model it found, and the figure it measured against the profile's limit.
+///
+/// The figure is the rule's headline (its worst object's, or the scene's), or
+/// the one offender's own when the rule states none. A limit is only stated
+/// beside a figure, since "at most 4" read alone says nothing; the check's own
+/// sentence already says what it is a limit on.
+pub fn finding_what(result: &RuleResult) -> String {
+    let mut sentences = vec![tr(rule_what(result.rule)).into_owned()];
+    let in_objects = result.offender_nodes().count();
+    let objects = in_objects as f64;
+    let count = result.total as f64;
+    let found = match result.rule.element() {
+        _ if in_objects == 0 => None,
+        ElementKind::Triangle => Some(k::found_triangles(count, objects)),
+        ElementKind::Edge => Some(k::found_edges(count, objects)),
+        ElementKind::Vertex => Some(k::found_vertices(count, objects)),
+        ElementKind::Node => Some(k::found_objects(objects)),
+        ElementKind::Scene => None,
+    };
+    sentences.extend(found);
+    sentences.extend(figure(result));
+    sentences.join(" ")
+}
+
+/// [`finding_what`]'s last sentence: the figure against the limit.
+fn figure(result: &RuleResult) -> Option<String> {
+    match (&result.threshold, result.headline().map(measured)) {
+        (Threshold::Patterns(patterns), _) => Some(k::figure_patterns(patterns.join(", "))),
+        (_, None) => None,
+        (Threshold::None, Some(value)) => Some(k::figure_measured(value)),
+        (Threshold::Max(limit), Some(value)) => Some(k::figure_max(measured(limit), value)),
+        (Threshold::Min(limit), Some(value)) => Some(k::figure_min(measured(limit), value)),
+        (Threshold::Range { min, max }, Some(value)) => {
+            Some(k::figure_range(measured(max), value, measured(min)))
+        }
+        (Threshold::Equals(target), Some(value)) => Some(k::figure_equals(value, measured(target))),
+    }
+}
+
 /// The profile's display name: its own, or its engine's when it has none, with
 /// a marker when it differs from that engine's built-in.
 pub fn profile_name(profile: &AuditProfile) -> String {
@@ -419,13 +461,19 @@ pub fn summary_lines(report: &AuditReport) -> Vec<String> {
         lines.push(tr(k::TEXT_NONE).into_owned());
     }
     for result in failing {
-        lines.push(k::text_finding(
-            result.total as f64,
-            tr(rule_name(result.rule)).into_owned(),
-            tr(severity(result.severity)).into_owned(),
-        ));
+        lines.push(finding_line(result.rule, result.severity, result.total));
     }
     lines
+}
+
+/// One failing check as [`summary_lines`] lists it: `Warning: Texel density
+/// (1)`, where the count is the triangles, edges, vertices or objects found.
+pub fn finding_line(rule: RuleId, level: Severity, count: u64) -> String {
+    k::text_finding(
+        count as f64,
+        tr(rule_name(rule)).into_owned(),
+        tr(severity(level)).into_owned(),
+    )
 }
 
 /// What to show the user for an audit error: a newer profile says what to do

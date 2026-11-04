@@ -30,7 +30,11 @@ replaces the current profile with one from a file.
 
 The file is a plain JSON document. Values outside what the editor allows are
 brought back into range when it is loaded, and checks a newer viewer added are
-simply skipped, so a profile can be edited by hand.
+simply skipped, so a profile can be edited by hand. A file written by hand needs
+only the checks it changes; the rest are its engine's. A `note` written on a
+check - Asset Check shows it to the artist beside that check's findings - is kept
+when the profile is loaded and saved again here, although the Inspector does not
+show it.
 
 **Reset** puts every setting back to the built-in values for the profile's
 engine.

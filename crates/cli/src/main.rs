@@ -7,12 +7,21 @@
 //!            [--packaging single-file|file-per-lod] [--hierarchy rebuild|flat]
 //!            [--format binary|ascii] [--suffix <text>] [--if-exists fail|skip|replace]
 //!            [--replace-models]
-//! 3d-review-cli audit <models or folders>... [--profile unity|unreal|generic|<file>]
-//!            [--fail-on error|warning|info|never]
+//! 3d-review-cli audit <models or folders>... | --staged
+//!            [--profile unity|unreal|generic|<file> | --rules <rules.json>]
+//!            [--fail-on error|warning|info|never] [--results <file.json>]
 //! 3d-review-cli info <models or folders>...
-//!     every command: [--recurse] [--report <file.json>] [--progress-bar auto|on|off]
+//!     every model command: [--files-from <list>] [--recurse] [--report <file.json>]
+//!            [--progress-bar auto|on|off]
+//! 3d-review-cli rules check <rules.json>
+//! 3d-review-cli rules explain <files>... --rules <rules.json>
 //! 3d-review-cli --version | --help | <command> --help
 //! ```
+//!
+//! `--rules`, `--results`, `--staged` and the `rules` command are Asset
+//! Check's (`asset-check-plan.md` AC13), through the `asset-rules` crate that
+//! `fire-cli` shares, so both checkers resolve a file to the same profile and
+//! stage and write one results format.
 //!
 //! It keeps the contract every console tool Launcher drives keeps
 //! (`docs/cli.md`):
@@ -38,6 +47,9 @@ mod inputs;
 mod load;
 mod optimize;
 mod report;
+mod results;
+mod rules;
+mod staged;
 
 use std::ffi::OsString;
 use std::process::ExitCode;
@@ -59,10 +71,13 @@ fn main() -> ExitCode {
     let parsed = match args::parse(arguments.clone()) {
         Ok(parsed) => parsed,
         Err(error) => {
-            // Nothing runs and no report is written, but one an earlier run
-            // left at the path this line names would read as this run's.
-            if let Some(path) = args::report_path(&arguments) {
-                report::discard_stale(&path);
+            // Nothing runs and no report or results are written, but ones an
+            // earlier run left at the paths this line names would read as this
+            // run's.
+            for option in [args::REPORT, args::RESULTS] {
+                if let Some(path) = args::output_path(&arguments, option) {
+                    report::discard_stale(&path);
+                }
             }
             console::warn(&error.message);
             console::warn(&error.hint());
@@ -83,6 +98,7 @@ fn main() -> ExitCode {
             Command::Audit(args) => audit::run(&run.common, args),
             Command::Info => info::run(&run.common),
         },
+        Parsed::Rules(args) => rules::run(&args),
     };
     if worked {
         ExitCode::SUCCESS

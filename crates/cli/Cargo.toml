@@ -18,13 +18,26 @@ name = "3d-review-cli"
 path = "src/main.rs"
 
 [dependencies]
+# `--rules`, `--results`, `--staged` and the `rules` command: Asset Check's
+# resolution, results format, git helpers and cache.
+asset-rules.workspace = true
 review-audit = { path = "../audit" }
 review-import = { path = "../import" }
 review-labels.workspace = true
 review-localization.workspace = true
 review-model = { path = "../model" }
 review-optimize = { path = "../optimize" }
-serde_json.workspace = true
+# `float_roundtrip`: a `--staged` run's cache stores each model's findings as
+# JSON and reads them back into the next run's results, and serde_json's default
+# float parser can land one unit in the last place away - so a cached run's
+# figures differed from the fresh run's in their last digit.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+# The digest `--results` records for a built-in `--profile`, as `sha256:<hex>`
+# like the one `asset-rules` records for a rules file. The version `asset-rules`
+# links, not the workspace's 0.10 (which only build scripts use), so the binary
+# carries one SHA-256 rather than two; default features add nothing hashing
+# needs.
+sha2 = { version = "0.11", default-features = false }
 # The OS locale, for the catalog - as the viewer picks it.
 sys-locale.workspace = true
 

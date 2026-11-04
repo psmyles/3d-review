@@ -11,6 +11,12 @@ rust-version.workspace = true
 # compiler. `src/bindings.rs` is committed and hand-kept against `src/wrapper.h`, so
 # no bindgen or libclang runs here. See `vendor/NOTICE.txt`.
 build = "build.rs"
+# The static library build.rs compiles is `fire_psd`, exporting `fire_psd_*`
+# symbols - the same name and symbols as fire's `psd-sdk-sys`, which fire-decode
+# brings (`fire-decode-plan.md`, migration step 0). Declaring it makes cargo
+# refuse a graph that would link both into one binary, instead of letting the
+# linker pick one copy of each symbol without a word.
+links = "fire_psd"
 
 [dependencies]
 thiserror.workspace = true

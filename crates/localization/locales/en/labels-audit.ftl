@@ -141,6 +141,44 @@ labels-audit-value-range = { $min } to { $max }
 labels-audit-value-at-most = at most { $value }
 labels-audit-value-at-least = at least { $value }
 
+## What a failing check found, with its figures: the "what" of a finding in Asset
+## Check's results (`3d-review-cli audit --results`). It follows the check's own
+## "-what" sentence. `$count` is how many triangles, edges or vertices it found and
+## `$objects` how many objects they are in; `$measured` is the figure measured and
+## `$limit`, `$min`, `$max` and `$target` the profile's limit, each with its unit.
+
+labels-audit-found-triangles = Found { $count ->
+        [one] one triangle
+       *[other] { $count } triangles
+    } in { $objects ->
+        [one] one object.
+       *[other] { $objects } objects.
+    }
+labels-audit-found-edges = Found { $count ->
+        [one] one edge
+       *[other] { $count } edges
+    } in { $objects ->
+        [one] one object.
+       *[other] { $objects } objects.
+    }
+labels-audit-found-vertices = Found { $count ->
+        [one] one vertex
+       *[other] { $count } vertices
+    } in { $objects ->
+        [one] one object.
+       *[other] { $objects } objects.
+    }
+labels-audit-found-objects = Found in { $objects ->
+        [one] one object.
+       *[other] { $objects } objects.
+    }
+labels-audit-figure-max = Measured { $measured }; the profile allows at most { $limit }.
+labels-audit-figure-min = Measured { $measured }; the profile asks for at least { $limit }.
+labels-audit-figure-range = Measured { $measured }; the profile allows { $min } to { $max }.
+labels-audit-figure-equals = Measured { $measured }; the profile asks for { $target }.
+labels-audit-figure-measured = Measured { $measured }.
+labels-audit-figure-patterns = The profile allows names matching { $patterns }.
+
 ## The copied summary
 
 labels-audit-text-heading = Audit of { $file } against the { $profile } profile

@@ -1041,12 +1041,20 @@ pipelines and Launcher. It links the libraries the viewer's Opt and Aud
 workspaces call — `import`, `optimize`, `audit`, `labels` — and nothing that
 draws, so a run measures and writes exactly what the viewer would, with no GPU.
 
+It is also Asset Check's model checker (`asset-check-plan.md` AC13 in
+psmyles/fire-decode): `audit --rules / --results / --staged` and the `rules`
+command. Everything about *which* rules apply to a file — `rules.json`, its
+resolution, the results format, the git helpers, the cache — is the external
+`asset-rules` crate, by git tag, shared with `fire-cli`, so the two checkers
+cannot drift apart; this crate only runs the checks and words the findings.
+Its rules files are ordinary audit profiles, so the viewer's editor writes them.
+
 - `args.rs` — the command line. One table is both what is accepted and what
   `--help` lists. Parsing is all or nothing: anything wrong is exit status 2 and
   nothing runs. An empty value is the option left out and a list is one
   comma-separated value, which is how a form-filled command line arrives.
-- `inputs.rs` — files and folders into models, each with its place below the
-  argument that named it (what an output keeps).
+- `inputs.rs` — files, folders and `--files-from` lists into models, each with
+  its place below the argument that named it (what an output keeps).
 - `load.rs` — the viewer's load: the funnel, the GPU-vertex count, the
   source-property capture, which costs the model nothing when it fails. A Git LFS
   pointer is named as one.
@@ -1055,8 +1063,19 @@ draws, so a run measures and writes exactly what the viewer would, with no GPU.
   will write is known before it loads (`export::planned_files`, the export's own
   naming), so `--if-exists` costs nothing and no model can write over another, or
   over a model being read (`--replace-models` lets a model replace itself).
-- `audit.rs` — each model checked against one profile, its entry carrying the
-  `3d-review.audit-report` document; `--fail-on` is the run's verdict.
+- `audit.rs` — each model checked against its profile (`--profile`'s, or the
+  one `rules.json` resolves), its entry carrying the `3d-review.audit-report`
+  document; `--fail-on` is the run's verdict. Two passes: in order on the main
+  thread, what each model is checked against (resolution, rules files, the
+  cache); then the loads and audits on up to four workers, each model's lines
+  held and said in the models' order, so output, report and results do not
+  depend on which finished first.
+- `results.rs` — Asset Check's results: a finding per failing check, with
+  `review-labels`' name / what / why / fix text and the profile's `note`.
+- `staged.rs` — `--staged`: the staged `.fbx` files, through `asset-rules`' git
+  helpers.
+- `rules.rs` — `rules check` / `rules explain`, `asset-rules`' own, and the
+  repository context resolution reads.
 - `info.rs` — the stats card's counts.
 - `report.rs` — the `--report` document: flat run-wide counts for a tool's
   results, an entry per model, removed before a run and written after it.
@@ -1484,6 +1503,7 @@ one settled.
 | D22 | psd_sdk is vendored as source and compiled with `cc` beside a C-ABI wrapper, with committed hand-kept bindings, so a clean checkout links without a prebuilt library. |
 | D23 | Explorer integration is a COM DLL over a shared, safe core (`crates/preview`) that the macOS Quick Look extensions call too, through a C-ABI dylib (`crates/shell-quicklook`) and two Swift app extensions. The thumbnail provider is **stream-initialized and isolated** in Explorer's COM Surrogate, and accepts that a stream has no directory: textures beside the model reach the preview pane, not the thumbnail (measured alternatives in GOTCHAS). The preview handler gets a `prevhost.exe` of its own AppID and a window thread of its own. Both render offscreen and read back. |
 | D24 | The shell DLL builds with the `release-shell` profile: `release` with `panic = "unwind"`, so `guard::guarded` can answer a panic with an `HRESULT` instead of aborting a surrogate Explorer shares with other vendors' handlers. |
+| D25 | Every Windows binary links the C and C++ runtimes statically (`-C target-feature=+crt-static` for `x86_64-pc-windows-msvc` in the committed `.cargo/config.toml`; FD20 in fire-decode's plan). The vendored C++ made the viewer import `MSVCP140.dll`, and no installer ships the redistributable, so a clean machine could not start it; the shell DLL also must not pick up whatever `msvcp140.dll` another vendor's handler loaded into the shared surrogate. Everything `cc` builds follows the flag (`/MT`), and nothing prebuilt is linked. The gate is the import tables of `3d-review.exe`, `3d-review-cli.exe` and `review_shell.dll`: no `MSVCP140`, `VCRUNTIME140*` or `api-ms-win-crt-*` entry. A `RUSTFLAGS` environment variable replaces the config's list, so it must repeat the flag. |
 
 The structural rules the decisions add up to:
 

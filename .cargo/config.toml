@@ -1,0 +1,21 @@
+# The static CRT on Windows (FD20 in fire-decode's `fire-decode-plan.md`).
+#
+# Every Windows binary - `3d-review.exe`, `3d-review-cli.exe`, the Explorer shell
+# extension `review_shell.dll` - links the C and C++ runtimes into itself rather
+# than importing them. Built against the DLL runtime, the vendored C++ (psd_sdk,
+# the Tracy client) makes the viewer import `MSVCP140.dll` and every binary
+# `VCRUNTIME140*.dll`, and no installer ships the Visual C++ redistributable: a
+# clean machine without it could not start the viewer. The shell extension has a
+# second reason - it loads into Explorer's shared surrogate, where another
+# vendor's handler may already have loaded an older `msvcp140.dll`.
+#
+# What `cc` compiles (ufbx, meshoptimizer, ufbx_write, psd_sdk, sokol, Tracy)
+# follows this flag on its own, building `/MT`. Nothing prebuilt and `/MD` is
+# linked, which is what makes the switch safe: a mixed-CRT link fails or
+# misbehaves. The gate is the import tables: no `MSVCP140` / `VCRUNTIME140*` /
+# `api-ms-win-crt-*` entries (`docs/ARCHITECTURE.md`, D25).
+#
+# A `RUSTFLAGS` environment variable replaces this list rather than adding to
+# it, so a build with one set must carry `-C target-feature=+crt-static` itself.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

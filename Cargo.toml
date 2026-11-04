@@ -48,6 +48,12 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 anyhow = "1"
+# Asset Check's shared core (AC9 in `asset-check-plan.md`): which rules apply to a
+# file, the results format, the git helpers and the cache, so `3d-review-cli` and
+# `fire-cli` give the same file the same answer. By tag, never by branch. To build
+# against unreleased changes, a `.cargo/config.toml` in the folder above patches it
+# to a checkout beside this one (`docs/cli.md`).
+asset-rules = { git = "https://github.com/psmyles/asset-rules", tag = "v0.1.0" }
 bytemuck = { version = "1", features = ["derive"] }
 cc = "1"
 # The local wall clock behind the log's timestamps and its day-named files

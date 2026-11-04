@@ -1336,6 +1336,27 @@ matches a *build* dependency's platform against the host too, so
 `shell-macos/build.rs` neither ran nor had its dependency when cross-checked
 from Windows.
 
+### serde_json's default float parser is not exact
+
+It can land one unit in the last place away from the number it read. The
+`--staged` cache stores each model's findings as JSON and hands them back as the
+next run's results, so a cached run's figures differed from the fresh run's in
+their last digit (`0.9209926312659023` against `...024`) until `3d-review-cli`
+switched on serde_json's `float_roundtrip`. Anything that writes a value as JSON
+and compares or republishes what it reads back needs the same feature.
+
+### The static CRT lives in `.cargo/config.toml`, and `RUSTFLAGS` replaces it
+
+D25's `-C target-feature=+crt-static` is the config's `rustflags` for
+`x86_64-pc-windows-msvc`. A `RUSTFLAGS` environment variable does not add to that
+list, it replaces it, so a build with one set (a profiler, a sanitizer) silently
+goes back to the DLL runtime unless it repeats the flag. Check an import table
+(`llvm-readobj --coff-imports`, or `dumpbin /imports`) rather than assuming: a
+binary that imports `MSVCP140.dll` starts only where the Visual C++
+redistributable is installed. Because the tracked config is now the repository's,
+a local `[patch]` for an unreleased `asset-rules` goes in a `.cargo/config.toml`
+one folder up, beside both checkouts (`docs/cli.md`).
+
 ---
 
 ## Baked assets

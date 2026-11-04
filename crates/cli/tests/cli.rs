@@ -8,6 +8,11 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use asset_rules::git::Repo;
+use asset_rules::results::{
+    FileResult, Results, Severity as FindingSeverity, Status as FileStatus,
+};
+use asset_rules::{Resolution, Rules, StageFrom};
 use serde_json::Value;
 
 const BINARY: &str = env!("CARGO_BIN_EXE_3d-review-cli");
@@ -55,9 +60,11 @@ fn text(path: &Path) -> &str {
 fn a_command_line_it_cannot_follow_exits_2_and_runs_nothing() {
     let folder = scratch("usage");
     let report_path = folder.join("report.json");
-    // One an earlier run left: after any run, the file is this run's or is
+    let results_path = folder.join("results.json");
+    // Ones an earlier run left: after any run, the file is this run's or is
     // not there, and a refused line writes none.
     std::fs::write(&report_path, "{}").expect("a stale report");
+    std::fs::write(&results_path, "{}").expect("stale results");
     for args in [
         vec![],
         vec!["optimise", "a.fbx"],
@@ -73,6 +80,19 @@ fn a_command_line_it_cannot_follow_exits_2_and_runs_nothing() {
             "--fail-on",
             "sometimes",
         ],
+        vec![
+            "audit",
+            "a.fbx",
+            "--rules",
+            "rules.json",
+            "--profile",
+            "unity",
+            "--results",
+            text(&results_path),
+        ],
+        vec!["audit", "--staged", "a.fbx"],
+        vec!["rules", "check"],
+        vec!["rules", "explain", "a.fbx"],
     ] {
         let output = run(&args);
         assert_eq!(status(&output), 2, "{args:?}");
@@ -82,6 +102,10 @@ fn a_command_line_it_cannot_follow_exits_2_and_runs_nothing() {
     assert!(
         !report_path.exists(),
         "a refused command line left a report at its --report path"
+    );
+    assert!(
+        !results_path.exists(),
+        "a refused command line left results at its --results path"
     );
 }
 
@@ -420,4 +444,481 @@ fn audit_fails_the_run_only_at_the_fail_on_severity() {
     let any = run(&["audit", text(&cube), "--fail-on", "info"]);
     let has_findings = entry["worst"].is_string();
     assert_eq!(status(&any), if has_findings { 1 } else { 0 });
+}
+
+// Asset Check: `--rules`, `--results`, `--staged`, `--files-from` and the
+// `rules` commands (AC13). Each model test skips itself without the fixture,
+// as above; they need `git` on PATH, as the hook does.
+
+/// A project repository on `main` with Asset Check's rules in `rules/`: an
+/// environment-prop profile narrowed by folder, a prop profile with a stage of
+/// its own, and a prop rules file whose texel-density check is an error with a
+/// note on it.
+struct Project {
+    root: PathBuf,
+}
+
+const RULES_JSON: &str = r#"{
+  "version": 1,
+  "mode": "advise",
+  "stages": ["prototype", "production"],
+  "stage": "prototype",
+  "branches": [{ "pattern": "main", "stage": "production" }],
+  "types": {
+    "texture": { "tool": "fire-cli", "extensions": ["png"] },
+    "model": { "tool": "3d-review-cli", "extensions": ["fbx"] }
+  },
+  "profiles": [
+    { "id": "environment-prop", "type": "model", "label": "Environment prop",
+      "names": ["SM_*"], "paths": ["Assets/Environment/**"],
+      "rules": { "*": "models/environment.json" } },
+    { "id": "prop", "type": "model", "label": "Prop", "names": ["SM_*"], "stage": "production",
+      "rules": { "production": "models/prop.json", "prototype": "models/prop-proto.json" } }
+  ]
+}"#;
+
+/// Written by hand, as the Asset Check plan writes one: no `enabled`, and the
+/// note under the check it explains.
+const PROP_JSON: &str = r#"{ "version": 1, "generator": "hand-written", "profile": {
+  "name": "Prop", "base": "unity", "rules": {
+    "density.texel": { "severity": "error", "note": "Quest budget for props." }
+} } }"#;
+
+/// No `base`: the generic profile.
+const PLAIN_JSON: &str =
+    r#"{ "version": 1, "generator": "hand-written", "profile": { "name": "Plain", "rules": {} } }"#;
+
+impl Project {
+    fn new(name: &str) -> Project {
+        let project = Project {
+            root: scratch(name),
+        };
+        project.git(&["init", "-q", "-b", "main"]);
+        project.write("rules/rules.json", RULES_JSON.as_bytes());
+        project.write("rules/models/prop.json", PROP_JSON.as_bytes());
+        project.write("rules/models/prop-proto.json", PLAIN_JSON.as_bytes());
+        project.write("rules/models/environment.json", PLAIN_JSON.as_bytes());
+        project.git(&["add", "rules"]);
+        project.git(&["commit", "-q", "--no-verify", "-m", "rules"]);
+        project
+    }
+
+    fn path(&self, relative: &str) -> PathBuf {
+        self.root.join(relative)
+    }
+
+    fn write(&self, relative: &str, contents: &[u8]) {
+        let path = self.path(relative);
+        std::fs::create_dir_all(path.parent().expect("a folder")).expect("folder");
+        std::fs::write(path, contents).expect("written");
+    }
+
+    fn copy(&self, from: &Path, relative: &str) {
+        self.write(relative, &std::fs::read(from).expect("read"));
+    }
+
+    /// git in the project, with no user's or machine's settings in the way.
+    fn git(&self, args: &[&str]) -> String {
+        let output = isolated(Command::new("git"))
+            .arg("-C")
+            .arg(&self.root)
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    /// The tool, run in the project's top folder as a hook runs it.
+    fn cli(&self, args: &[&str]) -> Output {
+        isolated(Command::new(BINARY))
+            .current_dir(&self.root)
+            .args(args)
+            .output()
+            .expect("the binary runs")
+    }
+
+    /// What `asset-rules` itself says applies to `path` here - which is what
+    /// `fire-cli`, built on the same crate, says too.
+    fn resolve(&self, path: &str) -> Resolution {
+        let rules = Rules::load(&self.path("rules/rules.json")).expect("the rules load");
+        let ctx = Repo::discover(&self.root)
+            .and_then(|repo| repo.context())
+            .expect("a repository");
+        asset_rules::resolve(&rules, &ctx, Path::new(path))
+    }
+}
+
+/// A command with the machine's and the user's git settings left out, so a
+/// test's repository behaves the same on every machine.
+fn isolated(mut command: Command) -> Command {
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "no-global-git-config");
+    command
+}
+
+/// Read results as any reader of them does: `asset-rules` refuses a file
+/// that is not `asset-check.results` version 1, or not shaped like it.
+fn results(path: &Path) -> Results {
+    Results::read(path).unwrap_or_else(|error| panic!("valid results: {error}"))
+}
+
+fn file<'a>(results: &'a Results, path: &str) -> &'a FileResult {
+    results
+        .files
+        .iter()
+        .find(|file| file.path == path)
+        .unwrap_or_else(|| panic!("{path} is in the results"))
+}
+
+/// Gate of Asset Check step 2: a model gets the profile and stage
+/// `asset-rules` resolves for it - so the same as `fire-cli` gives it - from
+/// its name, its folder and the branch, in precedence order.
+#[test]
+fn rules_give_each_model_the_profile_and_stage_asset_rules_resolves() {
+    let Some(cube) = cube() else { return };
+    let project = Project::new("rules-resolve");
+    project.copy(&cube, "Assets/Environment/SM_Rock.fbx");
+    project.copy(&cube, "Assets/Props/SM_Crate.fbx");
+    project.copy(&cube, "Assets/Props/Crate.fbx");
+    let results_path = project.path("results.json");
+
+    let check = |branch_stage: &str| {
+        let output = project.cli(&[
+            "audit",
+            "Assets",
+            "--recurse",
+            "--rules",
+            "rules/rules.json",
+            "--results",
+            text(&results_path),
+        ]);
+        // A warning or worse fails a run with --rules: Crate matches no profile.
+        assert_eq!(status(&output), 1, "{}", stdout(&output));
+        let results = results(&results_path);
+        assert_eq!(results.files.len(), 3);
+        for file in &results.files {
+            match project.resolve(&file.path) {
+                Resolution::Resolved(resolved) => {
+                    assert_eq!(file.profile.as_deref(), Some(&*resolved.profile_id));
+                    assert_eq!(file.stage.as_deref(), Some(&*resolved.stage));
+                    assert_eq!(file.stage_from, Some(resolved.stage_from));
+                    assert_eq!(file.kind.as_deref(), Some("model"));
+                }
+                Resolution::Unmatched { .. } => {
+                    assert_eq!(file.profile, None);
+                    assert_eq!(file.findings[0].rule, "file.no_profile");
+                }
+                Resolution::Ignored => panic!("{} is ignored", file.path),
+            }
+        }
+        let rock = file(&results, "Assets/Environment/SM_Rock.fbx");
+        assert_eq!(rock.profile.as_deref(), Some("environment-prop"));
+        assert_eq!(rock.stage.as_deref(), Some(branch_stage));
+        results
+    };
+
+    // On main the branch decides: production for both.
+    let on_main = check("production");
+    let prop = file(&on_main, "Assets/Props/SM_Crate.fbx");
+    assert_eq!(prop.profile.as_deref(), Some("prop"));
+    assert_eq!(prop.stage_from, Some(StageFrom::Branch));
+    assert_eq!(on_main.context.branch.as_deref(), Some("main"));
+
+    // Elsewhere the prop keeps its own stage and the rest take the project's.
+    project.git(&["checkout", "-q", "-b", "feature/rocks"]);
+    let elsewhere = check("prototype");
+    let prop = file(&elsewhere, "Assets/Props/SM_Crate.fbx");
+    assert_eq!(prop.stage.as_deref(), Some("production"));
+    assert_eq!(prop.stage_from, Some(StageFrom::Profile));
+    let rock = file(&elsewhere, "Assets/Environment/SM_Rock.fbx");
+    assert_eq!(rock.stage_from, Some(StageFrom::Project));
+}
+
+/// Each failing check is a finding an artist can act on: what, with the
+/// figures; why; how; and the technical artist's note.
+#[test]
+fn results_say_what_why_and_how_with_the_note() {
+    let Some(cube) = cube() else { return };
+    let project = Project::new("rules-text");
+    project.copy(&cube, "Assets/Props/SM_Crate.fbx");
+    let results_path = project.path("results.json");
+    let output = project.cli(&[
+        "audit",
+        "Assets/Props/SM_Crate.fbx",
+        "--rules",
+        "rules/rules.json",
+        "--results",
+        text(&results_path),
+    ]);
+    assert_eq!(status(&output), 1, "the texel check is an error");
+    let results = results(&results_path);
+    let prop = file(&results, "Assets/Props/SM_Crate.fbx");
+    assert_eq!(prop.status, FileStatus::Checked);
+    let texel = prop
+        .findings
+        .iter()
+        .find(|finding| finding.rule == "density.texel")
+        .expect("the cube's texel density is off the Unity target");
+    assert_eq!(texel.severity, FindingSeverity::Error);
+    assert_eq!(texel.note.as_deref(), Some("Quest budget for props."));
+    assert_eq!(texel.title, "Texel density");
+    for (field, value) in [
+        ("what", &texel.what),
+        ("why", &texel.why),
+        ("how", &texel.how),
+    ] {
+        assert!(!value.trim().is_empty(), "{field} is empty");
+    }
+    // The figure and the limit, in words and as values.
+    let measured = texel.measured.as_ref().expect("measured");
+    let limit = texel.limit.as_ref().expect("a limit");
+    assert_eq!(measured["total"], 1);
+    assert_eq!(measured["unit"], "px_per_meter");
+    let figure = |value: &Value| value.as_f64().expect("a number").to_string();
+    for value in [&measured["value"], &limit["min"], &limit["max"]] {
+        assert!(texel.what.contains(&figure(value)), "{}", texel.what);
+    }
+    assert_eq!(texel.objects, ["meter_cube"]);
+    // Findings are worst first.
+    assert_eq!(prop.findings[0].rule, "density.texel");
+
+    // `fix` is reserved: always written, always null.
+    let raw: Value =
+        serde_json::from_str(&std::fs::read_to_string(&results_path).expect("read")).expect("JSON");
+    let raw_finding = &raw["files"][0]["findings"][0];
+    assert!(raw_finding.get("fix").is_some_and(Value::is_null));
+    assert_eq!(raw["schema"], "asset-check.results");
+}
+
+/// `--results` with a `--profile` instead of rules, and a model that cannot be
+/// read: it is in the results as unreadable, with why.
+#[test]
+fn a_model_that_cannot_be_read_is_unreadable_in_the_results() {
+    let Some(cube) = cube() else { return };
+    let folder = scratch("results-unreadable");
+    let broken = folder.join("broken.fbx");
+    std::fs::write(&broken, b"not an FBX at all").expect("written");
+    let results_path = folder.join("results.json");
+    let output = run(&[
+        "audit",
+        text(&cube),
+        text(&broken),
+        "--profile",
+        "unity",
+        "--fail-on",
+        "never",
+        "--results",
+        text(&results_path),
+    ]);
+    assert_eq!(status(&output), 1, "a model that cannot be checked fails");
+    let results = results(&results_path);
+    assert_eq!(results.files.len(), 2);
+    let [checked, unreadable] = [&results.files[0], &results.files[1]];
+    assert_eq!(checked.status, FileStatus::Checked);
+    assert_eq!(checked.profile.as_deref(), Some("unity"));
+    assert!(!checked.findings.is_empty());
+    assert_eq!(unreadable.status, FileStatus::Unreadable);
+    assert!(unreadable.problem.as_deref().is_some_and(|p| !p.is_empty()));
+    assert!(unreadable.findings.is_empty());
+}
+
+/// The hook's run: what is staged is what is checked - not the working file,
+/// which has changed since - and a second run of the same commit comes from
+/// the cache, with the same results.
+#[test]
+fn staged_models_are_checked_as_staged_and_then_from_the_cache() {
+    let Some(cube) = cube() else { return };
+    let project = Project::new("staged");
+    project.copy(&cube, "Assets/Props/SM_Crate.fbx");
+    project.copy(&cube, "Assets/Props/SM_Unstaged.fbx");
+    project.write("Assets/Props/T_Crate.png", b"a texture, fire-cli's");
+    project.git(&[
+        "add",
+        "Assets/Props/SM_Crate.fbx",
+        "Assets/Props/T_Crate.png",
+    ]);
+    project.write(
+        "Assets/Props/SM_Crate.fbx",
+        b"edited since, and no longer a model",
+    );
+
+    let results_path = project.path("results.json");
+    let report_path = project.path("report.json");
+    let staged = || {
+        project.cli(&[
+            "audit",
+            "--staged",
+            "--rules",
+            "rules/rules.json",
+            "--results",
+            text(&results_path),
+            "--report",
+            text(&report_path),
+        ])
+    };
+    let first = staged();
+    assert_eq!(status(&first), 1, "{}", stdout(&first));
+    let fresh = results(&results_path);
+    assert_eq!(
+        fresh.files.len(),
+        1,
+        "only the staged model, not the texture"
+    );
+    let prop = file(&fresh, "Assets/Props/SM_Crate.fbx");
+    assert_eq!(prop.status, FileStatus::Checked, "{:?}", prop.problem);
+    assert!(report(&report_path)["results"][0].get("cached").is_none());
+
+    let second = staged();
+    assert_eq!(status(&second), 1);
+    assert_eq!(results(&results_path).files, fresh.files);
+    assert_eq!(report(&report_path)["results"][0]["cached"], true);
+    assert!(
+        project.path(".git/asset-check/cache").is_dir(),
+        "the cache is in the git folder"
+    );
+}
+
+/// A commit with no models in it is nothing to check, not a failure: the
+/// hook runs on every commit.
+#[test]
+fn nothing_staged_checks_nothing_and_passes() {
+    let project = Project::new("staged-none");
+    project.write("Assets/notes.txt", b"not a model");
+    project.git(&["add", "Assets"]);
+    let results_path = project.path("results.json");
+    let output = project.cli(&[
+        "audit",
+        "--staged",
+        "--rules",
+        "rules/rules.json",
+        "--results",
+        text(&results_path),
+    ]);
+    assert_eq!(status(&output), 0, "{}", stdout(&output));
+    assert!(results(&results_path).files.is_empty());
+}
+
+/// A rules.json asking for a newer tool says so, as a finding of the run's.
+#[test]
+fn a_tool_older_than_the_rules_ask_says_what_to_update() {
+    let Some(cube) = cube() else { return };
+    let project = Project::new("too-old");
+    let newer = RULES_JSON.replace(
+        r#""mode": "advise","#,
+        r#""mode": "advise", "requires": { "3d-review-cli": "99.0.0" },"#,
+    );
+    project.write("rules/rules.json", newer.as_bytes());
+    project.copy(&cube, "Assets/Environment/SM_Rock.fbx");
+    let results_path = project.path("results.json");
+    let output = project.cli(&[
+        "audit",
+        "Assets/Environment/SM_Rock.fbx",
+        "--rules",
+        "rules/rules.json",
+        "--results",
+        text(&results_path),
+    ]);
+    assert_eq!(status(&output), 1, "the old tool is a warning");
+    let results = results(&results_path);
+    assert_eq!(results.findings.len(), 1);
+    assert_eq!(results.findings[0].rule, "tool.too_old");
+    assert!(results.findings[0].how.contains("99.0.0"));
+}
+
+/// `--files-from`: one path per line, in UTF-8 or the UTF-16 Windows
+/// PowerShell writes; only models are taken from it, and a list naming none
+/// is nothing to do rather than a mistake.
+#[test]
+fn a_list_names_the_models_one_per_line() {
+    let Some(cube) = cube() else { return };
+    let folder = scratch("files-from");
+    let list = folder.join("list.txt");
+    let lines = format!(
+        "{}\r\n\r\n{}\r\n",
+        text(&cube),
+        text(&folder.join("notes.txt"))
+    );
+    let mut utf16 = vec![0xFF, 0xFE];
+    utf16.extend(lines.encode_utf16().flat_map(u16::to_le_bytes));
+    std::fs::write(&list, utf16).expect("list");
+    let report_path = folder.join("report.json");
+    let output = run(&[
+        "info",
+        "--files-from",
+        text(&list),
+        "--report",
+        text(&report_path),
+    ]);
+    assert_eq!(
+        status(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = report(&report_path);
+    assert_eq!(report["models"], 1);
+    assert_eq!(report["done"], 1);
+
+    let empty = folder.join("empty.txt");
+    std::fs::write(&empty, "\n").expect("list");
+    let output = run(&[
+        "audit",
+        "--files-from",
+        text(&empty),
+        "--report",
+        text(&report_path),
+    ]);
+    assert_eq!(status(&output), 0);
+    assert!(crate::report(&report_path)["problem"].is_null());
+
+    let output = run(&["info", "--files-from", text(&folder.join("missing.txt"))]);
+    assert_eq!(status(&output), 1, "a list that is not there is a problem");
+}
+
+/// `rules check` lists a configuration's problems and fails on any;
+/// `rules explain` says which rules apply to a file, and why.
+#[test]
+fn the_rules_commands_check_and_explain() {
+    let project = Project::new("rules-commands");
+    let clean = project.cli(&["rules", "check", "rules/rules.json"]);
+    assert_eq!(status(&clean), 0, "{}", stdout(&clean));
+
+    let broken = RULES_JSON.replace("models/environment.json", "models/missing.json");
+    project.write("rules/broken.json", broken.as_bytes());
+    let output = project.cli(&["rules", "check", "rules/broken.json"]);
+    assert_eq!(status(&output), 1);
+    assert!(
+        stdout(&output).contains("missing.json"),
+        "{}",
+        stdout(&output)
+    );
+
+    let output = project.cli(&[
+        "rules",
+        "explain",
+        "Assets/Environment/SM_Rock.fbx",
+        "--rules",
+        "rules/rules.json",
+    ]);
+    assert_eq!(status(&output), 0);
+    let explained = stdout(&output);
+    assert!(explained.contains("environment-prop"), "{explained}");
+    assert!(explained.contains("production"), "{explained}");
+
+    let output = project.cli(&["rules", "check", "rules/nowhere.json"]);
+    assert_eq!(status(&output), 1);
 }

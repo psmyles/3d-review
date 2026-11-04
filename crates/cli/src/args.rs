@@ -32,6 +32,9 @@ pub(crate) enum Parsed {
     Version,
     Help(Option<CommandName>),
     Run(Run),
+    /// `rules check` or `rules explain`: about a `rules.json`, not about
+    /// models, so none of a model command's options apply.
+    Rules(RulesArgs),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,10 +42,16 @@ pub(crate) enum CommandName {
     Optimize,
     Audit,
     Info,
+    Rules,
 }
 
 impl CommandName {
-    const ALL: [CommandName; 3] = [CommandName::Optimize, CommandName::Audit, CommandName::Info];
+    const ALL: [CommandName; 4] = [
+        CommandName::Optimize,
+        CommandName::Audit,
+        CommandName::Info,
+        CommandName::Rules,
+    ];
 
     /// The word that names it on a command line.
     pub(crate) fn word(self) -> &'static str {
@@ -50,14 +59,17 @@ impl CommandName {
             CommandName::Optimize => "optimize",
             CommandName::Audit => "audit",
             CommandName::Info => "info",
+            CommandName::Rules => "rules",
         }
     }
 
-    fn usage(self) -> Key {
+    /// Its usage lines, one per form it takes.
+    fn usage(self) -> &'static [Key] {
         match self {
-            CommandName::Optimize => k::HELP_USAGE_OPTIMIZE,
-            CommandName::Audit => k::HELP_USAGE_AUDIT,
-            CommandName::Info => k::HELP_USAGE_INFO,
+            CommandName::Optimize => &[k::HELP_USAGE_OPTIMIZE],
+            CommandName::Audit => &[k::HELP_USAGE_AUDIT],
+            CommandName::Info => &[k::HELP_USAGE_INFO],
+            CommandName::Rules => &[k::HELP_USAGE_RULES_CHECK, k::HELP_USAGE_RULES_EXPLAIN],
         }
     }
 
@@ -66,7 +78,14 @@ impl CommandName {
             CommandName::Optimize => k::HELP_COMMAND_OPTIMIZE,
             CommandName::Audit => k::HELP_COMMAND_AUDIT,
             CommandName::Info => k::HELP_COMMAND_INFO,
+            CommandName::Rules => k::HELP_COMMAND_RULES,
         }
+    }
+
+    /// Whether it works on models, and so takes models, folders and
+    /// `--files-from`.
+    fn takes_models(self) -> bool {
+        self != CommandName::Rules
     }
 }
 
@@ -81,9 +100,20 @@ pub(crate) struct Run {
 pub(crate) struct Common {
     /// Models and folders, as given.
     pub(crate) inputs: Vec<PathBuf>,
+    /// `--files-from`: a file listing more of them, one per line.
+    pub(crate) files_from: Option<PathBuf>,
     pub(crate) recurse: bool,
     pub(crate) report: Option<PathBuf>,
     pub(crate) progress_bar: BarMode,
+}
+
+/// `rules check` and `rules explain`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum RulesArgs {
+    /// The problems in a `rules.json`.
+    Check { rules: PathBuf },
+    /// Which rules apply to each file, and why.
+    Explain { rules: PathBuf, files: Vec<PathBuf> },
 }
 
 #[derive(Debug)]
@@ -127,8 +157,23 @@ pub(crate) enum IfExists {
 
 #[derive(Debug)]
 pub(crate) struct AuditArgs {
-    pub(crate) profile: ProfileChoice,
+    pub(crate) judge: Judge,
     pub(crate) fail_on: FailOn,
+    /// `--results`: Asset Check's results file.
+    pub(crate) results: Option<PathBuf>,
+    /// `--staged`: the models staged in the current folder's repository,
+    /// instead of models named on the line.
+    pub(crate) staged: bool,
+}
+
+/// What each model is checked against.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Judge {
+    /// `--profile`: one profile for every model.
+    Profile(ProfileChoice),
+    /// `--rules`: Asset Check's `rules.json`, which picks each model's profile
+    /// and stage from its name, its folder and the branch.
+    Rules(PathBuf),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -188,9 +233,13 @@ const SUFFIX: &str = "--suffix";
 const IF_EXISTS: &str = "--if-exists";
 const REPLACE_MODELS: &str = "--replace-models";
 const PROFILE: &str = "--profile";
+const RULES: &str = "--rules";
 const FAIL_ON: &str = "--fail-on";
+pub(crate) const RESULTS: &str = "--results";
+const STAGED: &str = "--staged";
+const FILES_FROM: &str = "--files-from";
 const RECURSE: &str = "--recurse";
-const REPORT: &str = "--report";
+pub(crate) const REPORT: &str = "--report";
 const PROGRESS_BAR: &str = "--progress-bar";
 const HELP: &str = "--help";
 const VERSION: &str = "--version";
@@ -223,8 +272,11 @@ struct Spec {
 }
 
 const EVERY: &[CommandName] = &CommandName::ALL;
+/// The commands that work on models.
+const MODELS: &[CommandName] = &[CommandName::Optimize, CommandName::Audit, CommandName::Info];
 const OPTIMIZE: &[CommandName] = &[CommandName::Optimize];
 const AUDIT: &[CommandName] = &[CommandName::Audit];
+const AUDIT_AND_RULES: &[CommandName] = &[CommandName::Audit, CommandName::Rules];
 
 /// Every option, in the order `--help` lists them.
 const SPECS: &[Spec] = &[
@@ -295,28 +347,52 @@ const SPECS: &[Spec] = &[
         on: AUDIT,
     },
     Spec {
+        name: RULES,
+        takes: Takes::Value(k::HELP_VALUE_RULES),
+        help: k::HELP_OPTION_RULES,
+        on: AUDIT_AND_RULES,
+    },
+    Spec {
         name: FAIL_ON,
         takes: Takes::Choice(FAIL_ON_CHOICES),
         help: k::HELP_OPTION_FAIL_ON,
         on: AUDIT,
     },
     Spec {
+        name: RESULTS,
+        takes: Takes::Value(k::HELP_VALUE_FILE),
+        help: k::HELP_OPTION_RESULTS,
+        on: AUDIT,
+    },
+    Spec {
+        name: STAGED,
+        takes: Takes::Nothing,
+        help: k::HELP_OPTION_STAGED,
+        on: AUDIT,
+    },
+    Spec {
+        name: FILES_FROM,
+        takes: Takes::Value(k::HELP_VALUE_FILE),
+        help: k::HELP_OPTION_FILES_FROM,
+        on: MODELS,
+    },
+    Spec {
         name: RECURSE,
         takes: Takes::Nothing,
         help: k::HELP_OPTION_RECURSE,
-        on: EVERY,
+        on: MODELS,
     },
     Spec {
         name: REPORT,
         takes: Takes::Value(k::HELP_VALUE_FILE),
         help: k::HELP_OPTION_REPORT,
-        on: EVERY,
+        on: MODELS,
     },
     Spec {
         name: PROGRESS_BAR,
         takes: Takes::Choice(BAR_CHOICES),
         help: k::HELP_OPTION_PROGRESS_BAR,
-        on: EVERY,
+        on: MODELS,
     },
     Spec {
         name: HELP,
@@ -461,12 +537,23 @@ fn parse_command(command: CommandName, args: Vec<OsString>) -> Result<Parsed, Us
         }
     }
 
-    if given.inputs.is_empty() {
+    if !command.takes_models() {
+        return rules_args(&given).map(Parsed::Rules).map_err(error);
+    }
+    // `--staged` names the models itself; `--files-from` names them in a file,
+    // where an empty list is a run with nothing to do rather than a mistake.
+    let staged = given.flag(STAGED);
+    let files_from = given.path(FILES_FROM);
+    if staged && (!given.inputs.is_empty() || files_from.is_some()) {
+        return Err(error(tr(k::USAGE_STAGED_AND_MODELS).into_owned()));
+    }
+    if given.inputs.is_empty() && !staged && files_from.is_none() {
         return Err(error(tr(k::USAGE_NO_MODELS).into_owned()));
     }
 
     let common = Common {
         inputs: std::mem::take(&mut given.inputs),
+        files_from,
         recurse: given.flag(RECURSE),
         report: given.path(REPORT),
         progress_bar: match choice(&given, PROGRESS_BAR, BAR_CHOICES).map_err(error)? {
@@ -479,8 +566,39 @@ fn parse_command(command: CommandName, args: Vec<OsString>) -> Result<Parsed, Us
         CommandName::Optimize => Command::Optimize(optimize_args(&given).map_err(error)?),
         CommandName::Audit => Command::Audit(audit_args(&given).map_err(error)?),
         CommandName::Info => Command::Info,
+        CommandName::Rules => unreachable!("handled above: it takes no models"),
     };
     Ok(Parsed::Run(Run { common, command }))
+}
+
+/// `rules check <rules.json>` or `rules explain <files>... --rules <rules.json>`.
+/// The first word after `rules` says which, so it arrives as the first input.
+fn rules_args(given: &Given) -> Result<RulesArgs, String> {
+    let Some((first, rest)) = given.inputs.split_first() else {
+        return Err(tr(k::USAGE_RULES_NO_COMMAND).into_owned());
+    };
+    let rules = given.path(RULES);
+    match first.to_string_lossy().as_ref() {
+        "check" => match (rules.as_ref(), rest) {
+            (Some(rules), []) | (None, [rules]) => Ok(RulesArgs::Check {
+                rules: rules.clone(),
+            }),
+            _ => Err(tr(k::USAGE_RULES_CHECK_ONE).into_owned()),
+        },
+        "explain" => {
+            let Some(rules) = rules else {
+                return Err(tr(k::USAGE_RULES_EXPLAIN_NEEDS_RULES).into_owned());
+            };
+            if rest.is_empty() {
+                return Err(tr(k::USAGE_RULES_EXPLAIN_NO_FILES).into_owned());
+            }
+            Ok(RulesArgs::Explain {
+                rules,
+                files: rest.to_vec(),
+            })
+        }
+        other => Err(k::usage_rules_unknown_command(other.to_owned())),
+    }
 }
 
 /// `--name=value` split at its first `=`, or `None` when there is none.
@@ -518,11 +636,11 @@ fn split_inline(arg: &OsStr) -> Option<(String, OsString)> {
     }
 }
 
-/// The report a command line names, read leniently - for one [`parse`]
-/// refused, so a report an earlier run left at that path can still be taken
-/// away. The last `--report` before any `--` wins, as it does when the line is
-/// accepted, and an empty value names none.
-pub(crate) fn report_path(args: &[OsString]) -> Option<PathBuf> {
+/// The file a command line names with `option` (`--report`, `--results`), read
+/// leniently - for one [`parse`] refused, so a file an earlier run left at that
+/// path can still be taken away. The last one before any `--` wins, as it does
+/// when the line is accepted, and an empty value names none.
+pub(crate) fn output_path(args: &[OsString], option: &str) -> Option<PathBuf> {
     let mut found = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -530,9 +648,9 @@ pub(crate) fn report_path(args: &[OsString]) -> Option<PathBuf> {
             break;
         }
         let value = match split_inline(arg) {
-            Some((name, value)) if name == REPORT => Some(value),
+            Some((name, value)) if name == option => Some(value),
             Some(_) => continue,
-            None if arg == REPORT => args
+            None if arg == option => args
                 .next()
                 .filter(|value| !value.to_string_lossy().starts_with("--"))
                 .cloned(),
@@ -591,8 +709,14 @@ fn optimize_args(given: &Given) -> Result<OptimizeArgs, String> {
 }
 
 fn audit_args(given: &Given) -> Result<AuditArgs, String> {
+    let rules = given.path(RULES);
     let profile = match given.trimmed(PROFILE) {
         None => ProfileChoice::Builtin(Engine::Generic),
+        // Each model's profile comes from the rules, so a second source of one
+        // is a contradiction, not a default to override.
+        Some(_) if rules.is_some() => {
+            return Err(tr(k::USAGE_RULES_AND_PROFILE).into_owned());
+        }
         Some(value) => match PROFILE_CHOICES
             .iter()
             .position(|word| value.eq_ignore_ascii_case(word))
@@ -606,12 +730,24 @@ fn audit_args(given: &Given) -> Result<AuditArgs, String> {
         },
     };
     let fail_on = match choice(given, FAIL_ON, FAIL_ON_CHOICES)? {
+        Some("error") => FailOn::At(Severity::Error),
         Some("warning") => FailOn::At(Severity::Warning),
         Some("info") => FailOn::At(Severity::Info),
         Some("never") => FailOn::Never,
+        // Asset Check's convention (AC10): a run fails on a warning, which is
+        // also where its results open the window for the artist.
+        _ if rules.is_some() => FailOn::At(Severity::Warning),
         _ => FailOn::At(Severity::Error),
     };
-    Ok(AuditArgs { profile, fail_on })
+    Ok(AuditArgs {
+        judge: match rules {
+            Some(rules) => Judge::Rules(rules),
+            None => Judge::Profile(profile),
+        },
+        fail_on,
+        results: given.path(RESULTS),
+        staged: given.flag(STAGED),
+    })
 }
 
 /// The word `name` was given, matched without regard to case against
@@ -701,10 +837,14 @@ pub(crate) fn help(topic: Option<CommandName>) -> String {
             lines.push(tr(command.summary()).into_owned());
             lines.push(String::new());
             lines.push(tr(k::HELP_USAGE).into_owned());
-            lines.push(format!("  {}", tr(command.usage())));
+            for usage in command.usage() {
+                lines.push(format!("  {}", tr(*usage)));
+            }
             lines.push(String::new());
-            lines.push(tr(k::HELP_MODELS).into_owned());
-            lines.push(String::new());
+            if command.takes_models() {
+                lines.push(tr(k::HELP_MODELS).into_owned());
+                lines.push(String::new());
+            }
             lines.push(tr(k::HELP_OPTIONS).into_owned());
             let rows: Vec<(String, String)> = SPECS
                 .iter()
@@ -798,7 +938,10 @@ mod tests {
         let Command::Audit(args) = parsed.command else {
             panic!("not audit");
         };
-        assert_eq!(args.profile, ProfileChoice::Builtin(Engine::Unreal));
+        assert_eq!(
+            args.judge,
+            Judge::Profile(ProfileChoice::Builtin(Engine::Unreal))
+        );
         assert_eq!(args.fail_on, FailOn::At(Severity::Warning));
     }
 
@@ -816,7 +959,10 @@ mod tests {
         let Command::Audit(args) = parsed.command else {
             panic!("not audit");
         };
-        assert_eq!(args.profile, ProfileChoice::Builtin(Engine::Generic));
+        assert_eq!(
+            args.judge,
+            Judge::Profile(ProfileChoice::Builtin(Engine::Generic))
+        );
         assert_eq!(args.fail_on, FailOn::At(Severity::Error));
     }
 
@@ -826,9 +972,60 @@ mod tests {
             panic!("not audit");
         };
         assert_eq!(
-            args.profile,
-            ProfileChoice::File(PathBuf::from("team.json"))
+            args.judge,
+            Judge::Profile(ProfileChoice::File(PathBuf::from("team.json")))
         );
+    }
+
+    #[test]
+    fn rules_pick_the_profile_and_a_warning_fails_the_run() {
+        let parsed = run("audit --staged --rules rules/rules.json --results r.json");
+        assert!(parsed.common.inputs.is_empty());
+        let Command::Audit(args) = parsed.command else {
+            panic!("not audit");
+        };
+        assert_eq!(args.judge, Judge::Rules(PathBuf::from("rules/rules.json")));
+        assert_eq!(args.fail_on, FailOn::At(Severity::Warning));
+        assert_eq!(args.results, Some(PathBuf::from("r.json")));
+        assert!(args.staged);
+        // An explicit --fail-on still wins.
+        let Command::Audit(args) = run("audit a.fbx --rules r.json --fail-on error").command else {
+            panic!("not audit");
+        };
+        assert_eq!(args.fail_on, FailOn::At(Severity::Error));
+    }
+
+    #[test]
+    fn a_list_of_files_stands_in_for_the_models() {
+        let parsed = run("info --files-from list.txt");
+        assert!(parsed.common.inputs.is_empty());
+        assert_eq!(parsed.common.files_from, Some(PathBuf::from("list.txt")));
+        let parsed = run("optimize a.fbx --files-from list.txt --out o --lods 0.5");
+        assert_eq!(parsed.common.inputs, [PathBuf::from("a.fbx")]);
+    }
+
+    #[test]
+    fn the_rules_commands_read_their_own_lines() {
+        let rules = |line: &str| match parse_line(line) {
+            Ok(Parsed::Rules(args)) => args,
+            other => panic!("{line}: {other:?}"),
+        };
+        let check = RulesArgs::Check {
+            rules: PathBuf::from("rules.json"),
+        };
+        assert_eq!(rules("rules check rules.json"), check);
+        assert_eq!(rules("rules check --rules rules.json"), check);
+        assert_eq!(
+            rules("rules explain SM_Rock.fbx a/b.png --rules rules.json"),
+            RulesArgs::Explain {
+                rules: PathBuf::from("rules.json"),
+                files: vec![PathBuf::from("SM_Rock.fbx"), PathBuf::from("a/b.png")],
+            }
+        );
+        assert!(matches!(
+            parse_line("rules explain --help"),
+            Ok(Parsed::Help(Some(CommandName::Rules)))
+        ));
     }
 
     #[test]
@@ -853,6 +1050,22 @@ mod tests {
             "audit a.fbx --fail-on errors",
             "info a.fbx --profile unity",
             "--version extra",
+            "audit a.fbx --rules r.json --profile unity",
+            "audit --staged a.fbx",
+            "audit --staged --files-from list.txt",
+            "audit",
+            "info --staged",
+            "info a.fbx --rules r.json",
+            "optimize a.fbx --out o --lods 0.5 --results r.json",
+            "rules",
+            "rules lint r.json",
+            "rules check",
+            "rules check a.json b.json",
+            "rules check a.json --rules b.json",
+            "rules explain a.fbx",
+            "rules explain --rules r.json",
+            "rules check r.json --report x.json",
+            "rules check r.json --recurse",
         ] {
             assert!(parse_line(line).is_err(), "{line:?} was accepted");
         }
@@ -909,11 +1122,12 @@ mod tests {
     #[test]
     fn a_refused_line_still_names_its_report() {
         let path = |line: &str| {
-            report_path(
+            output_path(
                 &line
                     .split_whitespace()
                     .map(OsString::from)
                     .collect::<Vec<_>>(),
+                REPORT,
             )
         };
         assert_eq!(
@@ -946,5 +1160,13 @@ mod tests {
         assert!(!audit.contains("--out"));
         let main = help(None);
         assert!(main.contains("optimize") && main.contains("--version"));
+        assert!(main.contains("rules"));
+        let rules = help(Some(CommandName::Rules));
+        assert!(rules.contains("rules check") && rules.contains("rules explain"));
+        assert!(rules.contains("--rules <rules.json>"));
+        assert!(
+            !rules.contains("--report"),
+            "a rules command writes no report"
+        );
     }
 }

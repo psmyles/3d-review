@@ -319,6 +319,14 @@ pub struct RuleConfig {
     pub severity: Severity,
     #[serde(default)]
     pub params: BTreeMap<String, ParamValue>,
+    /// The technical artist's note on the rule ("Quest budget for props"),
+    /// shown under the tool's own explanation in Asset Check's results. Written
+    /// by hand - the profile editor shows and edits nothing of it, but keeps it,
+    /// so a profile re-saved from the viewer still has every note. It changes
+    /// nothing a rule finds, so neither [`RuleConfig::finding_key`] nor the
+    /// profile's digest reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 impl RuleConfig {
@@ -439,6 +447,11 @@ impl AuditProfile {
                 }
             }
             config.params = params;
+            config.note = config
+                .note
+                .take()
+                .map(|note| note.trim().to_owned())
+                .filter(|note| !note.is_empty());
         }
     }
 

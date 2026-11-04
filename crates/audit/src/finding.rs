@@ -298,6 +298,27 @@ impl RuleResult {
             .iter()
             .find(|offender| offender.node == Some(node))
     }
+
+    /// The figure to state beside the threshold: the rule's own headline, or,
+    /// when it states none, its one offender's. With several offenders and no
+    /// headline there is no single figure to give.
+    pub fn headline(&self) -> Option<&Measured> {
+        let only = match self.offenders.as_slice() {
+            [only] => only.measured.as_ref(),
+            _ => None,
+        };
+        self.measured.as_ref().or(only)
+    }
+
+    /// The objects this rule found something in, each once, in the order
+    /// found. A scene-wide offender names no object.
+    pub fn offender_nodes(&self) -> impl Iterator<Item = u32> + '_ {
+        let mut seen = std::collections::HashSet::new();
+        self.offenders
+            .iter()
+            .filter_map(|offender| offender.node)
+            .filter(move |node| seen.insert(*node))
+    }
 }
 
 /// Counts over a whole report.

@@ -16,11 +16,14 @@ cli-help-models = Give any mix of models and folders. A folder stands for the FB
 cli-help-more = Run 3d-review-cli <command> --help to see a command's options.
 cli-help-usage-main = 3d-review-cli <command> <models or folders>... [options]
 cli-help-usage-optimize = 3d-review-cli optimize <models or folders>... --out <folder> [options]
-cli-help-usage-audit = 3d-review-cli audit <models or folders>... [options]
+cli-help-usage-audit = 3d-review-cli audit <models or folders>... | --staged [options]
 cli-help-usage-info = 3d-review-cli info <models or folders>... [options]
+cli-help-usage-rules-check = 3d-review-cli rules check <rules.json>
+cli-help-usage-rules-explain = 3d-review-cli rules explain <files>... --rules <rules.json>
 cli-help-command-optimize = Simplify models, make LODs and save them as FBX.
-cli-help-command-audit = Check models against an engine's rules.
+cli-help-command-audit = Check models against an engine's rules, or against Asset Check's.
 cli-help-command-info = Show what a model holds: polygons, triangles, vertices and more.
+cli-help-command-rules = Check an Asset Check rules.json for mistakes, or show which of its rules apply to a file and why.
 
 # What an option takes, shown after it: `--out <folder>`.
 cli-help-value-folder = folder
@@ -28,6 +31,8 @@ cli-help-value-file = file
 cli-help-value-ratios = ratios
 cli-help-value-ratio = ratio
 cli-help-value-text = text
+# Asset Check's configuration file, which keeps this name in every language.
+cli-help-value-rules = rules.json
 
 cli-help-option-out = The folder the optimized models go in. Models found in a folder keep their subfolders.
 cli-help-option-preset = A preset saved from 3D Review's Opt workspace: the operations to run.
@@ -40,7 +45,11 @@ cli-help-option-suffix = Add this to the end of each file name.
 cli-help-option-if-exists = When a file it would write is already there: fail that model (the default), skip it, or replace the file.
 cli-help-option-replace-models = Let each model's results replace the model itself, when --out and --suffix put them there.
 cli-help-option-profile = The rules to check against: unity, unreal, generic (the default), or an audit profile saved from 3D Review.
-cli-help-option-fail-on = The lowest severity that makes the run fail: error (the default), warning, info, or never.
+cli-help-option-fail-on = The lowest severity that makes the run fail: error (the default, or warning with --rules), warning, info, or never.
+cli-help-option-rules = Asset Check's rules.json, which picks each model's profile and stage from its name, its folder and the branch. Not with --profile.
+cli-help-option-results = Write Asset Check's results to this JSON file: what is wrong with each model, why it matters and how to fix it.
+cli-help-option-staged = Check the FBX models staged for the next commit, as they are staged, instead of models named here.
+cli-help-option-files-from = Also work on the models and folders listed in this file, one per line.
 cli-help-option-recurse = Also look in the folders inside each folder.
 cli-help-option-report = Write what happened to this JSON file, for a script or a tool to read.
 cli-help-option-progress-bar = Show progress on the terminal's tab or taskbar button. auto (the default) does where the terminal is known to show it.
@@ -50,8 +59,8 @@ cli-help-option-version = Show the version.
 ## A command line it cannot follow (exit status 2, before anything runs)
 
 cli-usage-hint = Run { $help } to see what it takes.
-cli-usage-no-command = Say what to do: optimize, audit or info.
-cli-usage-unknown-command = There is no command { $command }. The commands are optimize, audit and info.
+cli-usage-no-command = Say what to do: optimize, audit, info or rules.
+cli-usage-unknown-command = There is no command { $command }. The commands are optimize, audit, info and rules.
 cli-usage-unknown-option = There is no option { $option } here.
 cli-usage-needs-value = { $option } needs a value.
 cli-usage-takes-no-value = { $option } takes no value.
@@ -61,6 +70,13 @@ cli-usage-too-many-lods = { $option } makes at most { $max } LODs.
 cli-usage-no-models = Give at least one model or folder.
 cli-usage-needs-out = optimize needs --out, the folder the optimized models go in.
 cli-usage-nothing-to-do = Say what to do to the models: --preset, --lods or --reduce.
+cli-usage-rules-and-profile = Give --rules or --profile, not both: with --rules, each model's profile comes from the rules.
+cli-usage-staged-and-models = --staged checks the models staged for the next commit, so give no models or --files-from with it.
+cli-usage-rules-no-command = Say what to do: rules check or rules explain.
+cli-usage-rules-unknown-command = There is no command rules { $command }. The commands are rules check and rules explain.
+cli-usage-rules-check-one = rules check takes one rules.json.
+cli-usage-rules-explain-needs-rules = rules explain needs --rules, the rules.json to explain from.
+cli-usage-rules-explain-no-files = Give at least one file for rules explain to explain.
 
 ## What a run says
 
@@ -75,6 +91,8 @@ cli-part-left-out = Part of the file couldn't be read and was left out: { $detai
 cli-warning = Warning: { $text }
 cli-note = Note: { $text }
 cli-report-failed = Couldn't write the report { $file }: { $reason }
+cli-results-failed = Couldn't write the results { $file }: { $reason }
+cli-files-from-unreadable = Couldn't read the list { $file }: { $reason }
 
 ## optimize
 
@@ -106,6 +124,40 @@ cli-audit-done = Done: { $done } checked, { $failed } didn't work.
 cli-audit-flagged = { $count ->
         [one] One model has findings at { $severity } or worse.
        *[other] { $count } models have findings at { $severity } or worse.
+    }
+
+## audit with Asset Check's rules (--rules, --staged)
+
+cli-audit-start-rules = { $count ->
+        [one] Checking one model against the rules in { $file }.
+       *[other] Checking { $count } models against the rules in { $file }.
+    }
+# The profile and stage the rules gave a model, and where the stage came from.
+# `$label` is the profile's name as rules.json gives it, `$id` its id.
+cli-audit-resolved-branch = { $label } ({ $id }), { $stage } stage, from the branch
+cli-audit-resolved-profile = { $label } ({ $id }), { $stage } stage, the profile's own
+cli-audit-resolved-project = { $label } ({ $id }), { $stage } stage, the project's
+cli-audit-resolved-asset = { $label } ({ $id }), { $stage } stage, the model's own
+# A finding said on one line: `$severity` is Error, Warning or Info.
+cli-audit-finding = { $severity }: { $text }
+cli-audit-cached = Unchanged since it was last checked against these rules, so these are the results from then.
+cli-audit-ignored = Left out: no file type in the rules has its extension.
+cli-audit-other-tool = Left out: the rules have { $tool } check it.
+cli-audit-no-rules-file = The { $profile } profile has no rules file for the { $stage } stage. Run 3d-review-cli rules check to see what is missing.
+cli-rules-unreadable = Couldn't read the rules { $file }: { $reason }
+cli-staged-failed = Couldn't list the staged files: { $reason }
+cli-staged-unreadable = Couldn't read what is staged: { $reason }
+cli-staged-none = No FBX models are staged.
+
+## rules check
+
+cli-rules-check-clean = No problems found in { $file }.
+cli-rules-check-problems = { $file }: { $errors ->
+        [one] one error
+       *[other] { $errors } errors
+    } and { $warnings ->
+        [one] one warning.
+       *[other] { $warnings } warnings.
     }
 
 ## info
