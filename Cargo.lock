@@ -157,13 +157,14 @@ dependencies = [
 
 [[package]]
 name = "asset-rules"
-version = "0.1.0"
-source = "git+https://github.com/psmyles/asset-rules?tag=v0.1.0#d129b013ee17d0c83d5ca7482fde1e6f01c61405"
+version = "0.2.0"
+source = "git+https://github.com/psmyles/asset-rules?tag=v0.2.0#05b0b77ab56ebab50082fce014fa75c8ae6ffcde"
 dependencies = [
  "globset",
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "toml",
 ]
 
 [[package]]
@@ -2812,6 +2813,7 @@ dependencies = [
 name = "review-audit"
 version = "0.1.0"
 dependencies = [
+ "asset-rules",
  "glam",
  "review-import",
  "review-model",

@@ -7,8 +7,7 @@
 - **B.1 is done**, and so are the **Windows** items: the step 0 baselines, the static CRT (FD20,
   recorded as D25), and the upgrade check, which includes a real upgrade over an installed 0.8.0.
 - **Still to do:** section 0 and B.2 on the Mac; B.3, which waits for fire-decode's first tag.
-- **A2, the rules catalog, is built on the branch `catalog`** (5 November) and waits for asset-rules
-  `v0.2.0`: below.
+- **A2, the rules catalog, is done** (5 November): below. It depends on asset-rules `v0.2.0`.
 
 The console tool was renamed from `review-cli` to **`3d-review-cli`** just before this work.
 
@@ -111,7 +110,7 @@ loading (`docs/cli.md`).
    characters. Only `.fbx` files are taken; other staged files are ignored.
 5. **`docs/cli.md`** documents all of the above, and **`crates/cli/tests/cli.rs`** covers each.
 
-- **Dependency:** `asset-rules` by git tag `v0.1.0` (done). The repository's own
+- **Dependency:** `asset-rules` by git tag (`v0.1.0`; `v0.2.0` since A2). The repository's own
   `.cargo/config.toml` is committed now (the static CRT), so a local patch for unreleased
   asset-rules goes in a `.cargo/config.toml` one folder up, beside both checkouts (`docs/cli.md`).
   The same applies to fire, whose `.cargo/config.toml` is tracked too. asset-rules' README and plan,
@@ -162,7 +161,7 @@ Decisions made while building it. `fire-cli` should match them:
 - **The `--report` stays as it was**, plus `profile` / `profile_label` / `stage` / `stage_from` per
   entry with `--rules`, `cached` on a cache hit, and a top-level `rules`.
 
-## A2. The rules catalog - built on the branch `catalog`
+## A2. The rules catalog - done
 
 The rules repo's `docs/rule-editor-plan.md`, step 3: every rule is described once, in
 `rules-catalog.toml` at the repository root, so adding or changing one is easy and Rule Editor
@@ -188,12 +187,7 @@ and every text (only three parameter descriptions, rewritten in the catalog, dif
 CrimeCrew's 281 models against its `rules.json` and each engine's defaults, and the 9 test models
 in each engine: the same results, reports and output before and after.
 
-**Still to do:** depend on asset-rules by tag `v0.2.0` once it's tagged, with `Cargo.lock`. Until
-then the branch builds against a local checkout, patched in on the command line:
-
-```sh
-cargo build --config "patch.'https://github.com/psmyles/asset-rules'.asset-rules.path='../asset-rules'"
-```
+It depends on asset-rules `v0.2.0`, tagged 5 November 2026.
 
 ## B. The fire-decode migration: 3D Review's side, later
 
