@@ -39,7 +39,7 @@ use std::sync::mpsc;
 use asset_rules::cache::{Cache, CacheKey, digest_file};
 use asset_rules::git::{Repo, StagedFile};
 use asset_rules::results::{FileResult, Finding, Results};
-use asset_rules::{Context, Resolution, Resolved, Rules, StageFrom, resolve};
+use asset_rules::{Context, Resolution, Resolved, Rules, SkippedBy, StageFrom, resolve};
 use review_audit::profile::envelope;
 use review_audit::report::{ReportSource, to_value};
 use review_audit::{AuditInput, AuditProfile, RuleId, RunOptions, Severity};
@@ -755,6 +755,15 @@ fn verdict(run: &mut Run, subject: &Subject) -> Verdict {
     let ours = |kind: &str| rules.types()[kind].tool == crate::args::PROGRAM;
     let resolved: Resolved = match resolution {
         Resolution::Ignored => return Verdict::LeftOut(tr(k::AUDIT_IGNORED).into_owned()),
+        Resolution::Skipped { by, .. } => {
+            return Verdict::LeftOut(match by {
+                SkippedBy::Check => tr(k::AUDIT_NOT_IN_CHECK).into_owned(),
+                SkippedBy::Skip(index) => match rules.skip()[index].label.clone() {
+                    Some(label) => k::audit_skipped_labelled(label),
+                    None => tr(k::AUDIT_SKIPPED).into_owned(),
+                },
+            });
+        }
         Resolution::Unmatched { kind } | Resolution::Resolved(Resolved { kind, .. })
             if !ours(&kind) =>
         {

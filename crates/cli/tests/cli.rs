@@ -622,7 +622,9 @@ fn rules_give_each_model_the_profile_and_stage_asset_rules_resolves() {
                     assert_eq!(file.profile, None);
                     assert_eq!(file.findings[0].rule, "file.no_profile");
                 }
-                Resolution::Ignored => panic!("{} is ignored", file.path),
+                Resolution::Ignored | Resolution::Skipped { .. } => {
+                    panic!("{} is left out", file.path)
+                }
             }
         }
         let rock = file(&results, "Assets/Environment/SM_Rock.fbx");
@@ -646,6 +648,47 @@ fn rules_give_each_model_the_profile_and_stage_asset_rules_resolves() {
     assert_eq!(prop.stage_from, Some(StageFrom::Profile));
     let rock = file(&elsewhere, "Assets/Environment/SM_Rock.fbx");
     assert_eq!(rock.stage_from, Some(StageFrom::Project));
+}
+
+/// `rules.json` version 2: a model outside `check`, or matching `skip`, isn't
+/// checked or reported; one named on the line gets a line saying why.
+#[test]
+fn models_the_rules_skip_are_left_out() {
+    let Some(cube) = cube() else { return };
+    let project = Project::new("rules-skip");
+    let rules = RULES_JSON
+        .replacen("\"version\": 1,", "\"version\": 2,", 1)
+        .replacen(
+            "\"types\":",
+            r#""check": ["Assets/**"],
+  "skip": [{ "label": "Third-party", "paths": ["Assets/Plugins/**"] }],
+  "types":"#,
+            1,
+        );
+    project.write("rules/rules.json", rules.as_bytes());
+    project.copy(&cube, "Assets/Props/SM_Crate.fbx");
+    project.copy(&cube, "Assets/Plugins/SM_Lib.fbx");
+    project.copy(&cube, "Docs/SM_Diagram.fbx");
+    let results_path = project.path("results.json");
+    let output = project.cli(&[
+        "audit",
+        "Assets/Props/SM_Crate.fbx",
+        "Assets/Plugins/SM_Lib.fbx",
+        "Docs/SM_Diagram.fbx",
+        "--rules",
+        "rules/rules.json",
+        "--results",
+        text(&results_path),
+    ]);
+    let said = stdout(&output);
+    let results = results(&results_path);
+    let paths: Vec<&str> = results.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(paths, ["Assets/Props/SM_Crate.fbx"], "{said}");
+    assert!(said.contains("the rules skip it (Third-party)"), "{said}");
+    assert!(
+        said.contains("isn't in the paths the rules check"),
+        "{said}"
+    );
 }
 
 /// Each failing check is a finding an artist can act on: what, with the

@@ -143,6 +143,10 @@ cli-audit-finding = { $severity }: { $text }
 cli-audit-cached = Unchanged since it was last checked against these rules, so these are the results from then.
 cli-audit-ignored = Left out: no file type in the rules has its extension.
 cli-audit-other-tool = Left out: the rules have { $tool } check it.
+cli-audit-not-in-check = Left out: it isn't in the paths the rules check ("check").
+cli-audit-skipped = Left out: the rules skip it.
+# `$label` is what the rules call the files they skip, e.g. Third-party.
+cli-audit-skipped-labelled = Left out: the rules skip it ({ $label }).
 cli-audit-no-rules-file = The { $profile } profile has no rules file for the { $stage } stage. Run 3d-review-cli rules check to see what is missing.
 cli-rules-unreadable = Couldn't read the rules { $file }: { $reason }
 cli-staged-failed = Couldn't list the staged files: { $reason }
