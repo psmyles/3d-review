@@ -78,7 +78,7 @@ pub fn run(
     let ctx = Context::new(input, options.cancel, options.threads);
     let mut results = Vec::with_capacity(RuleId::ALL.len());
 
-    for &rule in RuleId::ALL {
+    for rule in RuleId::ALL {
         if ctx.cancelled() {
             return Err(AuditError::Cancelled);
         }

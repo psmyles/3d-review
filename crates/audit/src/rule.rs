@@ -1,12 +1,27 @@
-//! The rule catalog: every check the audit knows, and the fixed facts about
-//! each — its category, what kind of element it reports, how it is drawn, and
-//! which diagnostic view shows it best.
+//! The rules: every check the audit knows, and the fixed facts about each —
+//! its category, what kind of element it reports, how it is drawn, and which
+//! diagnostic view shows it best.
+//!
+//! They are all in `rules-catalog.toml` at the repository root, the one place a
+//! rule is described: `build.rs` checks the catalog and generates [`RuleId`]
+//! (in catalog order) and these facts from it, with each rule's parameters
+//! ([`RuleId::param_specs`]), defaults and texts. Only the checks themselves are
+//! code (`checks/`), and their dispatch matches on `RuleId`, so a rule added to
+//! the catalog fails the build until its check exists.
 //!
 //! The wire name of every rule (`"uv.overlap"`) is a format contract: saved
 //! profiles and reports key on it. `wire_names_are_pinned` in the tests is what
 //! keeps a rename from silently orphaning every saved file.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+/// The code `build.rs` generates from the catalog.
+mod generated {
+    #![allow(dead_code)]
+    include!(concat!(env!("OUT_DIR"), "/rules.rs"));
+}
+
+pub use generated::{CATALOG_TOML, RuleId, catalog};
 
 /// The group a rule is listed under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -89,112 +104,15 @@ pub enum DiagnosticView {
     QuadOverdraw,
 }
 
-macro_rules! rules {
-    ($($variant:ident = $wire:literal, $category:ident, $element:ident, $marker:ident;)*) => {
-        /// One check in the catalog.
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-        pub enum RuleId {
-            $(#[serde(rename = $wire)] $variant,)*
-        }
-
-        impl RuleId {
-            /// Every rule, in catalog (list) order.
-            pub const ALL: &'static [RuleId] = &[$(RuleId::$variant,)*];
-
-            /// The stable wire name saved profiles and reports key on.
-            pub fn as_str(self) -> &'static str {
-                match self { $(RuleId::$variant => $wire,)* }
-            }
-
-            /// The rule a wire name names, if any.
-            pub fn from_wire(name: &str) -> Option<RuleId> {
-                match name { $($wire => Some(RuleId::$variant),)* _ => None }
-            }
-
-            pub fn category(self) -> Category {
-                match self { $(RuleId::$variant => Category::$category,)* }
-            }
-
-            pub fn element(self) -> ElementKind {
-                match self { $(RuleId::$variant => ElementKind::$element,)* }
-            }
-
-            pub fn marker(self) -> Marker {
-                match self { $(RuleId::$variant => Marker::$marker,)* }
-            }
-        }
-    };
-}
-
-rules! {
-    DegenerateTriangles = "geometry.degenerate_triangles", Geometry, Triangle, Dot;
-    NonManifoldEdges = "geometry.non_manifold_edges", Geometry, Edge, Edge;
-    IsolatedVertices = "geometry.isolated_vertices", Geometry, Vertex, Dot;
-    DuplicateVertices = "geometry.duplicate_vertices", Geometry, Vertex, Dot;
-    Ngons = "geometry.ngons", Geometry, Triangle, Fill;
-    MissingNormals = "geometry.missing_normals", Geometry, Node, Object;
-    MissingTangents = "geometry.missing_tangents", Geometry, Node, Object;
-    InvertedNormals = "geometry.inverted_normals", Geometry, Triangle, Fill;
-    HardEdges = "geometry.hard_edges", Geometry, Edge, Edge;
-    TriangleBudget = "geometry.triangle_budget", Geometry, Node, Object;
-    DrawCallBudget = "geometry.draw_call_budget", Geometry, Scene, Object;
-    Scale = "transform.scale", Transforms, Node, Object;
-    NegativeScale = "transform.negative_scale", Transforms, Node, Object;
-    Unfrozen = "transform.unfrozen", Transforms, Node, Object;
-    PivotOffset = "transform.pivot_offset", Transforms, Node, Dot;
-    Unit = "scene.unit", Transforms, Scene, None;
-    UpAxis = "scene.up_axis", Transforms, Scene, None;
-    UvMissing = "uv.missing", Uv, Node, Object;
-    UvOutOfRange = "uv.out_of_range", Uv, Triangle, Fill;
-    UvOverlap = "uv.overlap", Uv, Triangle, Fill;
-    UvFlipped = "uv.flipped", Uv, Triangle, Fill;
-    LightmapMissing = "uv.lightmap_missing", Uv, Node, Object;
-    LightmapOverlap = "uv.lightmap_overlap", Uv, Triangle, Fill;
-    LightmapPadding = "uv.lightmap_padding", Uv, Triangle, Fill;
-    LightmapOutOfRange = "uv.lightmap_out_of_range", Uv, Triangle, Fill;
-    Influences = "skin.influences", Skin, Vertex, Dot;
-    UnnormalizedWeights = "skin.unnormalized_weights", Skin, Vertex, Dot;
-    BonesPerMesh = "skin.bones_per_mesh", Skin, Node, Object;
-    UnusedBones = "skin.unused_bones", Skin, Node, Dot;
-    BindPoseMismatch = "skin.bind_pose_mismatch", Skin, Node, Dot;
-    TexelDensity = "density.texel", Density, Node, Object;
-    TriangleLod = "density.triangle_lod", Density, Node, Object;
-    TriangleReduce = "density.triangle_reduce", Density, Node, Object;
-    InvalidCharacters = "naming.invalid_characters", Naming, Node, Object;
-    NamePattern = "naming.pattern", Naming, Node, Object;
-    LodSuffix = "naming.lod_suffix", Naming, Node, Object;
-    CollisionPrefix = "naming.collision_prefix", Naming, Node, Object;
-    AssetPrefix = "naming.asset_prefix", Naming, Node, Object;
-    EmptyNodes = "hierarchy.empty_nodes", Hierarchy, Node, Dot;
-    DuplicateNames = "hierarchy.duplicate_names", Hierarchy, Node, Object;
-    MultipleRoots = "hierarchy.multiple_roots", Hierarchy, Scene, Object;
-    LightsCameras = "hierarchy.lights_cameras", Hierarchy, Node, Dot;
-    MaterialsPerMesh = "hierarchy.materials_per_mesh", Hierarchy, Node, Object;
-}
-
 impl RuleId {
-    /// The view that shows this rule's problem best. Most rules are looked at
-    /// as highlighted offenders; the density rules have a heat map of their
-    /// own.
-    pub fn related_view(self) -> DiagnosticView {
-        match self {
-            RuleId::TexelDensity => DiagnosticView::TexelDensity,
-            RuleId::TriangleLod | RuleId::TriangleReduce | RuleId::TriangleBudget => {
-                DiagnosticView::TriangleDensity
-            }
-            _ => DiagnosticView::Issues,
-        }
+    /// The stable wire name saved profiles and reports key on.
+    pub fn as_str(self) -> &'static str {
+        self.id()
     }
 
-    /// A second view worth a look for this rule's problem, beside
-    /// [`Self::related_view`]: triangles too small for their object are exactly
-    /// what quad overdraw measures the cost of.
-    pub fn see_also(self) -> Option<DiagnosticView> {
-        match self {
-            RuleId::TriangleLod | RuleId::TriangleReduce => Some(DiagnosticView::QuadOverdraw),
-            RuleId::TriangleBudget => Some(DiagnosticView::Overdraw),
-            _ => None,
-        }
+    /// The rule a wire name names, if any.
+    pub fn from_wire(name: &str) -> Option<RuleId> {
+        RuleId::from_id(name)
     }
 
     /// Whether the rule is about a UV layout, so its offenders are worth seeing
@@ -210,6 +128,21 @@ impl RuleId {
             .iter()
             .copied()
             .filter(move |rule| rule.category() == category)
+    }
+}
+
+/// A rule is written as its wire name.
+impl Serialize for RuleId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for RuleId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<RuleId, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        RuleId::from_wire(&name)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown rule \"{name}\"")))
     }
 }
 
@@ -275,7 +208,7 @@ mod tests {
 
     #[test]
     fn wire_names_round_trip() {
-        for &rule in RuleId::ALL {
+        for rule in RuleId::ALL {
             assert_eq!(RuleId::from_wire(rule.as_str()), Some(rule));
             let json = serde_json::to_string(&rule).unwrap();
             assert_eq!(json, format!("\"{}\"", rule.as_str()));

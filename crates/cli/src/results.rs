@@ -22,7 +22,6 @@ use asset_rules::results::{
 };
 use review_audit::{AuditProfile, AuditReport, Measured, RuleResult, Severity, Threshold};
 use review_labels::audit::{finding_what, rule_fix, rule_name, rule_why};
-use review_localization::tr;
 use review_model::ModelData;
 use serde_json::{Map, Value, json};
 
@@ -81,10 +80,10 @@ fn finding(result: &RuleResult, model: &ModelData, profile: &AuditProfile) -> Fi
     let mut finding = Finding::new(
         rule.as_str(),
         severity(result.severity),
-        tr(rule_name(rule)).into_owned(),
+        rule_name(rule),
         finding_what(result),
         rule_why(rule, profile.base),
-        tr(rule_fix(rule)).into_owned(),
+        rule_fix(rule),
     );
     finding.note = profile
         .rules

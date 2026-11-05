@@ -1,12 +1,15 @@
-//! Catalog text for the audit's typed values: rule names and explanations,
-//! categories, severities, skip reasons, parameters and measured figures.
+//! Catalog text for the audit's typed values: categories, severities, skip
+//! reasons and measured figures, and the rules' own texts.
 //!
 //! Every map is an exhaustive `match` with no fall-through arm, the same rule
-//! `ui`'s `labels.rs` keeps: a rule added to `review-audit` is a compile error
+//! `ui`'s `labels.rs` keeps: a value added to `review-audit` is a compile error
 //! here rather than English on a translated screen, and a catalog message
-//! nothing names is `dead_code`. The one exception is [`param`], keyed on the
-//! profile's own strings, where a test walking `review-audit`'s parameter table
-//! stands in for the compiler.
+//! nothing names is `dead_code`.
+//!
+//! A rule's own texts (its name; what it looks for, why it matters and how to
+//! fix it; its parameters' labels) are not Fluent messages: they are in the
+//! rules catalog, `rules-catalog.toml`, with the rest of the rule, in English.
+//! Translations, if ever needed, key on the rule's id.
 
 use review_audit::{
     AuditError, AuditProfile, AuditReport, Axis, Category, DiagnosticView, ElementKind, Engine,
@@ -82,249 +85,32 @@ pub fn axis(axis: Axis) -> Key {
 }
 
 /// A check's short name, as listed.
-pub fn rule_name(rule: RuleId) -> Key {
-    match rule {
-        RuleId::DegenerateTriangles => k::RULE_DEGENERATE_TRIANGLES,
-        RuleId::NonManifoldEdges => k::RULE_NON_MANIFOLD_EDGES,
-        RuleId::IsolatedVertices => k::RULE_ISOLATED_VERTICES,
-        RuleId::DuplicateVertices => k::RULE_DUPLICATE_VERTICES,
-        RuleId::Ngons => k::RULE_NGONS,
-        RuleId::MissingNormals => k::RULE_MISSING_NORMALS,
-        RuleId::MissingTangents => k::RULE_MISSING_TANGENTS,
-        RuleId::InvertedNormals => k::RULE_INVERTED_NORMALS,
-        RuleId::HardEdges => k::RULE_HARD_EDGES,
-        RuleId::TriangleBudget => k::RULE_TRIANGLE_BUDGET,
-        RuleId::DrawCallBudget => k::RULE_DRAW_CALL_BUDGET,
-        RuleId::Scale => k::RULE_SCALE,
-        RuleId::NegativeScale => k::RULE_NEGATIVE_SCALE,
-        RuleId::Unfrozen => k::RULE_UNFROZEN,
-        RuleId::PivotOffset => k::RULE_PIVOT_OFFSET,
-        RuleId::Unit => k::RULE_UNIT,
-        RuleId::UpAxis => k::RULE_UP_AXIS,
-        RuleId::UvMissing => k::RULE_UV_MISSING,
-        RuleId::UvOutOfRange => k::RULE_UV_OUT_OF_RANGE,
-        RuleId::UvOverlap => k::RULE_UV_OVERLAP,
-        RuleId::UvFlipped => k::RULE_UV_FLIPPED,
-        RuleId::LightmapMissing => k::RULE_LIGHTMAP_MISSING,
-        RuleId::LightmapOverlap => k::RULE_LIGHTMAP_OVERLAP,
-        RuleId::LightmapPadding => k::RULE_LIGHTMAP_PADDING,
-        RuleId::LightmapOutOfRange => k::RULE_LIGHTMAP_OUT_OF_RANGE,
-        RuleId::Influences => k::RULE_INFLUENCES,
-        RuleId::UnnormalizedWeights => k::RULE_UNNORMALIZED_WEIGHTS,
-        RuleId::BonesPerMesh => k::RULE_BONES_PER_MESH,
-        RuleId::UnusedBones => k::RULE_UNUSED_BONES,
-        RuleId::BindPoseMismatch => k::RULE_BIND_POSE_MISMATCH,
-        RuleId::TexelDensity => k::RULE_TEXEL_DENSITY,
-        RuleId::TriangleLod => k::RULE_TRIANGLE_LOD,
-        RuleId::TriangleReduce => k::RULE_TRIANGLE_REDUCE,
-        RuleId::InvalidCharacters => k::RULE_INVALID_CHARACTERS,
-        RuleId::NamePattern => k::RULE_NAME_PATTERN,
-        RuleId::LodSuffix => k::RULE_LOD_SUFFIX,
-        RuleId::CollisionPrefix => k::RULE_COLLISION_PREFIX,
-        RuleId::AssetPrefix => k::RULE_ASSET_PREFIX,
-        RuleId::EmptyNodes => k::RULE_EMPTY_NODES,
-        RuleId::DuplicateNames => k::RULE_DUPLICATE_NAMES,
-        RuleId::MultipleRoots => k::RULE_MULTIPLE_ROOTS,
-        RuleId::LightsCameras => k::RULE_LIGHTS_CAMERAS,
-        RuleId::MaterialsPerMesh => k::RULE_MATERIALS_PER_MESH,
-    }
+pub fn rule_name(rule: RuleId) -> String {
+    rule.rule().title.clone()
 }
 
 /// What a check looks for, in one sentence.
-pub fn rule_what(rule: RuleId) -> Key {
-    match rule {
-        RuleId::DegenerateTriangles => k::RULE_DEGENERATE_TRIANGLES_WHAT,
-        RuleId::NonManifoldEdges => k::RULE_NON_MANIFOLD_EDGES_WHAT,
-        RuleId::IsolatedVertices => k::RULE_ISOLATED_VERTICES_WHAT,
-        RuleId::DuplicateVertices => k::RULE_DUPLICATE_VERTICES_WHAT,
-        RuleId::Ngons => k::RULE_NGONS_WHAT,
-        RuleId::MissingNormals => k::RULE_MISSING_NORMALS_WHAT,
-        RuleId::MissingTangents => k::RULE_MISSING_TANGENTS_WHAT,
-        RuleId::InvertedNormals => k::RULE_INVERTED_NORMALS_WHAT,
-        RuleId::HardEdges => k::RULE_HARD_EDGES_WHAT,
-        RuleId::TriangleBudget => k::RULE_TRIANGLE_BUDGET_WHAT,
-        RuleId::DrawCallBudget => k::RULE_DRAW_CALL_BUDGET_WHAT,
-        RuleId::Scale => k::RULE_SCALE_WHAT,
-        RuleId::NegativeScale => k::RULE_NEGATIVE_SCALE_WHAT,
-        RuleId::Unfrozen => k::RULE_UNFROZEN_WHAT,
-        RuleId::PivotOffset => k::RULE_PIVOT_OFFSET_WHAT,
-        RuleId::Unit => k::RULE_UNIT_WHAT,
-        RuleId::UpAxis => k::RULE_UP_AXIS_WHAT,
-        RuleId::UvMissing => k::RULE_UV_MISSING_WHAT,
-        RuleId::UvOutOfRange => k::RULE_UV_OUT_OF_RANGE_WHAT,
-        RuleId::UvOverlap => k::RULE_UV_OVERLAP_WHAT,
-        RuleId::UvFlipped => k::RULE_UV_FLIPPED_WHAT,
-        RuleId::LightmapMissing => k::RULE_LIGHTMAP_MISSING_WHAT,
-        RuleId::LightmapOverlap => k::RULE_LIGHTMAP_OVERLAP_WHAT,
-        RuleId::LightmapPadding => k::RULE_LIGHTMAP_PADDING_WHAT,
-        RuleId::LightmapOutOfRange => k::RULE_LIGHTMAP_OUT_OF_RANGE_WHAT,
-        RuleId::Influences => k::RULE_INFLUENCES_WHAT,
-        RuleId::UnnormalizedWeights => k::RULE_UNNORMALIZED_WEIGHTS_WHAT,
-        RuleId::BonesPerMesh => k::RULE_BONES_PER_MESH_WHAT,
-        RuleId::UnusedBones => k::RULE_UNUSED_BONES_WHAT,
-        RuleId::BindPoseMismatch => k::RULE_BIND_POSE_MISMATCH_WHAT,
-        RuleId::TexelDensity => k::RULE_TEXEL_DENSITY_WHAT,
-        RuleId::TriangleLod => k::RULE_TRIANGLE_LOD_WHAT,
-        RuleId::TriangleReduce => k::RULE_TRIANGLE_REDUCE_WHAT,
-        RuleId::InvalidCharacters => k::RULE_INVALID_CHARACTERS_WHAT,
-        RuleId::NamePattern => k::RULE_NAME_PATTERN_WHAT,
-        RuleId::LodSuffix => k::RULE_LOD_SUFFIX_WHAT,
-        RuleId::CollisionPrefix => k::RULE_COLLISION_PREFIX_WHAT,
-        RuleId::AssetPrefix => k::RULE_ASSET_PREFIX_WHAT,
-        RuleId::EmptyNodes => k::RULE_EMPTY_NODES_WHAT,
-        RuleId::DuplicateNames => k::RULE_DUPLICATE_NAMES_WHAT,
-        RuleId::MultipleRoots => k::RULE_MULTIPLE_ROOTS_WHAT,
-        RuleId::LightsCameras => k::RULE_LIGHTS_CAMERAS_WHAT,
-        RuleId::MaterialsPerMesh => k::RULE_MATERIALS_PER_MESH_WHAT,
-    }
+pub fn rule_what(rule: RuleId) -> String {
+    rule.rule().what.clone()
 }
 
 /// Why a check matters, worded for the profile's target engine where the
-/// engines differ.
+/// engines differ (the catalog's `[rule.base.<engine>]`).
 pub fn rule_why(rule: RuleId, target: Engine) -> String {
-    let e = target.as_str();
-    let plain = |key: Key| tr(key).into_owned();
-    match rule {
-        RuleId::DegenerateTriangles => plain(k::RULE_DEGENERATE_TRIANGLES_WHY),
-        RuleId::NonManifoldEdges => plain(k::RULE_NON_MANIFOLD_EDGES_WHY),
-        RuleId::IsolatedVertices => plain(k::RULE_ISOLATED_VERTICES_WHY),
-        RuleId::DuplicateVertices => plain(k::RULE_DUPLICATE_VERTICES_WHY),
-        RuleId::Ngons => k::rule_ngons_why(e),
-        RuleId::MissingNormals => k::rule_missing_normals_why(e),
-        RuleId::MissingTangents => plain(k::RULE_MISSING_TANGENTS_WHY),
-        RuleId::InvertedNormals => plain(k::RULE_INVERTED_NORMALS_WHY),
-        RuleId::HardEdges => plain(k::RULE_HARD_EDGES_WHY),
-        RuleId::TriangleBudget => plain(k::RULE_TRIANGLE_BUDGET_WHY),
-        RuleId::DrawCallBudget => plain(k::RULE_DRAW_CALL_BUDGET_WHY),
-        RuleId::Scale => k::rule_scale_why(e),
-        RuleId::NegativeScale => plain(k::RULE_NEGATIVE_SCALE_WHY),
-        RuleId::Unfrozen => plain(k::RULE_UNFROZEN_WHY),
-        RuleId::PivotOffset => plain(k::RULE_PIVOT_OFFSET_WHY),
-        RuleId::Unit => k::rule_unit_why(e),
-        RuleId::UpAxis => k::rule_up_axis_why(e),
-        RuleId::UvMissing => plain(k::RULE_UV_MISSING_WHY),
-        RuleId::UvOutOfRange => plain(k::RULE_UV_OUT_OF_RANGE_WHY),
-        RuleId::UvOverlap => plain(k::RULE_UV_OVERLAP_WHY),
-        RuleId::UvFlipped => plain(k::RULE_UV_FLIPPED_WHY),
-        RuleId::LightmapMissing => k::rule_lightmap_missing_why(e),
-        RuleId::LightmapOverlap => plain(k::RULE_LIGHTMAP_OVERLAP_WHY),
-        RuleId::LightmapPadding => plain(k::RULE_LIGHTMAP_PADDING_WHY),
-        RuleId::LightmapOutOfRange => plain(k::RULE_LIGHTMAP_OUT_OF_RANGE_WHY),
-        RuleId::Influences => k::rule_influences_why(e),
-        RuleId::UnnormalizedWeights => plain(k::RULE_UNNORMALIZED_WEIGHTS_WHY),
-        RuleId::BonesPerMesh => k::rule_bones_per_mesh_why(e),
-        RuleId::UnusedBones => plain(k::RULE_UNUSED_BONES_WHY),
-        RuleId::BindPoseMismatch => plain(k::RULE_BIND_POSE_MISMATCH_WHY),
-        RuleId::TexelDensity => plain(k::RULE_TEXEL_DENSITY_WHY),
-        RuleId::TriangleLod => plain(k::RULE_TRIANGLE_LOD_WHY),
-        RuleId::TriangleReduce => plain(k::RULE_TRIANGLE_REDUCE_WHY),
-        RuleId::InvalidCharacters => plain(k::RULE_INVALID_CHARACTERS_WHY),
-        RuleId::NamePattern => plain(k::RULE_NAME_PATTERN_WHY),
-        RuleId::LodSuffix => k::rule_lod_suffix_why(e),
-        RuleId::CollisionPrefix => k::rule_collision_prefix_why(e),
-        RuleId::AssetPrefix => k::rule_asset_prefix_why(e),
-        RuleId::EmptyNodes => plain(k::RULE_EMPTY_NODES_WHY),
-        RuleId::DuplicateNames => plain(k::RULE_DUPLICATE_NAMES_WHY),
-        RuleId::MultipleRoots => plain(k::RULE_MULTIPLE_ROOTS_WHY),
-        RuleId::LightsCameras => plain(k::RULE_LIGHTS_CAMERAS_WHY),
-        RuleId::MaterialsPerMesh => plain(k::RULE_MATERIALS_PER_MESH_WHY),
-    }
+    rule.rule().texts(Some(target.as_str()), None).why
 }
 
 /// How to fix a finding in the modelling program, in general terms.
-pub fn rule_fix(rule: RuleId) -> Key {
-    match rule {
-        RuleId::DegenerateTriangles => k::RULE_DEGENERATE_TRIANGLES_FIX,
-        RuleId::NonManifoldEdges => k::RULE_NON_MANIFOLD_EDGES_FIX,
-        RuleId::IsolatedVertices => k::RULE_ISOLATED_VERTICES_FIX,
-        RuleId::DuplicateVertices => k::RULE_DUPLICATE_VERTICES_FIX,
-        RuleId::Ngons => k::RULE_NGONS_FIX,
-        RuleId::MissingNormals => k::RULE_MISSING_NORMALS_FIX,
-        RuleId::MissingTangents => k::RULE_MISSING_TANGENTS_FIX,
-        RuleId::InvertedNormals => k::RULE_INVERTED_NORMALS_FIX,
-        RuleId::HardEdges => k::RULE_HARD_EDGES_FIX,
-        RuleId::TriangleBudget => k::RULE_TRIANGLE_BUDGET_FIX,
-        RuleId::DrawCallBudget => k::RULE_DRAW_CALL_BUDGET_FIX,
-        RuleId::Scale => k::RULE_SCALE_FIX,
-        RuleId::NegativeScale => k::RULE_NEGATIVE_SCALE_FIX,
-        RuleId::Unfrozen => k::RULE_UNFROZEN_FIX,
-        RuleId::PivotOffset => k::RULE_PIVOT_OFFSET_FIX,
-        RuleId::Unit => k::RULE_UNIT_FIX,
-        RuleId::UpAxis => k::RULE_UP_AXIS_FIX,
-        RuleId::UvMissing => k::RULE_UV_MISSING_FIX,
-        RuleId::UvOutOfRange => k::RULE_UV_OUT_OF_RANGE_FIX,
-        RuleId::UvOverlap => k::RULE_UV_OVERLAP_FIX,
-        RuleId::UvFlipped => k::RULE_UV_FLIPPED_FIX,
-        RuleId::LightmapMissing => k::RULE_LIGHTMAP_MISSING_FIX,
-        RuleId::LightmapOverlap => k::RULE_LIGHTMAP_OVERLAP_FIX,
-        RuleId::LightmapPadding => k::RULE_LIGHTMAP_PADDING_FIX,
-        RuleId::LightmapOutOfRange => k::RULE_LIGHTMAP_OUT_OF_RANGE_FIX,
-        RuleId::Influences => k::RULE_INFLUENCES_FIX,
-        RuleId::UnnormalizedWeights => k::RULE_UNNORMALIZED_WEIGHTS_FIX,
-        RuleId::BonesPerMesh => k::RULE_BONES_PER_MESH_FIX,
-        RuleId::UnusedBones => k::RULE_UNUSED_BONES_FIX,
-        RuleId::BindPoseMismatch => k::RULE_BIND_POSE_MISMATCH_FIX,
-        RuleId::TexelDensity => k::RULE_TEXEL_DENSITY_FIX,
-        RuleId::TriangleLod => k::RULE_TRIANGLE_LOD_FIX,
-        RuleId::TriangleReduce => k::RULE_TRIANGLE_REDUCE_FIX,
-        RuleId::InvalidCharacters => k::RULE_INVALID_CHARACTERS_FIX,
-        RuleId::NamePattern => k::RULE_NAME_PATTERN_FIX,
-        RuleId::LodSuffix => k::RULE_LOD_SUFFIX_FIX,
-        RuleId::CollisionPrefix => k::RULE_COLLISION_PREFIX_FIX,
-        RuleId::AssetPrefix => k::RULE_ASSET_PREFIX_FIX,
-        RuleId::EmptyNodes => k::RULE_EMPTY_NODES_FIX,
-        RuleId::DuplicateNames => k::RULE_DUPLICATE_NAMES_FIX,
-        RuleId::MultipleRoots => k::RULE_MULTIPLE_ROOTS_FIX,
-        RuleId::LightsCameras => k::RULE_LIGHTS_CAMERAS_FIX,
-        RuleId::MaterialsPerMesh => k::RULE_MATERIALS_PER_MESH_FIX,
-    }
+pub fn rule_fix(rule: RuleId) -> String {
+    rule.rule().how.clone()
 }
 
 /// A rule parameter's label and explanation, by its profile key.
-///
-/// The one map here keyed on a string rather than an enum, because a string is
-/// what a profile stores and what `review-audit`'s parameter table declares, so
-/// the compiler cannot see a key go missing. A test can:
-/// `every_parameter_has_a_label_of_its_own` walks that table for every rule,
-/// so a key added to `review-audit` without a label here fails it rather than
-/// showing as "Maximum". A key the table does not declare never gets this far
-/// (a profile's sanitize drops it), and takes that label only so the function
-/// can answer.
-pub fn param(key: &str) -> (Key, Key) {
-    param_label(key).unwrap_or((k::PARAM_MAX, k::PARAM_MAX_DESCRIPTION))
-}
-
-/// [`param`]'s map, with no answer for a key it does not know.
-fn param_label(key: &str) -> Option<(Key, Key)> {
-    Some(match key {
-        "tolerance" => (k::PARAM_TOLERANCE, k::PARAM_TOLERANCE_DESCRIPTION),
-        "max_ratio" => (k::PARAM_MAX_RATIO, k::PARAM_MAX_RATIO_DESCRIPTION),
-        "max_per_object" => (k::PARAM_MAX_PER_OBJECT, k::PARAM_MAX_PER_OBJECT_DESCRIPTION),
-        "max_total" => (k::PARAM_MAX_TOTAL, k::PARAM_MAX_TOTAL_DESCRIPTION),
-        "max_distance" => (k::PARAM_MAX_DISTANCE, k::PARAM_MAX_DISTANCE_DESCRIPTION),
-        "target" => (k::PARAM_TARGET, k::PARAM_TARGET_DESCRIPTION),
-        "resolution" => (k::PARAM_RESOLUTION, k::PARAM_RESOLUTION_DESCRIPTION),
-        "channel" => (k::PARAM_CHANNEL, k::PARAM_CHANNEL_DESCRIPTION),
-        "min_padding" => (k::PARAM_MIN_PADDING, k::PARAM_MIN_PADDING_DESCRIPTION),
-        "texture_size" => (k::PARAM_TEXTURE_SIZE, k::PARAM_TEXTURE_SIZE_DESCRIPTION),
-        "min_pixel_area" => (k::PARAM_MIN_PIXEL_AREA, k::PARAM_MIN_PIXEL_AREA_DESCRIPTION),
-        "screen_height" => (k::PARAM_SCREEN_HEIGHT, k::PARAM_SCREEN_HEIGHT_DESCRIPTION),
-        "min_screen_size" => (
-            k::PARAM_MIN_SCREEN_SIZE,
-            k::PARAM_MIN_SCREEN_SIZE_DESCRIPTION,
-        ),
-        "mesh" => (k::PARAM_MESH, k::PARAM_MESH_DESCRIPTION),
-        "skinned" => (k::PARAM_SKINNED, k::PARAM_SKINNED_DESCRIPTION),
-        "bone" => (k::PARAM_BONE, k::PARAM_BONE_DESCRIPTION),
-        "empty" => (k::PARAM_EMPTY, k::PARAM_EMPTY_DESCRIPTION),
-        "light" => (k::PARAM_LIGHT, k::PARAM_LIGHT_DESCRIPTION),
-        "camera" => (k::PARAM_CAMERA, k::PARAM_CAMERA_DESCRIPTION),
-        "prefixes" => (k::PARAM_PREFIXES, k::PARAM_PREFIXES_DESCRIPTION),
-        "static" => (k::PARAM_STATIC, k::PARAM_STATIC_DESCRIPTION),
-        "ignore" => (k::PARAM_IGNORE, k::PARAM_IGNORE_DESCRIPTION),
-        "max" => (k::PARAM_MAX, k::PARAM_MAX_DESCRIPTION),
-        _ => return None,
-    })
+pub fn param(rule: RuleId, key: &str) -> (String, String) {
+    rule.rule().param(key).map_or_else(
+        || (key.to_owned(), String::new()),
+        |param| (param.label.clone(), param.help.clone().unwrap_or_default()),
+    )
 }
 
 /// A number with `digits` decimals, trailing zeros trimmed.
@@ -386,7 +172,7 @@ pub fn threshold(value: &Threshold) -> Option<String> {
 /// beside a figure, since "at most 4" read alone says nothing; the check's own
 /// sentence already says what it is a limit on.
 pub fn finding_what(result: &RuleResult) -> String {
-    let mut sentences = vec![tr(rule_what(result.rule)).into_owned()];
+    let mut sentences = vec![rule_what(result.rule)];
     let in_objects = result.offender_nodes().count();
     let objects = in_objects as f64;
     let count = result.total as f64;
@@ -471,7 +257,7 @@ pub fn summary_lines(report: &AuditReport) -> Vec<String> {
 pub fn finding_line(rule: RuleId, level: Severity, count: u64) -> String {
     k::text_finding(
         count as f64,
-        tr(rule_name(rule)).into_owned(),
+        rule_name(rule),
         tr(severity(level)).into_owned(),
     )
 }
@@ -498,42 +284,26 @@ mod tests {
         assert_eq!(number(1024.0, 0), "1024");
     }
 
-    /// What the compiler checks for every other map here, for the one keyed on
-    /// a string: each parameter any rule declares has a label, and no two
-    /// parameters share one.
-    #[test]
-    fn every_parameter_has_a_label_of_its_own() {
-        let mut labels: std::collections::BTreeMap<&str, (Key, Key)> = Default::default();
-        for &rule in RuleId::ALL {
-            for spec in review_audit::param_specs(rule) {
-                let Some(label) = param_label(spec.key) else {
-                    panic!(
-                        "{} declares the parameter `{}`, which has no label",
-                        rule.as_str(),
-                        spec.key
-                    );
-                };
-                labels.insert(spec.key, label);
-            }
-        }
-        let mut seen: std::collections::BTreeMap<&'static str, &str> = Default::default();
-        for (key, (label, _)) in &labels {
-            if let Some(other) = seen.insert(label.id(), key) {
-                panic!("`{key}` and `{other}` share the label `{}`", label.id());
-            }
-        }
-        assert!(param_label("no_such_parameter").is_none());
-    }
-
     #[test]
     fn every_rule_has_its_text() {
-        for &rule in RuleId::ALL {
+        for rule in RuleId::ALL {
             for target in Engine::ALL {
                 assert!(!rule_why(rule, target).is_empty(), "{}", rule.as_str());
             }
-            assert!(!tr(rule_name(rule)).is_empty());
-            assert!(!tr(rule_what(rule)).is_empty());
-            assert!(!tr(rule_fix(rule)).is_empty());
+            assert!(!rule_name(rule).is_empty());
+            assert!(!rule_what(rule).is_empty());
+            assert!(!rule_fix(rule).is_empty());
+            for spec in review_audit::param_specs(rule) {
+                let (label, description) = param(rule, spec.key);
+                assert!(!label.is_empty() && !description.is_empty(), "{}", spec.key);
+            }
         }
+    }
+
+    /// The engines' own reasons, where the catalog gives them.
+    #[test]
+    fn why_is_worded_for_the_engine() {
+        assert!(rule_why(RuleId::Unit, Engine::Unity).starts_with("Unity works in meters."));
+        assert!(rule_why(RuleId::Unit, Engine::Unreal).starts_with("Unreal works in centimeters."));
     }
 }

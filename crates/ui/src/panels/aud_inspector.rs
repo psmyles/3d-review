@@ -226,7 +226,7 @@ fn object_body(
                 egui::Id::new(("aud_inspector_finding", result.rule)),
                 false,
                 Some(result.severity),
-                review_localization::tr(audit_labels::rule_name(result.rule)).into_owned(),
+                audit_labels::rule_name(result.rule),
                 offender.count,
             )
             .clicked();
@@ -283,21 +283,13 @@ fn rule_body(
         );
     });
 
-    section(
-        ui,
-        k::WHAT,
-        review_localization::tr(audit_labels::rule_what(rule)),
-    );
+    section(ui, k::WHAT, audit_labels::rule_what(rule));
     section(
         ui,
         k::WHY,
         audit_labels::rule_why(rule, state.aud.profile.base),
     );
-    section(
-        ui,
-        k::FIX,
-        review_localization::tr(audit_labels::rule_fix(rule)),
-    );
+    section(ui, k::FIX, audit_labels::rule_fix(rule));
 
     if let Some(view) = rule.see_also() {
         ui.add_space(size::PANEL_ROW_GAP);
@@ -557,7 +549,7 @@ fn rule_editor(ui: &mut egui::Ui, profile: &mut AuditProfile, rule: RuleId) {
         ui.end_row();
 
         for spec in param_specs(rule) {
-            let (label, description) = audit_labels::param(spec.key);
+            let (label, description) = audit_labels::param(rule, spec.key);
             grid_label_tip(
                 ui,
                 Tip::new(label).describe(description).page(Page::AudChecks),

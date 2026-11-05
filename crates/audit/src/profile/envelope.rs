@@ -11,9 +11,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{AuditProfile, Engine, ParamValue, RuleConfig, default_config};
+use super::{AuditProfile, Engine, config};
 use crate::AuditError;
-use crate::rule::{RuleId, Severity};
+use crate::rule::{RuleId, catalog};
 
 /// Envelope version this build writes and is willing to read.
 pub const PROFILE_VERSION: u32 = 1;
@@ -54,19 +54,6 @@ fn default_base() -> Engine {
     Engine::Generic
 }
 
-/// One rule as read. Every field may be left out of a hand-written file:
-/// a rule listed there is on unless it says `"enabled": false` - listing it is
-/// asking for it - and what else it leaves out is the base engine's default.
-#[derive(Deserialize)]
-struct RuleIn {
-    enabled: Option<bool>,
-    severity: Option<Severity>,
-    #[serde(default)]
-    params: BTreeMap<String, ParamValue>,
-    #[serde(default)]
-    note: Option<String>,
-}
-
 /// Serialize `profile` as a pretty-printed profile document.
 pub fn to_json(profile: &AuditProfile) -> Result<String, AuditError> {
     let envelope = EnvelopeOut {
@@ -81,11 +68,13 @@ pub fn to_json(profile: &AuditProfile) -> Result<String, AuditError> {
     serde_json::to_string_pretty(&envelope).map_err(|error| AuditError::Profile(error.to_string()))
 }
 
-/// Parse a profile document. Unknown rules are ignored, missing rules and
-/// parameters take the base engine's defaults, a listed rule is on unless it
-/// says otherwise, a missing base is generic, and every value is clamped into
-/// the range the editor offers ([`AuditProfile::sanitize`]) — the file may have
-/// been edited by hand, and Asset Check's rules files usually are.
+/// Parse a profile document. Each rule's settings are read as asset-rules reads
+/// a rules file for both checkers (`Rule::settings`), against the base engine's
+/// defaults: a listed rule is on unless it says `"enabled": false`; what it
+/// leaves out is the default; a rule whose settings can't be read takes its
+/// defaults whole, and a value the rule can't take keeps its default. A missing
+/// base is generic. Rules this build doesn't have are passed over; [`problems`]
+/// lists them, and everything else passed over.
 pub fn from_json(json: &str) -> Result<AuditProfile, AuditError> {
     let envelope: EnvelopeIn =
         serde_json::from_str(json).map_err(|error| AuditError::Profile(error.to_string()))?;
@@ -95,33 +84,41 @@ pub fn from_json(json: &str) -> Result<AuditProfile, AuditError> {
             supported: PROFILE_VERSION,
         });
     }
-    let mut rules = BTreeMap::new();
-    for (name, value) in envelope.profile.rules {
-        let Some(rule) = RuleId::from_wire(&name) else {
-            continue;
-        };
-        // A rule whose settings are malformed falls back to its default rather
-        // than failing the profile.
-        if let Ok(read) = serde_json::from_value::<RuleIn>(value) {
-            let default = default_config(envelope.profile.base, rule);
-            rules.insert(
+    let base = envelope.profile.base;
+    let rules = RuleId::ALL
+        .into_iter()
+        .map(|rule| {
+            let entry = envelope.profile.rules.get(rule.as_str());
+            (
                 rule,
-                RuleConfig {
-                    enabled: read.enabled.unwrap_or(true),
-                    severity: read.severity.unwrap_or(default.severity),
-                    params: read.params,
-                    note: read.note,
-                },
-            );
-        }
-    }
+                config(rule, &rule.rule().settings(Some(base.as_str()), entry)),
+            )
+        })
+        .collect();
     let mut profile = AuditProfile {
         name: envelope.profile.name,
-        base: envelope.profile.base,
+        base,
         rules,
     };
     profile.sanitize();
     Ok(profile)
+}
+
+/// What a profile document sets that [`from_json`] passes over, read strictly
+/// against the catalog: a rule this build doesn't have, a value of the wrong
+/// kind or out of range, a field it doesn't know. One line each, as
+/// `<where>: <what>`; empty for a document with nothing passed over, or one
+/// that isn't JSON (which `from_json` refuses).
+pub fn problems(json: &str) -> Vec<String> {
+    serde_json::from_str::<serde_json::Value>(json)
+        .map(|document| {
+            catalog()
+                .check_rules_file(&document)
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

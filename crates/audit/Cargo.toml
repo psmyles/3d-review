@@ -15,10 +15,15 @@ review-prof.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
+# The rules catalog (rules-catalog.toml), embedded: each rule's defaults and texts, and how a
+# rules file's settings are read.
+asset-rules.workspace = true
 
 [build-dependencies]
-# build.rs reads the product's name and version from ../../product.json.
+# build.rs reads the product's name and version from ../../product.json,
 serde_json.workspace = true
+# ...and checks ../../rules-catalog.toml and generates the rule code from it.
+asset-rules.workspace = true
 
 [dev-dependencies]
 # The fixture suite audits real FBX files. Test-only: the engine itself takes a

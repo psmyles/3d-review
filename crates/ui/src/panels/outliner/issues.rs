@@ -418,7 +418,7 @@ fn draw_row(
                 focus == Some(AuditFocus::Rule(rule)),
                 1,
                 result.map(rule_mark),
-                review_localization::tr(audit_labels::rule_name(rule)).into_owned(),
+                audit_labels::rule_name(rule),
                 result
                     .filter(|result| result.failed())
                     .map(|result| result.total),
@@ -438,7 +438,7 @@ fn draw_row(
                 })
                 .map(|offender| offender.count);
             let label = if state.aud.grouping == AudGrouping::ByObject {
-                review_localization::tr(audit_labels::rule_name(rule)).into_owned()
+                audit_labels::rule_name(rule)
             } else {
                 object_label(model, node)
             };
