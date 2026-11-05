@@ -51,7 +51,6 @@ enabled = true
 severity = "warning"
 
 [rule.app]
-variant = "DegenerateTriangles"
 element = "triangle"
 marker = "dot"
 view = "issues"
@@ -70,7 +69,6 @@ enabled = true
 severity = "warning"
 
 [rule.app]
-variant = "NonManifoldEdges"
 element = "edge"
 marker = "edge"
 view = "issues"
@@ -89,7 +87,6 @@ enabled = true
 severity = "info"
 
 [rule.app]
-variant = "IsolatedVertices"
 element = "vertex"
 marker = "dot"
 view = "issues"
@@ -106,7 +103,7 @@ how = "Merge vertices by distance."
 [rule.default]
 enabled = true
 severity = "warning"
-[rule.default.generic]
+[rule.base.generic]
 severity = "info"
 
 [[rule.param]]
@@ -120,7 +117,6 @@ label = "Tolerance"
 help = "How far a value may be from what the check expects before it counts."
 
 [rule.app]
-variant = "DuplicateVertices"
 element = "vertex"
 marker = "dot"
 view = "issues"
@@ -137,19 +133,14 @@ how = "Cut them into quads and triangles yourself, or triangulate the mesh befor
 [rule.default]
 enabled = true
 severity = "warning"
-[rule.default.generic]
+[rule.base.unity]
+why = "Unity triangulates them on import its own way, which can differ from how your modelling program showed them and bend shading or a bake."
+[rule.base.unreal]
+why = "Unreal triangulates them on import its own way, which can differ from how your modelling program showed them and bend shading or a bake."
+[rule.base.generic]
 severity = "info"
 
-# Worded for the unity base: chosen by the rules file's "base", not by the check.
-[rule.case.unity]
-why = "Unity triangulates them on import its own way, which can differ from how your modelling program showed them and bend shading or a bake."
-
-# Worded for the unreal base: chosen by the rules file's "base", not by the check.
-[rule.case.unreal]
-why = "Unreal triangulates them on import its own way, which can differ from how your modelling program showed them and bend shading or a bake."
-
 [rule.app]
-variant = "Ngons"
 element = "triangle"
 marker = "fill"
 view = "issues"
@@ -166,19 +157,13 @@ how = "Turn on normals in your FBX export settings."
 [rule.default]
 enabled = true
 severity = "info"
-[rule.default.unreal]
-severity = "warning"
-
-# Worded for the unity base: chosen by the rules file's "base", not by the check.
-[rule.case.unity]
+[rule.base.unity]
 why = "Unity will calculate its own, so the shading you see in the game is not the shading you authored."
-
-# Worded for the unreal base: chosen by the rules file's "base", not by the check.
-[rule.case.unreal]
+[rule.base.unreal]
+severity = "warning"
 why = "Unreal will calculate its own, so the shading you see in the game is not the shading you authored."
 
 [rule.app]
-variant = "MissingNormals"
 element = "node"
 marker = "object"
 view = "issues"
@@ -195,11 +180,10 @@ how = "Export tangents and binormals, using the same tangent space your baker us
 [rule.default]
 enabled = true
 severity = "info"
-[rule.default.generic]
+[rule.base.generic]
 enabled = false
 
 [rule.app]
-variant = "MissingTangents"
 element = "node"
 marker = "object"
 view = "issues"
@@ -216,11 +200,10 @@ how = "Flip these faces, or conform the normals of the part."
 [rule.default]
 enabled = true
 severity = "error"
-[rule.default.generic]
+[rule.base.generic]
 severity = "warning"
 
 [rule.app]
-variant = "InvertedNormals"
 element = "triangle"
 marker = "fill"
 view = "issues"
@@ -248,7 +231,6 @@ label = "Most hard edges"
 help = "The share of a part's edges that may be hard before it is reported."
 
 [rule.app]
-variant = "HardEdges"
 element = "edge"
 marker = "edge"
 view = "issues"
@@ -265,7 +247,7 @@ how = "Reduce the mesh, or split detail into LODs. The Opt workspace can do both
 [rule.default]
 enabled = true
 severity = "warning"
-[rule.default.generic]
+[rule.base.generic]
 severity = "info"
 
 [[rule.param]]
@@ -287,7 +269,6 @@ label = "Whole file"
 help = "The most triangles the whole file may have."
 
 [rule.app]
-variant = "TriangleBudget"
 element = "node"
 marker = "object"
 view = "triangle_density"
@@ -305,7 +286,7 @@ how = "Merge parts that share a material, and share materials between parts."
 [rule.default]
 enabled = true
 severity = "warning"
-[rule.default.generic]
+[rule.base.generic]
 severity = "info"
 
 [[rule.param]]
@@ -318,7 +299,6 @@ label = "Maximum"
 help = "The largest value that still passes."
 
 [rule.app]
-variant = "DrawCallBudget"
 element = "scene"
 marker = "object"
 view = "issues"
@@ -335,19 +315,13 @@ how = "Apply (freeze) the scale before export."
 [rule.default]
 enabled = true
 severity = "info"
-[rule.default.unity]
+[rule.base.unity]
 severity = "warning"
-
-# Worded for the unity base: chosen by the rules file's "base", not by the check.
-[rule.case.unity]
 why = "Unity carries the scale onto the imported object, so physics, effects and anything attached inherit it."
-
-# Worded for the unreal base: chosen by the rules file's "base", not by the check.
-[rule.case.unreal]
+[rule.base.unreal]
 why = "Unreal bakes or carries the scale depending on import settings, so the same file can arrive at different sizes."
 
 [rule.app]
-variant = "Scale"
 element = "node"
 marker = "object"
 view = "issues"
@@ -366,7 +340,6 @@ enabled = true
 severity = "warning"
 
 [rule.app]
-variant = "NegativeScale"
 element = "node"
 marker = "object"
 view = "issues"
@@ -383,11 +356,10 @@ how = "Freeze or apply the transforms and reset the pivot."
 [rule.default]
 enabled = true
 severity = "info"
-[rule.default.unity]
+[rule.base.unity]
 severity = "warning"
 
 [rule.app]
-variant = "Unfrozen"
 element = "node"
 marker = "object"
 view = "issues"
@@ -404,7 +376,7 @@ how = "Move the object back to the origin before export."
 [rule.default]
 enabled = true
 severity = "info"
-[rule.default.unreal]
+[rule.base.unreal]
 severity = "warning"
 
 [[rule.param]]
@@ -418,7 +390,6 @@ label = "Farthest from origin"
 help = "How far a top-level object's pivot may sit from the world origin."
 
 [rule.app]
-variant = "PivotOffset"
 element = "node"
 marker = "dot"
 view = "issues"
@@ -435,15 +406,21 @@ how = "Set the scene unit, or the export unit, to the engine's."
 [rule.default]
 enabled = true
 severity = "info"
-[rule.default.unreal]
+[rule.base.unity]
+why = "Unity works in meters. A file in another unit is scaled on import, which either changes its size or adds a scale to the object."
+[rule.base.unreal]
 severity = "warning"
 params = { target = 0.01 }
-[rule.default.generic]
+why = "Unreal works in centimeters. A file in another unit is scaled on import, which either changes its size or adds a scale to the object."
+[rule.base.generic]
 enabled = false
 
 [[rule.param]]
 key = "target"
-kind = "choice"
+kind = "number"
+unit = "m"
+min = 1e-6
+max = 1e6
 options = [
   { value = 1.0, label = "m" },
   { value = 0.01, label = "cm" },
@@ -456,16 +433,7 @@ default = 1.0
 label = "Target"
 help = "The value the file should have."
 
-# Worded for the unity base: chosen by the rules file's "base", not by the check.
-[rule.case.unity]
-why = "Unity works in meters. A file in another unit is scaled on import, which either changes its size or adds a scale to the object."
-
-# Worded for the unreal base: chosen by the rules file's "base", not by the check.
-[rule.case.unreal]
-why = "Unreal works in centimeters. A file in another unit is scaled on import, which either changes its size or adds a scale to the object."
-
 [rule.app]
-variant = "Unit"
 element = "scene"
 marker = "none"
 view = "issues"
@@ -482,38 +450,31 @@ how = "Export with the engine's up axis."
 [rule.default]
 enabled = true
 severity = "info"
-[rule.default.unity]
+[rule.base.unity]
 severity = "warning"
-[rule.default.unreal]
+why = "Unity is Y-up. A Z-up file is rotated on import, which leaves a rotation on the root object."
+[rule.base.unreal]
 params = { target = "positive_z" }
-[rule.default.generic]
+why = "Unreal is Z-up. A Y-up file is rotated on import, which can leave a rotation on the root object."
+[rule.base.generic]
 enabled = false
 
 [[rule.param]]
 key = "target"
 kind = "choice"
 options = [
-  { value = "positive_x", label = "+X" },
-  { value = "negative_x", label = "-X" },
   { value = "positive_y", label = "+Y" },
-  { value = "negative_y", label = "-Y" },
   { value = "positive_z", label = "+Z" },
+  { value = "positive_x", label = "+X" },
+  { value = "negative_y", label = "-Y" },
   { value = "negative_z", label = "-Z" },
+  { value = "negative_x", label = "-X" },
 ]
 default = "positive_y"
 label = "Target"
 help = "The value the file should have."
 
-# Worded for the unity base: chosen by the rules file's "base", not by the check.
-[rule.case.unity]
-why = "Unity is Y-up. A Z-up file is rotated on import, which leaves a rotation on the root object."
-
-# Worded for the unreal base: chosen by the rules file's "base", not by the check.
-[rule.case.unreal]
-why = "Unreal is Z-up. A Y-up file is rotated on import, which can leave a rotation on the root object."
-
 [rule.app]
-variant = "UpAxis"
 element = "scene"
 marker = "none"
 view = "issues"
@@ -522,6 +483,7 @@ view = "issues"
 id = "uv.missing"
 category = "uv"
 since = "0.9.0"
+name = "UvMissing"
 title = "Missing UVs"
 what = "Parts with no UVs, without UVs in a set the other parts fill, or with their sets in a different order."
 why = "Without UVs nothing can be textured. Parts with mismatched sets get the wrong UVs wherever they share a material or a lightmap."
@@ -530,11 +492,10 @@ how = "Unwrap the part, and give every part the same UV sets in the same order."
 [rule.default]
 enabled = true
 severity = "error"
-[rule.default.generic]
+[rule.base.generic]
 severity = "warning"
 
 [rule.app]
-variant = "UvMissing"
 element = "node"
 marker = "object"
 view = "issues"
@@ -543,6 +504,7 @@ view = "issues"
 id = "uv.out_of_range"
 category = "uv"
 since = "0.9.0"
+name = "UvOutOfRange"
 title = "UVs outside 0-1"
 what = "Faces whose UVs reach outside the 0 to 1 square."
 why = "Fine for tiling textures, but for a unique texture or a bake those faces read pixels that belong to something else."
@@ -553,7 +515,6 @@ enabled = true
 severity = "info"
 
 [rule.app]
-variant = "UvOutOfRange"
 element = "triangle"
 marker = "fill"
 view = "issues"
@@ -562,6 +523,7 @@ view = "issues"
 id = "uv.overlap"
 category = "uv"
 since = "0.9.0"
+name = "UvOverlap"
 title = "Overlapping UVs"
 what = "Faces of one material that share texture space."
 why = "Overlaps share pixels, which is fine for mirrored or stacked parts but breaks texture painting and baking, where each face needs its own."
@@ -582,7 +544,6 @@ label = "Raster size"
 help = "The texture size the UV layout is checked at, in pixels. Bigger is more exact and slower."
 
 [rule.app]
-variant = "UvOverlap"
 element = "triangle"
 marker = "fill"
 view = "issues"
@@ -591,6 +552,7 @@ view = "issues"
 id = "uv.flipped"
 category = "uv"
 since = "0.9.0"
+name = "UvFlipped"
 title = "Flipped UVs"
 what = "UV islands that are mirrored, and faces folded over inside their island."
 why = "Mirroring is a normal way to save texture space, but a normal map on a mirrored island needs tangents that agree with it, and a fold always shows as a seam."
@@ -601,7 +563,6 @@ enabled = true
 severity = "info"
 
 [rule.app]
-variant = "UvFlipped"
 element = "triangle"
 marker = "fill"
 view = "issues"
@@ -618,7 +579,11 @@ how = "Add a second UV set laid out for lightmaps."
 [rule.default]
 enabled = true
 severity = "info"
-[rule.default.generic]
+[rule.base.unity]
+why = "Unity can generate lightmap UVs on import, but hand-made ones pack better and bleed less."
+[rule.base.unreal]
+why = "Unreal generates lightmap UVs if there are none, but hand-made ones pack better and bleed less."
+[rule.base.generic]
 enabled = false
 
 [[rule.param]]
@@ -630,16 +595,7 @@ default = 1
 label = "UV set"
 help = "Which UV set holds the lightmap UVs, counting from 0."
 
-# Worded for the unity base: chosen by the rules file's "base", not by the check.
-[rule.case.unity]
-why = "Unity can generate lightmap UVs on import, but hand-made ones pack better and bleed less."
-
-# Worded for the unreal base: chosen by the rules file's "base", not by the check.
-[rule.case.unreal]
-why = "Unreal generates lightmap UVs if there are none, but hand-made ones pack better and bleed less."
-
 [rule.app]
-variant = "LightmapMissing"
 element = "node"
 marker = "object"
 view = "issues"
@@ -656,7 +612,7 @@ how = "Unwrap the lightmap UVs again so no two faces overlap."
 [rule.default]
 enabled = true
 severity = "warning"
-[rule.default.unreal]
+[rule.base.unreal]
 severity = "error"
 params = { resolution = 64 }
 
@@ -680,7 +636,6 @@ label = "Raster size"
 help = "The texture size the UV layout is checked at, in pixels. Bigger is more exact and slower."
 
 [rule.app]
-variant = "LightmapOverlap"
 element = "triangle"
 marker = "fill"
 view = "issues"
@@ -697,9 +652,9 @@ how = "Pack the lightmap UVs again with more spacing."
 [rule.default]
 enabled = true
 severity = "warning"
-[rule.default.unreal]
+[rule.base.unreal]
 params = { resolution = 64 }
-[rule.default.generic]
+[rule.base.generic]
 enabled = false
 severity = "info"
 
@@ -733,7 +688,6 @@ label = "Padding"
 help = "The smallest gap, in pixels at the raster size, allowed between two islands."
 
 [rule.app]
-variant = "LightmapPadding"
 element = "triangle"
 marker = "fill"
 view = "issues"
@@ -750,7 +704,7 @@ how = "Pack the lightmap UVs inside the square."
 [rule.default]
 enabled = true
 severity = "error"
-[rule.default.generic]
+[rule.base.generic]
 severity = "warning"
 
 [[rule.param]]
@@ -763,7 +717,6 @@ label = "UV set"
 help = "Which UV set holds the lightmap UVs, counting from 0."
 
 [rule.app]
-variant = "LightmapOutOfRange"
 element = "triangle"
 marker = "fill"
 view = "issues"
@@ -780,7 +733,11 @@ how = "Limit the influences per vertex to the engine's number and normalize the 
 [rule.default]
 enabled = true
 severity = "warning"
-[rule.default.generic]
+[rule.base.unity]
+why = "Unity keeps 4 bones per point by default and drops the lightest ones, so the mesh bends differently in the game."
+[rule.base.unreal]
+why = "Unreal keeps 8 bones per point by default and drops the lightest ones, so the mesh bends differently in the game."
+[rule.base.generic]
 severity = "info"
 
 [[rule.param]]
@@ -792,16 +749,7 @@ default = 4
 label = "Maximum"
 help = "The largest value that still passes."
 
-# Worded for the unity base: chosen by the rules file's "base", not by the check.
-[rule.case.unity]
-why = "Unity keeps 4 bones per point by default and drops the lightest ones, so the mesh bends differently in the game."
-
-# Worded for the unreal base: chosen by the rules file's "base", not by the check.
-[rule.case.unreal]
-why = "Unreal keeps 8 bones per point by default and drops the lightest ones, so the mesh bends differently in the game."
-
 [rule.app]
-variant = "Influences"
 element = "vertex"
 marker = "dot"
 view = "issues"
@@ -829,7 +777,6 @@ label = "Tolerance"
 help = "How far a value may be from what the check expects before it counts."
 
 [rule.app]
-variant = "UnnormalizedWeights"
 element = "vertex"
 marker = "dot"
 view = "issues"
@@ -846,6 +793,8 @@ how = "Split the mesh, or move weights onto fewer bones."
 [rule.default]
 enabled = true
 severity = "info"
+[rule.base.unreal]
+why = "On mobile, Unreal splits a mesh into sections of 75 bones or fewer, which costs extra draws."
 
 [[rule.param]]
 key = "max"
@@ -856,12 +805,7 @@ default = 80
 label = "Maximum"
 help = "The largest value that still passes."
 
-# Worded for the unreal base: chosen by the rules file's "base", not by the check.
-[rule.case.unreal]
-why = "On mobile, Unreal splits a mesh into sections of 75 bones or fewer, which costs extra draws."
-
 [rule.app]
-variant = "BonesPerMesh"
 element = "node"
 marker = "object"
 view = "issues"
@@ -880,7 +824,6 @@ enabled = true
 severity = "info"
 
 [rule.app]
-variant = "UnusedBones"
 element = "node"
 marker = "dot"
 view = "issues"
@@ -897,11 +840,10 @@ how = "Return the skeleton to its bind pose, or re-bind the skin, before export.
 [rule.default]
 enabled = true
 severity = "info"
-[rule.default.unreal]
+[rule.base.unreal]
 severity = "warning"
 
 [rule.app]
-variant = "BindPoseMismatch"
 element = "node"
 marker = "dot"
 view = "issues"
@@ -910,6 +852,7 @@ view = "issues"
 id = "density.texel"
 category = "density"
 since = "0.9.0"
+name = "TexelDensity"
 title = "Texel density"
 what = "Parts whose texture pixels per meter are far from the profile's target, for the texture size it names."
 why = "Parts sharpen or blur next to each other when their texel density differs, which reads as an inconsistent asset."
@@ -918,7 +861,7 @@ how = "Scale the part's UV islands towards the target density."
 [rule.default]
 enabled = true
 severity = "warning"
-[rule.default.generic]
+[rule.base.generic]
 severity = "info"
 
 [[rule.param]]
@@ -951,7 +894,6 @@ label = "Tolerance"
 help = "How far a value may be from what the check expects before it counts."
 
 [rule.app]
-variant = "TexelDensity"
 element = "node"
 marker = "object"
 view = "texel_density"
@@ -999,7 +941,6 @@ label = "Smallest screen size"
 help = "Parts that would only need a LOD below this screen size are not reported."
 
 [rule.app]
-variant = "TriangleLod"
 element = "node"
 marker = "object"
 view = "triangle_density"
@@ -1017,11 +958,10 @@ how = "Reduce the mesh, or move the fine detail into a normal map. The Opt works
 [rule.default]
 enabled = true
 severity = "warning"
-[rule.default.generic]
+[rule.base.generic]
 severity = "info"
 
 [rule.app]
-variant = "TriangleReduce"
 element = "node"
 marker = "object"
 view = "triangle_density"
@@ -1039,11 +979,10 @@ how = "Use only letters, digits, underscores, dashes and dots."
 [rule.default]
 enabled = true
 severity = "info"
-[rule.default.unreal]
+[rule.base.unreal]
 severity = "warning"
 
 [rule.app]
-variant = "InvalidCharacters"
 element = "node"
 marker = "object"
 view = "issues"
@@ -1052,6 +991,7 @@ view = "issues"
 id = "naming.pattern"
 category = "naming"
 since = "0.9.0"
+name = "NamePattern"
 title = "Naming convention"
 what = "Names that do not match the profile's patterns for their kind of object."
 why = "A shared naming convention is how a team and its tools find assets."
@@ -1104,7 +1044,6 @@ label = "Cameras"
 help = "Name patterns a camera must match. Leave empty for no rule."
 
 [rule.app]
-variant = "NamePattern"
 element = "node"
 marker = "object"
 view = "issues"
@@ -1121,19 +1060,14 @@ how = "Number the levels from _LOD0 up with no gaps, one part per level."
 [rule.default]
 enabled = true
 severity = "warning"
-[rule.default.generic]
+[rule.base.unity]
+why = "Unity builds a LOD group from these names on import; a broken chain imports the wrong levels or none."
+[rule.base.unreal]
+why = "Unreal builds a LOD group from these names on import; a broken chain imports the wrong levels or none."
+[rule.base.generic]
 severity = "info"
 
-# Worded for the unity base: chosen by the rules file's "base", not by the check.
-[rule.case.unity]
-why = "Unity builds a LOD group from these names on import; a broken chain imports the wrong levels or none."
-
-# Worded for the unreal base: chosen by the rules file's "base", not by the check.
-[rule.case.unreal]
-why = "Unreal builds a LOD group from these names on import; a broken chain imports the wrong levels or none."
-
 [rule.app]
-variant = "LodSuffix"
 element = "node"
 marker = "object"
 view = "issues"
@@ -1150,8 +1084,9 @@ how = "Rename the collision mesh after its render mesh, as UCX_<mesh>_01."
 [rule.default]
 enabled = true
 severity = "info"
-[rule.default.unreal]
+[rule.base.unreal]
 severity = "error"
+why = "Unreal attaches UCX_ collision to the mesh it names and drops one that names nothing, so the asset has no collision."
 
 [[rule.param]]
 key = "prefixes"
@@ -1160,12 +1095,7 @@ default = ["UCX_*", "UBX_*", "USP_*", "UCP_*"]
 label = "Collision prefixes"
 help = "Name patterns that mark a collision mesh. The rest of the name must be a render mesh's name."
 
-# Worded for the unreal base: chosen by the rules file's "base", not by the check.
-[rule.case.unreal]
-why = "Unreal attaches UCX_ collision to the mesh it names and drops one that names nothing, so the asset has no collision."
-
 [rule.app]
-variant = "CollisionPrefix"
 element = "node"
 marker = "object"
 view = "issues"
@@ -1182,9 +1112,10 @@ how = "Rename the asset with the right prefix."
 [rule.default]
 enabled = false
 severity = "info"
-[rule.default.unreal]
+[rule.base.unreal]
 enabled = true
 severity = "warning"
+why = "Unreal projects conventionally name static meshes SM_ and skeletal meshes SK_, so they sort and search by type."
 
 [[rule.param]]
 key = "static"
@@ -1200,12 +1131,7 @@ default = ["SK_*"]
 label = "Skinned meshes"
 help = "Name patterns a skinned mesh must match. Leave empty for no rule."
 
-# Worded for the unreal base: chosen by the rules file's "base", not by the check.
-[rule.case.unreal]
-why = "Unreal projects conventionally name static meshes SM_ and skeletal meshes SK_, so they sort and search by type."
-
 [rule.app]
-variant = "AssetPrefix"
 element = "node"
 marker = "object"
 view = "issues"
@@ -1231,7 +1157,6 @@ label = "Ignore"
 help = "Name patterns of empties that are there on purpose, such as sockets."
 
 [rule.app]
-variant = "EmptyNodes"
 element = "node"
 marker = "dot"
 view = "issues"
@@ -1248,11 +1173,10 @@ how = "Give each object a unique name."
 [rule.default]
 enabled = true
 severity = "warning"
-[rule.default.generic]
+[rule.base.generic]
 severity = "info"
 
 [rule.app]
-variant = "DuplicateNames"
 element = "node"
 marker = "object"
 view = "issues"
@@ -1271,7 +1195,6 @@ enabled = true
 severity = "info"
 
 [rule.app]
-variant = "MultipleRoots"
 element = "scene"
 marker = "object"
 view = "issues"
@@ -1288,11 +1211,10 @@ how = "Delete them, or leave them out of the export selection."
 [rule.default]
 enabled = true
 severity = "info"
-[rule.default.unity]
+[rule.base.unity]
 severity = "warning"
 
 [rule.app]
-variant = "LightsCameras"
 element = "node"
 marker = "dot"
 view = "issues"
@@ -1309,7 +1231,7 @@ how = "Combine materials into an atlas, or split the part."
 [rule.default]
 enabled = true
 severity = "warning"
-[rule.default.generic]
+[rule.base.generic]
 severity = "info"
 
 [[rule.param]]
@@ -1322,7 +1244,6 @@ label = "Maximum"
 help = "The largest value that still passes."
 
 [rule.app]
-variant = "MaterialsPerMesh"
 element = "node"
 marker = "object"
 view = "issues"
