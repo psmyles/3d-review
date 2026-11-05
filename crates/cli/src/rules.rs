@@ -1,10 +1,12 @@
-//! `3d-review-cli rules check` and `rules explain`: Asset Check's two commands
-//! for the technical artist who writes `rules.json` (AC9).
+//! `3d-review-cli rules check`, `rules explain` and `rules catalog`: Asset
+//! Check's commands for the technical artist who writes `rules.json` and the
+//! rules files (AC9).
 //!
-//! Both are `asset-rules`' own, so `fire-cli`'s `rules` commands say the same
-//! thing about the same file: `check` lists the problems in a configuration,
-//! and `explain` says which type, profile, stage and rules file apply to a file
-//! and why. What they print is that crate's text, in English, as a library's
+//! `check` and `explain` are `asset-rules`' own, so `fire-cli`'s `rules`
+//! commands say the same thing about the same file: `check` lists the problems
+//! in a configuration, and `explain` says which type, profile, stage and rules
+//! file apply to a file and why. `catalog` prints this tool's rules catalog,
+//! which Rule Editor reads. What they print is that crate's text, in English, as a library's
 //! diagnostics are (invariant 12): it quotes `rules.json`'s own fields, which
 //! are English too.
 //!
@@ -26,7 +28,15 @@ pub(crate) fn run(args: &RulesArgs) -> bool {
     match args {
         RulesArgs::Check { rules } => check(rules),
         RulesArgs::Explain { rules, files } => explain(rules, files),
+        RulesArgs::Catalog => catalog(),
     }
+}
+
+/// Every rule this tool checks, as JSON, with this tool's version.
+fn catalog() -> bool {
+    let json = review_audit::rule::catalog().to_json(&tool().version);
+    console::say(json.trim_end());
+    true
 }
 
 /// Load `path`, saying why when it cannot be - and, for a `rules.json` too new

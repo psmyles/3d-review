@@ -20,10 +20,11 @@ cli-help-usage-audit = 3d-review-cli audit <models or folders>... | --staged [op
 cli-help-usage-info = 3d-review-cli info <models or folders>... [options]
 cli-help-usage-rules-check = 3d-review-cli rules check <rules.json>
 cli-help-usage-rules-explain = 3d-review-cli rules explain <files>... --rules <rules.json>
+cli-help-usage-rules-catalog = 3d-review-cli rules catalog
 cli-help-command-optimize = Simplify models, make LODs and save them as FBX.
 cli-help-command-audit = Check models against an engine's rules, or against Asset Check's.
 cli-help-command-info = Show what a model holds: polygons, triangles, vertices and more.
-cli-help-command-rules = Check an Asset Check rules.json for mistakes, or show which of its rules apply to a file and why.
+cli-help-command-rules = Check an Asset Check rules.json for mistakes, show which of its rules apply to a file and why, or print every rule 3d-review-cli checks (rules catalog) as JSON for Rule Editor.
 
 # What an option takes, shown after it: `--out <folder>`.
 cli-help-value-folder = folder
@@ -72,8 +73,9 @@ cli-usage-needs-out = optimize needs --out, the folder the optimized models go i
 cli-usage-nothing-to-do = Say what to do to the models: --preset, --lods or --reduce.
 cli-usage-rules-and-profile = Give --rules or --profile, not both: with --rules, each model's profile comes from the rules.
 cli-usage-staged-and-models = --staged checks the models staged for the next commit, so give no models or --files-from with it.
-cli-usage-rules-no-command = Say what to do: rules check or rules explain.
-cli-usage-rules-unknown-command = There is no command rules { $command }. The commands are rules check and rules explain.
+cli-usage-rules-no-command = Say what to do: rules check, rules explain or rules catalog.
+cli-usage-rules-unknown-command = There is no command rules { $command }. The commands are rules check, rules explain and rules catalog.
+cli-usage-rules-catalog-alone = rules catalog takes no files and no --rules.
 cli-usage-rules-check-one = rules check takes one rules.json.
 cli-usage-rules-explain-needs-rules = rules explain needs --rules, the rules.json to explain from.
 cli-usage-rules-explain-no-files = Give at least one file for rules explain to explain.

@@ -69,7 +69,11 @@ impl CommandName {
             CommandName::Optimize => &[k::HELP_USAGE_OPTIMIZE],
             CommandName::Audit => &[k::HELP_USAGE_AUDIT],
             CommandName::Info => &[k::HELP_USAGE_INFO],
-            CommandName::Rules => &[k::HELP_USAGE_RULES_CHECK, k::HELP_USAGE_RULES_EXPLAIN],
+            CommandName::Rules => &[
+                k::HELP_USAGE_RULES_CHECK,
+                k::HELP_USAGE_RULES_EXPLAIN,
+                k::HELP_USAGE_RULES_CATALOG,
+            ],
         }
     }
 
@@ -114,6 +118,8 @@ pub(crate) enum RulesArgs {
     Check { rules: PathBuf },
     /// Which rules apply to each file, and why.
     Explain { rules: PathBuf, files: Vec<PathBuf> },
+    /// Every rule this tool checks, as JSON.
+    Catalog,
 }
 
 #[derive(Debug)]
@@ -571,7 +577,8 @@ fn parse_command(command: CommandName, args: Vec<OsString>) -> Result<Parsed, Us
     Ok(Parsed::Run(Run { common, command }))
 }
 
-/// `rules check <rules.json>` or `rules explain <files>... --rules <rules.json>`.
+/// `rules check <rules.json>`, `rules explain <files>... --rules <rules.json>`
+/// or `rules catalog`.
 /// The first word after `rules` says which, so it arrives as the first input.
 fn rules_args(given: &Given) -> Result<RulesArgs, String> {
     let Some((first, rest)) = given.inputs.split_first() else {
@@ -597,6 +604,10 @@ fn rules_args(given: &Given) -> Result<RulesArgs, String> {
                 files: rest.to_vec(),
             })
         }
+        "catalog" => match (rules, rest) {
+            (None, []) => Ok(RulesArgs::Catalog),
+            _ => Err(tr(k::USAGE_RULES_CATALOG_ALONE).into_owned()),
+        },
         other => Err(k::usage_rules_unknown_command(other.to_owned())),
     }
 }
@@ -1022,6 +1033,9 @@ mod tests {
                 files: vec![PathBuf::from("SM_Rock.fbx"), PathBuf::from("a/b.png")],
             }
         );
+        assert_eq!(rules("rules catalog"), RulesArgs::Catalog);
+        assert!(parse_line("rules catalog rules.json").is_err());
+        assert!(parse_line("rules catalog --rules rules.json").is_err());
         assert!(matches!(
             parse_line("rules explain --help"),
             Ok(Parsed::Help(Some(CommandName::Rules)))

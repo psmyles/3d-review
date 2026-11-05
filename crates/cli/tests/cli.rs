@@ -964,4 +964,13 @@ fn the_rules_commands_check_and_explain() {
 
     let output = project.cli(&["rules", "check", "rules/nowhere.json"]);
     assert_eq!(status(&output), 1);
+
+    // Every rule it checks, for Rule Editor.
+    let output = project.cli(&["rules", "catalog"]);
+    assert_eq!(status(&output), 0);
+    let catalog = asset_rules::catalog::Catalog::from_json(&stdout(&output)).expect("its JSON");
+    assert_eq!(catalog.tool, "3d-review-cli");
+    assert_eq!(catalog.rules.len(), 43);
+    assert_eq!(catalog.bases, ["unity", "unreal", "generic"]);
+    assert!(catalog.check(catalog.version.as_deref()).is_empty());
 }
