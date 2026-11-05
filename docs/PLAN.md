@@ -7,6 +7,8 @@
 - **B.1 is done**, and so are the **Windows** items: the step 0 baselines, the static CRT (FD20,
   recorded as D25), and the upgrade check, which includes a real upgrade over an installed 0.8.0.
 - **Still to do:** section 0 and B.2 on the Mac; B.3, which waits for fire-decode's first tag.
+- **A2, the rules catalog, is built on the branch `catalog`** (5 November) and waits for asset-rules
+  `v0.2.0`: below.
 
 The console tool was renamed from `review-cli` to **`3d-review-cli`** just before this work.
 
@@ -159,6 +161,39 @@ Decisions made while building it. `fire-cli` should match them:
   (GOTCHAS).
 - **The `--report` stays as it was**, plus `profile` / `profile_label` / `stage` / `stage_from` per
   entry with `--rules`, `cached` on a cache hit, and a top-level `rules`.
+
+## A2. The rules catalog - built on the branch `catalog`
+
+The rules repo's `docs/rule-editor-plan.md`, step 3: every rule is described once, in
+`rules-catalog.toml` at the repository root, so adding or changing one is easy and Rule Editor
+learns the rules from `3d-review-cli rules catalog`. 3D Review 0.9.0 ships with it.
+
+- **The catalog:** 43 rules in 7 categories; their parameters, defaults in each engine's set
+  (`unity`, `unreal`, `generic`), texts (name, what, why per engine, how), and in `[rule.app]` the
+  audit's own facts (element, marker, views).
+- **The audit's `build.rs`** has asset-rules check the catalog and generate `RuleId`, and adds the
+  facts and the parameter specs (the Aud editor's widgets). The rules leave `rule.rs`'s table,
+  `param_specs`, `builtin.rs` and `labels-audit.ftl`; the shared sentences around a rule's texts
+  ("Found 3 triangles in 2 objects.") stay Fluent.
+- **Profiles and rules files** are read as asset-rules' `Rule::settings` reads them for both
+  checkers. One change: a value out of range keeps its default, where it was clamped.
+- **`rules catalog`** prints the catalog; **`rules check`** reads each model rules file against it;
+  **`audit`** says, once per file, what a rules file sets that it passes over (it used to pass over
+  an unknown rule without a word).
+- **`rules.json` version 2:** models `check` and `skip` leave out are left out.
+
+*The gate:* each part was compared with the code it replaced before that was removed: the
+parameter specs of all 43 rules, every rule's defaults in all three engines, every rule's facts,
+and every text (only three parameter descriptions, rewritten in the catalog, differ). End to end,
+CrimeCrew's 281 models against its `rules.json` and each engine's defaults, and the 9 test models
+in each engine: the same results, reports and output before and after.
+
+**Still to do:** depend on asset-rules by tag `v0.2.0` once it's tagged, with `Cargo.lock`. Until
+then the branch builds against a local checkout, patched in on the command line:
+
+```sh
+cargo build --config "patch.'https://github.com/psmyles/asset-rules'.asset-rules.path='../asset-rules'"
+```
 
 ## B. The fire-decode migration: 3D Review's side, later
 

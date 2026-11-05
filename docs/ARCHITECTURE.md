@@ -660,22 +660,32 @@ and one that is not there renders as its alt text.
 
 The model audit behind the Aud workspace, as a pure library so `3d-review-cli audit`
 writes the same report the viewer does. `#![forbid(unsafe_code)]`; depends on
-`review-model`, `glam`, `serde` and `review-prof` — deliberately **not** on
-`review-optimize`, which is an FFI site the audit has no need of. It is
-**text-free**: rule ids, severities, measured values and skip reasons are typed,
-and `review-labels` turns them into catalog text.
+`review-model`, `glam`, `serde`, `review-prof` and `asset-rules` — deliberately
+**not** on `review-optimize`, which is an FFI site the audit has no need of. Its
+results are typed — rule ids, severities, measured values and skip reasons — and
+`review-labels` turns them into text. The one text it holds is the rules
+catalog's.
 
-- `rule.rs` — the `rules!` table: each `RuleId` with its stable wire name
-  (`"uv.overlap"`, pinned by a test, because saved profiles and reports key on
-  it), category, element kind and viewport marker; `Severity`;
-  `DiagnosticView`, `related_view` and `see_also`.
+- **The rules catalog,** `rules-catalog.toml` at the repository root (asset-rules'
+  format), is the one description of every rule: id, category, the release it
+  came in, its parameters (kind, limits, label), its defaults in each engine's
+  set, its texts (name, what, why per engine, how), and in `[rule.app]` the
+  audit's own facts (element kind, marker, views). `build.rs` has asset-rules
+  check it and generate `RuleId` (in catalog order) from it, and adds those facts
+  and the parameter specs. A rule added to the catalog fails the build until its
+  check exists in `checks/`. `3d-review-cli rules catalog` prints it.
+- `rule.rs` — `RuleId` (generated), with its stable wire name (`"uv.overlap"`,
+  pinned by a test, because saved profiles and reports key on it), category,
+  element kind, viewport marker, `related_view` and `see_also`; `Severity`;
+  `DiagnosticView`.
 - `finding.rs` — `Status`, `Measured`, `Threshold`, `Offender` (a node, an exact
   count and the elements as triangles / edges / vertices / points, capped at
   `ELEMENT_CAP` with `truncated` set), `RuleResult`, `AuditSummary`,
   `AuditReport`.
-- `profile/` — `AuditProfile` (built-in Unity / Unreal / Generic, editable),
-  the parameter specs the Inspector edits, `sanitize`, and the versioned JSON
-  envelope.
+- `profile/` — `AuditProfile` (built-in Unity / Unreal / Generic, editable, the
+  catalog's defaults), the parameter specs the Inspector edits (generated from
+  the catalog), `sanitize`, and the versioned JSON envelope, read as asset-rules'
+  `Rule::settings` reads a rules file for both checkers.
 - `checks/` — one file per category. Work is per node and merged in node order,
   so a report does not depend on the thread count. Each result keeps a
   `measure_key` of the parameters that change what it *measures*; `run` given
@@ -1070,11 +1080,13 @@ Its rules files are ordinary audit profiles, so the viewer's editor writes them.
   cache); then the loads and audits on up to four workers, each model's lines
   held and said in the models' order, so output, report and results do not
   depend on which finished first.
-- `results.rs` — Asset Check's results: a finding per failing check, with
-  `review-labels`' name / what / why / fix text and the profile's `note`.
+- `results.rs` — Asset Check's results: a finding per failing check, with the
+  catalog's name / what / why / how text (through `review-labels`) and the
+  profile's `note`.
 - `staged.rs` — `--staged`: the staged `.fbx` files, through `asset-rules`' git
   helpers.
-- `rules.rs` — `rules check` / `rules explain`, `asset-rules`' own, and the
+- `rules.rs` — `rules check` / `rules explain`, `asset-rules`' own (`check` also
+  reads the model rules files against the catalog), `rules catalog`, and the
   repository context resolution reads.
 - `info.rs` — the stats card's counts.
 - `report.rs` — the `--report` document: flat run-wide counts for a tool's

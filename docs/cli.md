@@ -18,6 +18,7 @@ link into the app.
 3d-review-cli info     <models or folders>... [options]
 3d-review-cli rules check <rules.json>
 3d-review-cli rules explain <files>... --rules <rules.json>
+3d-review-cli rules catalog
 3d-review-cli --version | --help | <command> --help
 ```
 
@@ -338,13 +339,18 @@ Without `--rules`, results are written all the same, for a tool showing a
 `advise`, and `rules.digest` is the profile file's (a built-in's saved form for a
 built-in).
 
-### rules check and rules explain
+### rules check, rules explain and rules catalog
 
 For the technical artist. `rules check` lists the problems in a `rules.json` -
 an unknown type, stage or tool, a stage with no rules file, a rules file that is
 not there, an invalid or never-matching pattern, a duplicate id, an unknown field
-- one per line, and exits 1 if there is any, warnings included, so a CI step can
-stop on it. `rules explain` says, for each file given, which type, profile, stage
+- and in each model rules file it names, read against 3d-review-cli's rules
+catalog: a rule 3d-review-cli doesn't have, a parameter of the wrong kind or out
+of range, a field it doesn't know (`fire-cli` checks the texture rules files).
+One per line, and it exits 1 if there is any, warnings included, so a CI step can
+stop on it. `rules catalog` prints every rule 3d-review-cli checks - its
+category, parameters, defaults per engine and texts - as JSON, with the tool's
+version, for Rule Editor. `rules explain` says, for each file given, which type, profile, stage
 and rules file apply to it and why, or which patterns it was tried against and
 did not match; the files need not exist. Their text is `asset-rules`', in English.
 
