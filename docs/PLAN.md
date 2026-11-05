@@ -112,8 +112,8 @@ loading (`docs/cli.md`).
 - **Dependency:** `asset-rules` by git tag `v0.1.0` (done). The repository's own
   `.cargo/config.toml` is committed now (the static CRT), so a local patch for unreleased
   asset-rules goes in a `.cargo/config.toml` one folder up, beside both checkouts (`docs/cli.md`).
-  The same applies to fire, whose `.cargo/config.toml` is tracked too. asset-rules' README and fire's
-  plan still say "an untracked `.cargo/config.toml`".
+  The same applies to fire, whose `.cargo/config.toml` is tracked too. asset-rules' README and plan,
+  fire's plan and fire-decode's plan now say the same (5 November 2026).
 
 *Done when* Asset Check step 2's gate passes for this half:
 - it gives the same file the same profile and stage as `fire-cli`;
@@ -121,10 +121,17 @@ loading (`docs/cli.md`).
 - a commit with typical models is checked quickly, and almost instantly when cached.
 
 **Done, 4 November 2026, on Windows.** The gate:
-- **Same profile and stage:** `fire-cli` doesn't exist yet. Both resolve through asset-rules'
-  `resolve`, and `rules_give_each_model_the_profile_and_stage_asset_rules_resolves` checks every
-  file's `profile` / `stage` / `stage_from` against `resolve` directly, on `main` (from the branch)
-  and on a feature branch (from the profile, and from the project).
+- **Same profile and stage:** both resolve through asset-rules' `resolve`, and
+  `rules_give_each_model_the_profile_and_stage_asset_rules_resolves` checks every file's `profile` /
+  `stage` / `stage_from` against `resolve` directly, on `main` (from the branch) and on a feature
+  branch (from the profile, and from the project).
+  - **Checked against `fire-cli` end to end** on Windows on 5 November 2026, with both release builds
+    in one scratch repository (fixture `rules.json`, four models, three textures).
+  - **`rules explain`:** identical output from both tools for every file, on `main`, `proto/x`, a
+    feature branch and a detached HEAD.
+  - **`--staged`:** both gave the same profile, stage and `stage_from` on new staged files.
+  - **The one difference was expected:** `3d-review-cli` added a run-level `tool.too_old` warning,
+    because it still reports 0.8.0 and the fixtures require 0.9.0.
 - **Valid results:** every results test reads its file back through `asset_rules::results::Results::read`,
   which refuses anything not shaped as `asset-check.results` v1. asset-rules has no separate JSON
   Schema file to validate against.
