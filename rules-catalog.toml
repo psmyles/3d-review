@@ -472,7 +472,7 @@ options = [
 ]
 default = "positive_y"
 label = "Target"
-help = "The value the file should have."
+help = "The axis files should have pointing up: +Y for Unity, +Z for Unreal."
 
 [rule.app]
 element = "scene"
@@ -882,7 +882,7 @@ min = 1.0
 max = 100000.0
 default = 1024.0
 label = "Target"
-help = "The value the file should have."
+help = "The density each part should be close to, in texture pixels per meter at the texture size above."
 
 [[rule.param]]
 key = "tolerance"
