@@ -29,7 +29,7 @@ Two designs touch this repository:
 **Priority: Asset Check first.** Order across repositories:
 1. `asset-rules` - its `docs/PLAN.md`;
 2. this repo's A-items, alongside fire's `fire-cli`;
-3. the Launcher's results table;
+3. the Launcher's results table (done), then Asset Check's rules repo;
 4. the migration.
 
 ## 0. Check the rename on the Mac first
