@@ -17,9 +17,9 @@ Two designs touch this repository:
 - **Asset Check** checks art assets committed to a Unity project against a technical artist's rules,
   and shows artists what is wrong, why, and how to fix it. 3D Review's part: `3d-review-cli` checks the
   models.
-  - Design: `asset-check-plan.md` in [psmyles/fire-decode](https://github.com/psmyles/fire-decode)
-    (private; it moves to the rules repo later). Decisions are numbered AC1-AC19; this repo's changes
-    are AC13.
+  - Design: `docs/asset-check-plan.md` in the rules repo,
+    [SandboxVR/exp-content-rules](https://github.com/SandboxVR/exp-content-rules) (private).
+    Decisions are numbered AC1-AC19; this repo's changes are AC13.
 - **The fire-decode migration** makes fire-decode the decoder shared by fire, 3D Review and bite. 3D
   Review then decodes its textures through it (`texture()`), replacing `crates/render/src/texture.rs`'s
   decode paths and `crates/psd`.
@@ -249,6 +249,7 @@ and `DllCanUnloadNow` present), and the CLI checks a model.
 - [`docs/cli.md`](cli.md): the CLI reference.
 - [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) and [`docs/GOTCHAS.md`](GOTCHAS.md): the committed project
   rules.
-- In psmyles/fire-decode: `asset-check-plan.md` (AC13 is this repo) and `fire-decode-plan.md` (step 4
-  is this repo).
-- `docs/PLAN.md` in psmyles/asset-rules, psmyles/fire and psmyles/launcher.
+- `docs/asset-check-plan.md` in SandboxVR/exp-content-rules (AC13 is this repo).
+- `fire-decode-plan.md` in psmyles/fire-decode (step 4 is this repo).
+- `docs/PLAN.md` in psmyles/asset-rules, psmyles/fire, psmyles/launcher and
+  SandboxVR/exp-content-rules.

@@ -1041,8 +1041,8 @@ pipelines and Launcher. It links the libraries the viewer's Opt and Aud
 workspaces call — `import`, `optimize`, `audit`, `labels` — and nothing that
 draws, so a run measures and writes exactly what the viewer would, with no GPU.
 
-It is also Asset Check's model checker (`asset-check-plan.md` AC13 in
-psmyles/fire-decode): `audit --rules / --results / --staged` and the `rules`
+It is also Asset Check's model checker (`asset-check-plan.md` AC13, in
+the rules repository): `audit --rules / --results / --staged` and the `rules`
 command. Everything about *which* rules apply to a file — `rules.json`, its
 resolution, the results format, the git helpers, the cache — is the external
 `asset-rules` crate, by git tag, shared with `fire-cli`, so the two checkers

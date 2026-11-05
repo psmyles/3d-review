@@ -229,8 +229,8 @@ CI, and shows the artist what is wrong, why, and how to fix it. `fire-cli` check
 the images and `3d-review-cli` the models. Both decide which rules apply to a file
 through one shared crate, [`asset-rules`](https://github.com/psmyles/asset-rules),
 so they always give a file the same answer, and both write one results format.
-The design is `asset-check-plan.md` in psmyles/fire-decode; this tool's part is
-its AC13.
+The design is `asset-check-plan.md` in the rules repository; this tool's part
+is its AC13.
 
 ### --rules
 
