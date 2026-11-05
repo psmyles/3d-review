@@ -24,7 +24,7 @@ cli-help-usage-rules-catalog = 3d-review-cli rules catalog
 cli-help-command-optimize = Simplify models, make LODs and save them as FBX.
 cli-help-command-audit = Check models against an engine's rules, or against Asset Check's.
 cli-help-command-info = Show what a model holds: polygons, triangles, vertices and more.
-cli-help-command-rules = Check an Asset Check rules.json for mistakes, show which of its rules apply to a file and why, or print every rule 3d-review-cli checks (rules catalog) as JSON for Rule Editor.
+cli-help-command-rules = Check an Asset Check rules.json and its model rules files for mistakes, show which of its rules apply to a file and why, or print every rule 3d-review-cli checks (rules catalog) as JSON for Rule Editor.
 
 # What an option takes, shown after it: `--out <folder>`.
 cli-help-value-folder = folder
@@ -121,6 +121,8 @@ cli-audit-start = { $count ->
        *[other] Checking { $count } models against the { $profile } profile.
     }
 cli-audit-profile-unreadable = Couldn't read the audit profile { $file }: { $reason }
+# Heads the lines saying what a rules file or profile sets that 3d-review-cli can't use.
+cli-audit-passed-over = { $file }: 3d-review-cli passes over what it can't use here, and goes by the defaults instead:
 cli-audit-failed = Couldn't check { $file }: { $problem }
 cli-audit-done = Done: { $done } checked, { $failed } didn't work.
 cli-audit-flagged = { $count ->

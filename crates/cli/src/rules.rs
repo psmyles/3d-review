@@ -4,9 +4,10 @@
 //!
 //! `check` and `explain` are `asset-rules`' own, so `fire-cli`'s `rules`
 //! commands say the same thing about the same file: `check` lists the problems
-//! in a configuration, and `explain` says which type, profile, stage and rules
-//! file apply to a file and why. `catalog` prints this tool's rules catalog,
-//! which Rule Editor reads. What they print is that crate's text, in English, as a library's
+//! in a configuration, and in the model rules files it names read against this
+//! tool's catalog (`fire-cli` checks the texture rules files); `explain` says
+//! which type, profile, stage and rules file apply to a file and why. `catalog`
+//! prints this tool's rules catalog, which Rule Editor reads. What they print is that crate's text, in English, as a library's
 //! diagnostics are (invariant 12): it quotes `rules.json`'s own fields, which
 //! are English too.
 //!
@@ -59,7 +60,8 @@ fn check(path: &Path) -> bool {
             return false;
         }
     };
-    let problems = rules.check();
+    let mut problems = rules.check();
+    problems.extend(rules.check_rules_files(review_audit::rule::catalog()));
     for problem in &problems {
         console::say(&problem.to_string());
     }

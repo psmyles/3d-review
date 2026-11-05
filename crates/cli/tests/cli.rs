@@ -965,6 +965,38 @@ fn the_rules_commands_check_and_explain() {
     let output = project.cli(&["rules", "check", "rules/nowhere.json"]);
     assert_eq!(status(&output), 1);
 
+    // The model rules files are read against 3d-review-cli's catalog: a
+    // misspelt rule is an error for rules check, and a warning for audit,
+    // which passes it over.
+    project.write(
+        "rules/models/environment.json",
+        br#"{ "version": 1, "profile": { "name": "Environment", "rules": {
+              "geometry.ngon": { "severity": "error" } } } }"#,
+    );
+    let output = project.cli(&["rules", "check", "rules/rules.json"]);
+    assert_eq!(status(&output), 1);
+    assert!(
+        stdout(&output).contains(
+            r#"error: models/environment.json rules["geometry.ngon"]: 3d-review-cli has no rule "geometry.ngon""#
+        ),
+        "{}",
+        stdout(&output)
+    );
+    if let Some(cube) = cube() {
+        project.copy(&cube, "Assets/Environment/SM_Rock.fbx");
+        let output = project.cli(&[
+            "audit",
+            "Assets/Environment/SM_Rock.fbx",
+            "--rules",
+            "rules/rules.json",
+            "--fail-on",
+            "never",
+        ]);
+        let said = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(said.contains("passes over what it can't use"), "{said}");
+        assert!(said.contains("geometry.ngon"), "{said}");
+    }
+
     // Every rule it checks, for Rule Editor.
     let output = project.cli(&["rules", "catalog"]);
     assert_eq!(status(&output), 0);

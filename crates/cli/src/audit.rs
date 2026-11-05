@@ -405,6 +405,7 @@ fn resolve_profile(choice: &ProfileChoice) -> Result<(AuditProfile, String), Str
             let json = String::from_utf8_lossy(&bytes);
             let profile = envelope::from_json(&json)
                 .map_err(|error| unreadable(explain_audit_error(&error)))?;
+            warn_passed_over(path, &json);
             Ok((profile, sha256(&bytes)))
         }
     }
@@ -818,11 +819,26 @@ fn load_rules_file(path: &Path) -> Result<RulesFile, String> {
     let json = std::fs::read_to_string(path).map_err(|error| unreadable(error.to_string()))?;
     let profile =
         envelope::from_json(&json).map_err(|error| unreadable(explain_audit_error(&error)))?;
+    warn_passed_over(path, &json);
     let digest = digest_file(path).map_err(|error| unreadable(error.to_string()))?;
     Ok(RulesFile {
         profile: Arc::new(profile),
         digest,
     })
+}
+
+/// Says what a rules file or profile sets that this tool can't use - a rule it
+/// doesn't have, a value of the wrong kind or out of range - which it passed
+/// over for the defaults. Once per file: each is read once a run.
+fn warn_passed_over(path: &Path, json: &str) {
+    let problems = envelope::problems(json);
+    if problems.is_empty() {
+        return;
+    }
+    console::warn(&k::audit_passed_over(path.display().to_string()));
+    for problem in problems {
+        console::warn(&format!("  {problem}"));
+    }
 }
 
 /// How results name a model: by its repository path, with `/` separators, or
