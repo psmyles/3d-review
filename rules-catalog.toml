@@ -431,7 +431,7 @@ options = [
 ]
 default = 1.0
 label = "Target"
-help = "The value the file should have."
+help = "The unit files should be in, as meters per unit: 1 is meters, 0.01 is centimeters."
 
 [rule.app]
 element = "scene"
