@@ -48,6 +48,10 @@ fn main() {
             .to_owned()
     };
     let name = text(&product, "productName");
+    println!(
+        "cargo:rustc-env=REVIEW_VERSION={}",
+        text(&product, "version")
+    );
     let shell = product
         .get("shellExtension")
         .unwrap_or_else(|| panic!("{PRODUCT_JSON} has no `shellExtension`"));

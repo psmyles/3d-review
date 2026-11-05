@@ -9,12 +9,34 @@ use std::path::{Path, PathBuf};
 /// language and flags: meshoptimizer is exception-free C++ and ufbx_write is C.
 /// One build cannot compile both correctly.
 fn main() {
+    product();
     println!("cargo:rustc-check-cfg=cfg(has_meshopt)");
     println!("cargo:rustc-check-cfg=cfg(has_ufbxw)");
     println!("cargo:rustc-check-cfg=cfg(has_ufbxw_probe)");
 
     build_meshoptimizer();
     build_ufbx_write();
+}
+
+/// The product's name and version, from `product.json` (the one place they're set), for the
+/// `generator` line of saved presets and the application fields of exported FBX files.
+fn product() {
+    const PRODUCT_JSON: &str = "../../product.json";
+    println!("cargo:rerun-if-changed={PRODUCT_JSON}");
+    let product: serde_json::Value = std::fs::read_to_string(PRODUCT_JSON)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_else(|| panic!("{PRODUCT_JSON} must parse"));
+    for (var, key) in [
+        ("REVIEW_PRODUCT", "productName"),
+        ("REVIEW_VERSION", "version"),
+    ] {
+        let value = product
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| panic!("{PRODUCT_JSON} has no `{key}`"));
+        println!("cargo:rustc-env={var}={value}");
+    }
 }
 
 fn build_meshoptimizer() {

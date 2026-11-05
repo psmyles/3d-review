@@ -1,10 +1,9 @@
 //! Generates the typed message keys of `cli.ftl` (invariant 12), and hands the
 //! product version to the binary.
 //!
-//! The version comes from `product.json`, the one place a version is edited,
-//! rather than from this crate's manifest: the release scripts write it into
-//! `crates/app/Cargo.toml` and nowhere else, and `--version` and every report
-//! have to name the build the viewer beside it is.
+//! The version comes from `product.json`, the one place a version is set (no
+//! crate manifest carries one): `--version` and every report have to name the
+//! build the viewer beside it is.
 
 use std::path::PathBuf;
 

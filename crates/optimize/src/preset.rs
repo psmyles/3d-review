@@ -32,7 +32,11 @@ struct Preset {
 pub fn to_json(stack: &OptStack) -> Result<String, OptError> {
     let preset = Preset {
         version: PRESET_VERSION,
-        generator: format!("3D Review optimize v{}", env!("CARGO_PKG_VERSION")),
+        generator: format!(
+            "{} optimize v{}",
+            env!("REVIEW_PRODUCT"),
+            env!("REVIEW_VERSION")
+        ),
         stack: stack.clone(),
     };
     serde_json::to_string_pretty(&preset).map_err(|error| OptError::Preset(error.to_string()))

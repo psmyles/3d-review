@@ -30,10 +30,18 @@ fn main() {
         panic!("localization catalog: {error}");
     }
 
-    let name = std::fs::read_to_string(PRODUCT_JSON)
+    let product = std::fs::read_to_string(PRODUCT_JSON)
         .ok()
         .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-        .and_then(|product| product.get("productName")?.as_str().map(str::to_owned))
-        .unwrap_or_else(|| panic!("{PRODUCT_JSON} must name the product"));
-    println!("cargo:rustc-env=REVIEW_PRODUCT={name}");
+        .unwrap_or_else(|| panic!("{PRODUCT_JSON} must parse"));
+    for (var, key) in [
+        ("REVIEW_PRODUCT", "productName"),
+        ("REVIEW_VERSION", "version"),
+    ] {
+        let value = product
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("{PRODUCT_JSON} has no `{key}`"));
+        println!("cargo:rustc-env={var}={value}");
+    }
 }

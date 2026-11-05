@@ -71,7 +71,11 @@ struct RuleIn {
 pub fn to_json(profile: &AuditProfile) -> Result<String, AuditError> {
     let envelope = EnvelopeOut {
         version: PROFILE_VERSION,
-        generator: format!("3D Review audit v{}", env!("CARGO_PKG_VERSION")),
+        generator: format!(
+            "{} audit v{}",
+            env!("REVIEW_PRODUCT"),
+            env!("REVIEW_VERSION")
+        ),
         profile,
     };
     serde_json::to_string_pretty(&envelope).map_err(|error| AuditError::Profile(error.to_string()))

@@ -55,18 +55,6 @@ fn main() {
     println!("cargo:rustc-env=REVIEW_VERSION={}", product.version);
     println!("cargo:rustc-env=REVIEW_COPYRIGHT={}", product.copyright);
 
-    // The crate version (from Cargo.toml) and product.json must agree; warn loudly
-    // if they drift so the exe, the bundle and the installer never disagree.
-    if let Ok(crate_version) = std::env::var("CARGO_PKG_VERSION")
-        && crate_version != product.version
-    {
-        println!(
-            "cargo:warning=version mismatch: product.json is {} but \
-             crates/app/Cargo.toml is {crate_version} — keep them in sync",
-            product.version
-        );
-    }
-
     // The homepage the Help window links to, so the one place it is written is
     // `product.json` alongside the name and version.
     println!("cargo:rustc-env=REVIEW_HOMEPAGE={}", product.homepage);

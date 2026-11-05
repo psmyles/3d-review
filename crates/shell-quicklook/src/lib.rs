@@ -60,7 +60,7 @@ fn initialize_once() {
         review_localization::init(None);
         log::info!(
             "{PRODUCT} Quick Look extension {} loaded into process {}",
-            env!("CARGO_PKG_VERSION"),
+            env!("REVIEW_VERSION"),
             std::process::id()
         );
     });

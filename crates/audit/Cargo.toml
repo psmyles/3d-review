@@ -16,6 +16,10 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
 
+[build-dependencies]
+# build.rs reads the product's name and version from ../../product.json.
+serde_json.workspace = true
+
 [dev-dependencies]
 # The fixture suite audits real FBX files. Test-only: the engine itself takes a
 # `ModelData` from anywhere, so the batch CLI and an Opt-output audit can share it.

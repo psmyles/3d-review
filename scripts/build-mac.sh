@@ -15,10 +15,9 @@
 # keychain: the "Developer ID Application" identity, and the `notarytool` profile named
 # below. Neither is ever passed on a command line, and neither lives in the repo.
 #
-# It edits two tracked files: like the Windows installer script, it writes
-# product.json's version into crates/app/Cargo.toml and refreshes Cargo.lock before
-# building, so neither can drift from the version the app and the bundle report.
-# Everything else it writes goes to target/ and dist/.
+# It edits no tracked files: everything it writes goes to target/ and dist/. The
+# version comes from product.json, the only place it's set; the crates' build.rs files
+# read the same file.
 #
 # Options
 #   --sign-id <identity>       codesign identity; default is the "Developer ID
@@ -174,44 +173,7 @@ thumbnails="$(ls "$repo/assets/thumbnails"/T_HDR_*.png 2>/dev/null | wc -l | tr 
 echo "  $(ls "$baked"/T_IBL_*.bin | wc -l | tr -d ' ') baked IBL maps, $thumbnails HDR thumbnails"
 
 # ---------------------------------------------------------------------------------------------
-# 2. Sync the crate version to product.json
-# ---------------------------------------------------------------------------------------------
-# `product.json` is the single source of the version, but nothing in a `cargo build`
-# reads it into the manifest — crates/app/build.rs only *warns* when the two disagree,
-# in a `cargo:warning` that scrolls past. So the release syncs it, exactly as the
-# Windows installer script does.
-#
-# Cargo.lock records the member's version too, and is committed. `cargo update
-# --workspace` re-resolves the workspace members *only*, so the lock picks the new
-# version up while every registry dependency stays pinned exactly as it was — which a
-# bare `cargo generate-lockfile` would not guarantee. Deliberately not `--offline`: on
-# a machine whose registry cache is cold that would fail here, before the build that
-# would have populated it.
-
-say "syncing crates/app/Cargo.toml version to $version"
-app_toml="$repo/crates/app/Cargo.toml"
-current="$(sed -n -E 's/^version[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p' "$app_toml" | head -1)"
-[[ -n $current ]] || die "no version found in $app_toml"
-if [[ "$current" == "$version" ]]; then
-    echo "  already in sync."
-else
-    sed -i '' -E "s/^version[[:space:]]*=[[:space:]]*\"[^\"]*\"/version = \"$version\"/" "$app_toml"
-    echo "  updated: $current -> $version."
-    [[ $do_build -eq 1 ]] || echo "  note: --no-build, so target/ still holds a $current binary."
-fi
-
-# Run it unconditionally: the manifest can already be in sync while the lock is not
-# (someone edited Cargo.toml by hand), and with both in sync it is a no-op.
-cargo update --manifest-path "$repo/Cargo.toml" --workspace --quiet \
-    || die "could not refresh Cargo.lock for version $version"
-lock_version="$(awk '/^name = "review-app"$/ { getline; print }' "$repo/Cargo.lock" \
-    | sed -n -E 's/^version = "([^"]*)".*/\1/p' | head -1)"
-[[ "$lock_version" == "$version" ]] \
-    || die "Cargo.lock still records review-app $lock_version, not $version"
-echo "  Cargo.lock: review-app $lock_version."
-
-# ---------------------------------------------------------------------------------------------
-# 3. Build
+# 2. Build
 # ---------------------------------------------------------------------------------------------
 
 if [[ $do_build -eq 1 ]]; then
@@ -231,7 +193,7 @@ archs="$(lipo -archs "$bin")"
 [[ "$(lipo -archs "$cli")" == *arm64* ]] || die "3d-review-cli is not arm64"
 
 # ---------------------------------------------------------------------------------------------
-# 4. The icon
+# 3. The icon
 # ---------------------------------------------------------------------------------------------
 # `assets/mac_icon/icon.icon` is an Icon Composer document (layers, fill, specular, the
 # Liquid Glass treatment), and `actool` is what compiles one. It writes two things: the
@@ -260,7 +222,7 @@ car="$tmp/icon/Assets.car"
 echo "  Assets.car — $(stat -f%z "$car") bytes, $icon_name.icns — $(stat -f%z "$icns") bytes"
 
 # ---------------------------------------------------------------------------------------------
-# 5. The bundle
+# 4. The bundle
 # ---------------------------------------------------------------------------------------------
 
 app="$repo/target/$name.app"
@@ -377,7 +339,7 @@ plutil -lint "$app/Contents/Info.plist" >/dev/null || die "generated Info.plist 
 echo "  $app (.$file_ext as \"$file_type_name\")"
 
 # ---------------------------------------------------------------------------------------------
-# 6. Sign
+# 5. Sign
 # ---------------------------------------------------------------------------------------------
 
 if [[ $do_sign -eq 1 ]]; then
@@ -417,7 +379,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------------------------
-# 7. Notarize the app
+# 6. Notarize the app
 # ---------------------------------------------------------------------------------------------
 # Stapling the *app* as well as the .dmg matters: a stapled ticket is what lets it
 # launch on a Mac that is offline or behind a filter. Without it Gatekeeper has to
@@ -436,7 +398,7 @@ if [[ $do_notarize -eq 1 ]]; then
 fi
 
 # ---------------------------------------------------------------------------------------------
-# 8. The disk image
+# 7. The disk image
 # ---------------------------------------------------------------------------------------------
 
 if [[ $do_dmg -eq 0 ]]; then
@@ -475,7 +437,7 @@ if [[ $do_notarize -eq 1 ]]; then
 fi
 
 # ---------------------------------------------------------------------------------------------
-# 9. Verify what actually ships
+# 8. Verify what actually ships
 # ---------------------------------------------------------------------------------------------
 
 if [[ $do_sign -eq 1 ]]; then
