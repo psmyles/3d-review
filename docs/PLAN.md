@@ -56,7 +56,7 @@ The rename was made and tested on Windows, where the macOS code could only be co
 - **Release notes for the next version** announce the rename. Release 3D Review before the next
   Launcher release, whose 3D Review add-on now looks only for `3d-review-cli`.
   - The next version is **0.9.0**: asset-rules' fixtures already ask for `3d-review-cli` 0.9.0.
-    `product.json` still says 0.8.0.
+    `product.json` and `crates/app/Cargo.toml` say 0.9.0.
   - A draft, for the release page:
 
     > **The console tool is now `3d-review-cli`** (it was `review-cli` up to 0.8.0). Scripts and
