@@ -1,21 +1,21 @@
-//! `3d-review-cli`: the Opt and Aud workspaces' work from a terminal, a script or
+//! `review3d-cli`: the Opt and Aud workspaces' work from a terminal, a script or
 //! Launcher, without opening the viewer.
 //!
 //! ```text
-//! 3d-review-cli optimize <models or folders>... --out <folder> [--preset <file>]
+//! review3d-cli optimize <models or folders>... --out <folder> [--preset <file>]
 //!            [--lods <ratios>|none] [--reduce <ratio>]
 //!            [--packaging single-file|file-per-lod] [--hierarchy rebuild|flat]
 //!            [--format binary|ascii] [--suffix <text>] [--if-exists fail|skip|replace]
 //!            [--replace-models]
-//! 3d-review-cli audit <models or folders>... | --staged
+//! review3d-cli audit <models or folders>... | --staged
 //!            [--profile unity|unreal|generic|<file> | --rules <rules.json>]
 //!            [--fail-on error|warning|info|never] [--results <file.json>]
-//! 3d-review-cli info <models or folders>...
+//! review3d-cli info <models or folders>...
 //!     every model command: [--files-from <list>] [--recurse] [--report <file.json>]
 //!            [--progress-bar auto|on|off]
-//! 3d-review-cli rules check <rules.json>
-//! 3d-review-cli rules explain <files>... --rules <rules.json>
-//! 3d-review-cli --version | --help | <command> --help
+//! review3d-cli rules check <rules.json>
+//! review3d-cli rules explain <files>... --rules <rules.json>
+//! review3d-cli --version | --help | <command> --help
 //! ```
 //!
 //! `--rules`, `--results`, `--staged` and the `rules` command are Asset

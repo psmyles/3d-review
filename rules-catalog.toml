@@ -1,4 +1,4 @@
-# 3D Review's rules catalog: every check 3d-review-cli runs, with its texts, settings and the
+# 3D Review's rules catalog: every check review3d-cli runs, with its texts, settings and the
 # defaults of each engine's built-in set. Format: "The catalog file (format 1)" in
 # SandboxVR/exp-content-rules, docs/rule-editor-plan.md.
 #
@@ -6,7 +6,7 @@
 # crates/localization/locales/en/labels-audit.ftl. The code doesn't read it yet.
 
 catalog = 1
-tool = "3d-review-cli"
+tool = "review3d-cli"
 bases = ["unity", "unreal", "generic"]
 
 [[category]]

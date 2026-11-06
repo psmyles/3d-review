@@ -1321,7 +1321,17 @@ loaded rather than blaming the stack for the triangles.
 
 ## Tools and builds
 
-### 3d-review-cli compares files by identity, not by spelling
+### A command name must not start with a digit
+
+PowerShell tokenizes `3d-review-cli` as the number `3d` (`d` is its decimal
+suffix) followed by an operator, and fails with `Unexpected token '-review'` -
+with or without `.exe`, and on the PATH or not. Only `& '3d-review-cli'` or a
+path (`.\3d-review-cli`) ran it. That is why the console tool became
+`review3d-cli` before 0.9.0 shipped; the viewer's `3d-review.exe` is started by
+Explorer and Finder, not typed, so it kept its name. Any new executable a user is
+meant to type gets a name that starts with a letter.
+
+### review3d-cli compares files by identity, not by spelling
 
 `inputs::identity` makes a path absolute, canonicalizes the longest part that
 exists and appends the rest, and folds case on Windows and macOS. Comparing
@@ -1341,7 +1351,7 @@ from Windows.
 It can land one unit in the last place away from the number it read. The
 `--staged` cache stores each model's findings as JSON and hands them back as the
 next run's results, so a cached run's figures differed from the fresh run's in
-their last digit (`0.9209926312659023` against `...024`) until `3d-review-cli`
+their last digit (`0.9209926312659023` against `...024`) until `review3d-cli`
 switched on serde_json's `float_roundtrip`. Anything that writes a value as JSON
 and compares or republishes what it reads back needs the same feature.
 

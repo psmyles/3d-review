@@ -1,5 +1,5 @@
 ### The audit's typed values, as every surface that prints them names them: the
-### viewer's Aud workspace and `3d-review-cli audit` alike (`crates/labels`).
+### viewer's Aud workspace and `review3d-cli audit` alike (`crates/labels`).
 ###
 ### Every check has four messages - its name, what it checks, why it matters
 ### (worded per target engine through `$engine`: unity, unreal or generic), and a
@@ -88,7 +88,7 @@ labels-audit-value-at-most = at most { $value }
 labels-audit-value-at-least = at least { $value }
 
 ## What a failing check found, with its figures: the "what" of a finding in Asset
-## Check's results (`3d-review-cli audit --results`). It follows the check's own
+## Check's results (`review3d-cli audit --results`). It follows the check's own
 ## "-what" sentence. `$count` is how many triangles, edges or vertices it found and
 ## `$objects` how many objects they are in; `$measured` is the figure measured and
 ## `$limit`, `$min`, `$max` and `$target` the profile's limit, each with its unit.

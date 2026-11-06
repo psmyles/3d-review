@@ -1,4 +1,4 @@
-//! Putting the bundled `3d-review-cli` on the PATH (see [`crate::install_cli`]).
+//! Putting the bundled `review3d-cli` on the PATH (see [`crate::install_cli`]).
 //!
 //! The .dmg is drag-to-install and runs nothing, so unlike Setup's Add to PATH
 //! task on Windows this is the app's own job: the application menu's Install
@@ -9,17 +9,19 @@
 //!
 //! The link points into the bundle rather than at a copy, so it updates with the
 //! app. It also breaks if the app is moved, which [`crate::cli_install_offered`]
-//! then reports at the next launch. `3d-review-cli` reads nothing from beside its own
+//! then reports at the next launch. `review3d-cli` reads nothing from beside its own
 //! executable, so being started through a link changes nothing for it.
 //!
-//! Up to 0.8.0 the CLI was `review-cli`, linked as [`crate::RETIRED_CLI_LINK`]. That
-//! link dangles once the app updates, so installing removes it too - but only
-//! when it points into an app bundle; anything else there is another program's.
+//! The CLI was `review-cli` up to 0.8.0 and `3d-review-cli` in 0.9.0's pre-release
+//! builds ([`crate::RETIRED_CLI_NAMES`]), each linked beside [`crate::CLI_LINK`] under
+//! its own name. Such a link dangles once the app updates, so installing removes it
+//! too - but only when it points into an app bundle; anything else there is another
+//! program's.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::{CLI_LINK, CLI_NAME, CliInstallError, RETIRED_CLI_LINK};
+use crate::{CLI_LINK, CLI_NAME, CliInstallError, RETIRED_CLI_NAMES};
 
 /// The CLI inside the running bundle, or `None` when this is not a bundled build:
 /// a bare `cargo run` binary has nothing beside it worth linking.
@@ -38,7 +40,7 @@ fn bundled_cli() -> Option<PathBuf> {
     (in_bundle && cli.is_file()).then_some(cli)
 }
 
-/// Whether a shell would find a `3d-review-cli` command.
+/// Whether a shell would find a `review3d-cli` command.
 ///
 /// An app started from Finder inherits launchd's PATH rather than the shell's, so
 /// the PATH it sees misses `/usr/local/bin` and Homebrew's folder; those are
@@ -75,9 +77,9 @@ pub(crate) fn install(prompt: &str) -> Result<PathBuf, CliInstallError> {
         return Err(CliInstallError::Occupied);
     }
 
-    let retire = retired_link_present();
-    if link_directly(&cli, link, retire).is_err() {
-        link_as_administrator(&cli, retire, prompt)?;
+    let retire = retired_links();
+    if link_directly(&cli, link, &retire).is_err() {
+        link_as_administrator(&cli, &retire, prompt)?;
     }
     match std::fs::canonicalize(link) {
         Ok(target) if target == cli => Ok(cli),
@@ -87,18 +89,26 @@ pub(crate) fn install(prompt: &str) -> Result<PathBuf, CliInstallError> {
     }
 }
 
-/// Whether [`RETIRED_CLI_LINK`] is the link an install up to 0.8.0 made.
-fn retired_link_present() -> bool {
-    std::fs::read_link(RETIRED_CLI_LINK).is_ok_and(|target| is_retired_target(&target))
+/// The links beside [`CLI_LINK`] that an earlier install made under one of the
+/// [`RETIRED_CLI_NAMES`].
+fn retired_links() -> Vec<PathBuf> {
+    let directory = Path::new(CLI_LINK).parent().unwrap_or(Path::new("/"));
+    RETIRED_CLI_NAMES
+        .iter()
+        .map(|name| directory.join(name))
+        .filter(|link| std::fs::read_link(link).is_ok_and(|target| is_retired_target(&target)))
+        .collect()
 }
 
-/// Whether a link target is the old CLI inside an app bundle:
-/// `<something>.app/Contents/MacOS/review-cli`.
+/// Whether a link target is an old CLI inside an app bundle:
+/// `<something>.app/Contents/MacOS/review-cli`, or `3d-review-cli`.
 fn is_retired_target(target: &Path) -> bool {
     let Some(directory) = target.parent() else {
         return false;
     };
-    target.file_name().is_some_and(|name| name == "review-cli")
+    target
+        .file_name()
+        .is_some_and(|name| RETIRED_CLI_NAMES.iter().any(|old| name == *old))
         && directory.ends_with("Contents/MacOS")
         && directory
             .parent()
@@ -107,14 +117,14 @@ fn is_retired_target(target: &Path) -> bool {
             .is_some_and(|extension| extension == "app")
 }
 
-fn link_directly(cli: &Path, link: &Path, retire: bool) -> std::io::Result<()> {
+fn link_directly(cli: &Path, link: &Path, retire: &[PathBuf]) -> std::io::Result<()> {
     std::fs::create_dir_all(link.parent().unwrap_or(Path::new("/")))?;
     let _ = std::fs::remove_file(link);
     std::os::unix::fs::symlink(cli, link)?;
-    if retire {
+    for old in retire {
         // The same folder as the new link, so writable if that was; a failure
         // leaves nothing worse than the dangling link that was already there.
-        let _ = std::fs::remove_file(RETIRED_CLI_LINK);
+        let _ = std::fs::remove_file(old);
     }
     Ok(())
 }
@@ -125,14 +135,17 @@ fn link_directly(cli: &Path, link: &Path, retire: bool) -> std::io::Result<()> {
 ///
 /// A separate process, so the prompt's modal loop is not ours — but it blocks
 /// until answered, which is why `app` calls this from a worker thread.
-fn link_as_administrator(cli: &Path, retire: bool, prompt: &str) -> Result<(), CliInstallError> {
+fn link_as_administrator(
+    cli: &Path,
+    retire: &[PathBuf],
+    prompt: &str,
+) -> Result<(), CliInstallError> {
     let directory = Path::new(CLI_LINK).parent().unwrap_or(Path::new("/"));
-    // Both link paths are constants with no characters the shell would read.
-    let retire = if retire {
-        format!(" && /bin/rm -f {RETIRED_CLI_LINK}")
-    } else {
-        String::new()
-    };
+    // Every link path is built from constants with no characters the shell would read.
+    let retire: String = retire
+        .iter()
+        .map(|old| format!(" && /bin/rm -f {}", old.display()))
+        .collect();
     let script = format!(
         "do shell script \"/bin/mkdir -p {directory} && /bin/ln -sfn \" & quoted form of \"{cli}\" \
          & \" {CLI_LINK}{retire}\" with prompt \"{prompt}\" with administrator privileges",
@@ -179,8 +192,11 @@ mod tests {
         assert!(retired(
             "/Applications/3D Review.app/Contents/MacOS/review-cli"
         ));
-        assert!(!retired(
+        assert!(retired(
             "/Applications/3D Review.app/Contents/MacOS/3d-review-cli"
+        ));
+        assert!(!retired(
+            "/Applications/3D Review.app/Contents/MacOS/review3d-cli"
         ));
         assert!(!retired("/opt/homebrew/bin/review-cli"));
         assert!(!retired("/Users/me/tools/Contents/MacOS/review-cli"));

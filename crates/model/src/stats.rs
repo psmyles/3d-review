@@ -14,7 +14,7 @@ use crate::*;
 /// What the Opt workspace's overfetch figure is measured against: meshoptimizer
 /// reports "bytes fetched / vertex buffer size", which describes the asset's
 /// real cost only when given the size an engine would fetch. Here rather than
-/// in `render` so a caller with no renderer - `3d-review-cli` - measures the same
+/// in `render` so a caller with no renderer - `review3d-cli` - measures the same
 /// figure the viewer shows; `render` pins its own vertex layout against it.
 pub const ENGINE_VERTEX_BYTES: usize = 64;
 

@@ -1,4 +1,4 @@
-//! `3d-review-cli info`: what each model holds, as the stats card shows it.
+//! `review3d-cli info`: what each model holds, as the stats card shows it.
 //!
 //! The source's own counts (invariant 5): polygons, triangles and vertices as
 //! the DCC counts them, and GPU vertices as an engine would build them - never

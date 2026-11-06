@@ -15,7 +15,7 @@ use asset_rules::results::{
 use asset_rules::{Resolution, Rules, StageFrom};
 use serde_json::Value;
 
-const BINARY: &str = env!("CARGO_BIN_EXE_3d-review-cli");
+const BINARY: &str = env!("CARGO_BIN_EXE_review3d-cli");
 
 fn run(args: &[&str]) -> Output {
     Command::new(BINARY)
@@ -113,7 +113,7 @@ fn a_command_line_it_cannot_follow_exits_2_and_runs_nothing() {
 fn version_and_help_exit_0() {
     let version = run(&["--version"]);
     assert_eq!(status(&version), 0);
-    assert!(stdout(&version).starts_with("3d-review-cli "));
+    assert!(stdout(&version).starts_with("review3d-cli "));
     let main = run(&["--help"]);
     assert_eq!(status(&main), 0);
     assert!(stdout(&main).contains("optimize"));
@@ -466,7 +466,7 @@ const RULES_JSON: &str = r#"{
   "branches": [{ "pattern": "main", "stage": "production" }],
   "types": {
     "texture": { "tool": "fire-cli", "extensions": ["png"] },
-    "model": { "tool": "3d-review-cli", "extensions": ["fbx"] }
+    "model": { "tool": "review3d-cli", "extensions": ["fbx"] }
   },
   "profiles": [
     { "id": "environment-prop", "type": "model", "label": "Environment prop",
@@ -862,7 +862,7 @@ fn a_tool_older_than_the_rules_ask_says_what_to_update() {
     let project = Project::new("too-old");
     let newer = RULES_JSON.replace(
         r#""mode": "advise","#,
-        r#""mode": "advise", "requires": { "3d-review-cli": "99.0.0" },"#,
+        r#""mode": "advise", "requires": { "review3d-cli": "99.0.0" },"#,
     );
     project.write("rules/rules.json", newer.as_bytes());
     project.copy(&cube, "Assets/Environment/SM_Rock.fbx");
@@ -965,7 +965,7 @@ fn the_rules_commands_check_and_explain() {
     let output = project.cli(&["rules", "check", "rules/nowhere.json"]);
     assert_eq!(status(&output), 1);
 
-    // The model rules files are read against 3d-review-cli's catalog: a
+    // The model rules files are read against review3d-cli's catalog: a
     // misspelt rule is an error for rules check, and a warning for audit,
     // which passes it over.
     project.write(
@@ -977,7 +977,7 @@ fn the_rules_commands_check_and_explain() {
     assert_eq!(status(&output), 1);
     assert!(
         stdout(&output).contains(
-            r#"error: models/environment.json rules["geometry.ngon"]: 3d-review-cli has no rule "geometry.ngon""#
+            r#"error: models/environment.json rules["geometry.ngon"]: review3d-cli has no rule "geometry.ngon""#
         ),
         "{}",
         stdout(&output)
@@ -1001,7 +1001,7 @@ fn the_rules_commands_check_and_explain() {
     let output = project.cli(&["rules", "catalog"]);
     assert_eq!(status(&output), 0);
     let catalog = asset_rules::catalog::Catalog::from_json(&stdout(&output)).expect("its JSON");
-    assert_eq!(catalog.tool, "3d-review-cli");
+    assert_eq!(catalog.tool, "review3d-cli");
     assert_eq!(catalog.rules.len(), 43);
     assert_eq!(catalog.bases, ["unity", "unreal", "generic"]);
     assert!(catalog.check(catalog.version.as_deref()).is_empty());

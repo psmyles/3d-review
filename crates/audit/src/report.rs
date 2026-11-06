@@ -48,7 +48,7 @@ pub fn to_json(
 }
 
 /// [`to_json`]'s document as a value, for a caller that carries it inside a
-/// document of its own - `3d-review-cli`'s run report holds one per model.
+/// document of its own - `review3d-cli`'s run report holds one per model.
 pub fn to_value(
     report: &AuditReport,
     model: &ModelData,

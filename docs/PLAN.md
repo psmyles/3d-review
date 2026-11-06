@@ -9,14 +9,16 @@
 - **Still to do:** section 0 and B.2 on the Mac; B.3, which waits for fire-decode's first tag.
 - **A2, the rules catalog, is done** (5 November): below. It depends on asset-rules `v0.2.0`.
 
-The console tool was renamed from `review-cli` to **`3d-review-cli`** just before this work.
+The console tool was renamed from `review-cli` to `3d-review-cli` just before this work, and to
+**`review3d-cli`** on 6 November, before 0.9.0 shipped: PowerShell reads a command that starts
+`3d` as the number 3 (`docs/GOTCHAS.md`).
 
 ## Context
 
 Two designs touch this repository:
 
 - **Asset Check** checks art assets committed to a Unity project against a technical artist's rules,
-  and shows artists what is wrong, why, and how to fix it. 3D Review's part: `3d-review-cli` checks the
+  and shows artists what is wrong, why, and how to fix it. 3D Review's part: `review3d-cli` checks the
   models.
   - Design: `docs/asset-check-plan.md` in the rules repo,
     [SandboxVR/exp-content-rules](https://github.com/SandboxVR/exp-content-rules) (private).
@@ -38,44 +40,44 @@ Two designs touch this repository:
 The rename was made and tested on Windows, where the macOS code could only be compiled with
 `cargo clippy --target aarch64-apple-darwin`, not run.
 
-- **Bundle:** `scripts/build-mac.sh` produces `3D Review.app/Contents/MacOS/3d-review-cli`, signed.
+- **Bundle:** `scripts/build-mac.sh` produces `3D Review.app/Contents/MacOS/review3d-cli`, signed.
   `scripts/dev-app.sh` copies it into a development bundle.
 - **Install Command Line Tool** (`crates/shell-macos/src/cli_install.rs`):
-  - it creates `/usr/local/bin/3d-review-cli`;
+  - it creates `/usr/local/bin/review3d-cli`;
   - it removes an old `/usr/local/bin/review-cli` **only** when that link points into an app bundle.
 
   To test the removal, first make the old link by hand, e.g.
   `ln -s "/Applications/3D Review.app/Contents/MacOS/review-cli" /usr/local/bin/review-cli`. Try it both
   with and without the administrator prompt.
-- **The launch notice** appears while no `3d-review-cli` is reachable.
+- **The launch notice** appears while no `review3d-cli` is reachable.
 - **`scripts/check.sh` passes.** This now includes A's tests, which make git repositories under
   `target/tmp` and run the CLI in them: `--staged`, the cache, `--rules` on two branches, and the
   `rules` commands. Only Windows has run them so far.
-- **The bundle's `3d-review-cli` runs from a hook:** `audit --staged --rules ...` in a project
+- **The bundle's `review3d-cli` runs from a hook:** `audit --staged --rules ...` in a project
   repository, started by `git commit`. Hooks there get a minimal `PATH`, so this checks that `git`
   is found (AC19).
 - **Release notes for the next version** announce the rename. Release 3D Review before the next
-  Launcher release, whose 3D Review add-on now looks only for `3d-review-cli`.
-  - The next version is **0.9.0**: asset-rules' fixtures already ask for `3d-review-cli` 0.9.0.
+  Launcher release, whose 3D Review add-on now looks only for `review3d-cli`.
+  - The next version is **0.9.0**: asset-rules' fixtures already ask for `review3d-cli` 0.9.0.
     `product.json` says 0.9.0, the only place the version is set.
   - A draft, for the release page:
 
-    > **The console tool is now `3d-review-cli`** (it was `review-cli` up to 0.8.0). Scripts and
+    > **The console tool is now `review3d-cli`** (it was `review-cli` up to 0.8.0). Scripts and
     > Launcher tools that call it by the old name need the new one. Setup removes the old
     > `review-cli.exe` from the install folder. On macOS, **Install Command Line Tool...** removes an
     > old `/usr/local/bin/review-cli` link into the app.
     >
-    > **Asset Check.** `3d-review-cli audit` can check models against a technical artist's
+    > **Asset Check.** `review3d-cli audit` can check models against a technical artist's
     > `rules.json` (`--rules`): each model's profile and stage come from its name, its folder and the
     > branch. `--results` writes what is wrong, why it matters and how to fix it, with the figures.
     > `--staged` checks what is staged for a commit, and caches it. `--files-from` reads models from a
     > list, and `rules check` / `rules explain` help whoever writes the rules. Profile files take a
     > `note` on each check, and a hand-written one needs only the checks it changes.
     >
-    > **No Visual C++ runtime needed.** 3D Review, `3d-review-cli` and the Explorer extension no
+    > **No Visual C++ runtime needed.** 3D Review, `review3d-cli` and the Explorer extension no
     > longer need the Visual C++ redistributable installed.
 
-## A. Asset Check: `3d-review-cli` changes (AC13)
+## A. Asset Check: `review3d-cli` changes (AC13)
 
 The CLI's existing conventions stay: exit codes 0 / 1 / 2, an atomic `--report`, and lenient profile
 loading (`docs/cli.md`).
@@ -131,7 +133,7 @@ loading (`docs/cli.md`).
   - **`rules explain`:** identical output from both tools for every file, on `main`, `proto/x`, a
     feature branch and a detached HEAD.
   - **`--staged`:** both gave the same profile, stage and `stage_from` on new staged files.
-  - **The one difference was expected:** `3d-review-cli` added a run-level `tool.too_old` warning,
+  - **The one difference was expected:** `review3d-cli` added a run-level `tool.too_old` warning,
     because it still reports 0.8.0 and the fixtures require 0.9.0.
 - **Valid results:** every results test reads its file back through `asset_rules::results::Results::read`,
   which refuses anything not shaped as `asset-check.results` v1. asset-rules has no separate JSON
@@ -165,7 +167,7 @@ Decisions made while building it. `fire-cli` should match them:
 
 The rules repo's `docs/rule-editor-plan.md`, step 3: every rule is described once, in
 `rules-catalog.toml` at the repository root, so adding or changing one is easy and Rule Editor
-learns the rules from `3d-review-cli rules catalog`. 3D Review 0.9.0 ships with it.
+learns the rules from `review3d-cli rules catalog`. 3D Review 0.9.0 ships with it.
 
 - **The catalog:** 43 rules in 7 categories; their parameters, defaults in each engine's set
   (`unity`, `unreal`, `generic`), texts (name, what, why per engine, how), and in `[rule.app]` the
@@ -216,10 +218,10 @@ It depends on asset-rules `v0.2.0`, tagged 5 November 2026.
   install folder, so verify it.
   - **The directive works.** A throwaway installer was built with Inno Setup 6, carrying only that
     entry (no uninstaller, no registry). Run over a folder holding a `review-cli.exe` and another
-    file, it removed `review-cli.exe`, kept the other file, and installed `3d-review-cli.exe`.
+    file, it removed `review-cli.exe`, kept the other file, and installed `review3d-cli.exe`.
   - **The real upgrade works** (2026-11-04). The new Setup was run over a per-user 0.8.0 install
     with the associate, shellext and addtopath tasks. `review-cli.exe` is gone and
-    `3d-review-cli.exe` is in its place. The installed `3d-review-cli` lists the new `rules`
+    `review3d-cli.exe` is in its place. The installed `review3d-cli` lists the new `rules`
     command. Every other file is kept, including `review-comments.exe`, which Setup does not
     ship. The tasks, the PATH entry and the Explorer `InprocServer32` paths are unchanged.
     None of the installed binaries imports `VCRUNTIME140*`, `MSVCP140` or `api-ms-win-crt-*`.
@@ -237,7 +239,7 @@ Imports are read with `llvm-readobj --coff-imports`.
 | Binary | DLL runtime (before FD20) | Static CRT (after) |
 | --- | --- | --- |
 | `3d-review.exe` | 20,253,184 bytes | 20,561,408 (+308 KB) |
-| `3d-review-cli.exe` | 4,336,128 | 4,602,368 (+266 KB) |
+| `review3d-cli.exe` | 4,336,128 | 4,602,368 (+266 KB) |
 | `review_shell.dll` | 7,953,408 | 8,196,096 (+243 KB) |
 
 Import tables before FD20:
@@ -245,7 +247,7 @@ Import tables before FD20:
   the OS DLLs: ADVAPI32, GDI32, KERNEL32, USER32, `api-ms-win-core-synch-l1-2-0`,
   bcryptprimitives, combase, d3d11, dbghelp, dwmapi, imm32, ntdll, ole32, oleaut32, secur32,
   shell32, shlwapi, uxtheme, ws2_32.
-- `3d-review-cli.exe`: `VCRUNTIME140`, `VCRUNTIME140_1`, eight `api-ms-win-crt-*` sets, KERNEL32,
+- `review3d-cli.exe`: `VCRUNTIME140`, `VCRUNTIME140_1`, eight `api-ms-win-crt-*` sets, KERNEL32,
   advapi32, `api-ms-win-core-synch-l1-2-0`, bcryptprimitives, ntdll.
 - `review_shell.dll`: `VCRUNTIME140`, `VCRUNTIME140_1`, five `api-ms-win-crt-*` sets, advapi32,
   `api-ms-win-core-synch-l1-2-0`, bcryptprimitives, combase, d3d11, dbghelp, gdi32, kernel32,

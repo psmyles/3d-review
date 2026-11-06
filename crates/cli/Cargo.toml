@@ -14,7 +14,7 @@ publish = false
 # the operation stack, the export, the audit - so it links no GPU, no window and
 # no egui, and a run measures exactly what the viewer would.
 [[bin]]
-name = "3d-review-cli"
+name = "review3d-cli"
 path = "src/main.rs"
 
 [dependencies]

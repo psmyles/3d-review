@@ -1,5 +1,5 @@
 //! The macOS shell leaves: Launch Services opens (D14), the menu bar (D15), and
-//! putting the bundled `3d-review-cli` on the PATH.
+//! putting the bundled `review3d-cli` on the PATH.
 //!
 //! Its own crate rather than a module of `review-app` for the same reason
 //! `review-psd` and `render`'s `rhi/backend/` are separate: the open hook needs
@@ -40,7 +40,7 @@ pub enum MenuCommand {
     About,
     /// App → Remember Settings.
     ToggleRememberSettings,
-    /// App → Install Command Line Tool…: link `3d-review-cli` onto the PATH. The one
+    /// App → Install Command Line Tool…: link `review3d-cli` onto the PATH. The one
     /// entry with no toolbar counterpart — Setup does this on Windows, and only the
     /// macOS .dmg has no installer to do it (see [`install_cli`]).
     InstallCommandLineTool,
@@ -133,21 +133,23 @@ pub fn install_menu_bar(
 }
 
 /// What the bundled command-line tool is called, inside the bundle and on the PATH.
-pub const CLI_NAME: &str = "3d-review-cli";
+pub const CLI_NAME: &str = "review3d-cli";
 
 /// Where [`install_cli`] puts the link: on the default PATH of every macOS shell,
 /// and on Apple silicon not Homebrew's folder, so it collides with nothing.
-pub const CLI_LINK: &str = "/usr/local/bin/3d-review-cli";
+pub const CLI_LINK: &str = "/usr/local/bin/review3d-cli";
 
-/// The link an install up to 0.8.0 made, when the CLI was `review-cli`. [`install_cli`]
-/// removes it when it points into an app bundle, since it dangles after an update.
-pub const RETIRED_CLI_LINK: &str = "/usr/local/bin/review-cli";
+/// What the CLI was called before, each once linked beside [`CLI_LINK`] under its own
+/// name: `review-cli` up to 0.8.0, and `3d-review-cli` in 0.9.0's pre-release builds.
+/// [`install_cli`] removes such a link when it points into an app bundle, since it
+/// dangles after an update.
+pub const RETIRED_CLI_NAMES: &[&str] = &["review-cli", "3d-review-cli"];
 
 /// Why [`install_cli`] did not put the CLI on the PATH. Typed, so `app` words it
 /// from the catalog; only [`CliInstallError::Failed`] carries a diagnostic.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliInstallError {
-    /// This is not a packaged build — no `.app` with a `3d-review-cli` inside it.
+    /// This is not a packaged build — no `.app` with a `review3d-cli` inside it.
     NotBundled,
     /// The app is running from the disk image or a quarantined (translocated)
     /// copy, so a link into it would stop working.
@@ -161,7 +163,7 @@ pub enum CliInstallError {
 }
 
 /// Whether to suggest installing the CLI: this is a packaged build and no
-/// `3d-review-cli` is reachable from a shell (including a link a moved app left
+/// `review3d-cli` is reachable from a shell (including a link a moved app left
 /// dangling). Only touches the filesystem, so it is cheap enough for startup.
 ///
 /// Always `false` off macOS, where Setup's PATH task is how it gets there.
@@ -176,13 +178,14 @@ pub fn cli_install_offered() -> bool {
     false
 }
 
-/// Link [`CLI_LINK`] to the `3d-review-cli` inside the running bundle, asking for an
+/// Link [`CLI_LINK`] to the `review3d-cli` inside the running bundle, asking for an
 /// administrator password — with `prompt` as the reason the system's dialog
 /// gives — when the folder is not writable. Returns the CLI the link points at.
 ///
 /// **Blocks** while the password prompt is up, so call it from a worker thread.
-/// Reinstalling over an earlier link is fine; a real file there is refused. An
-/// old [`RETIRED_CLI_LINK`] into an app bundle is removed in the same step.
+/// Reinstalling over an earlier link is fine; a real file there is refused. A link
+/// under one of the [`RETIRED_CLI_NAMES`] into an app bundle is removed in the same
+/// step.
 #[cfg(target_os = "macos")]
 pub fn install_cli(prompt: &str) -> Result<PathBuf, CliInstallError> {
     cli_install::install(prompt)

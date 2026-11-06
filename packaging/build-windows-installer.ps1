@@ -19,7 +19,7 @@
          are also include_bytes!'d, so they must be current before the build).
          The freshness gate keeps this a fast no-op unless a source HDR or the IBL
          precompute code changed; an actual re-bake needs a GPU.
-      6. cargo build --release -p review-app, and the 3d-review-cli console tool
+      6. cargo build --release -p review-app, and the review3d-cli console tool
       7. Verifies the committed shader bytecode matches the shader beside it.
       8. Checks the built exe is there, locates ISCC.exe (Inno Setup 6) and
          compiles packaging\3d-review.iss, passing product metadata as /D defines.
@@ -109,7 +109,7 @@ if (-not $SkipBuild) {
         # The console tool (docs\cli.md), installed beside the viewer: the Opt and Aud
         # workspaces for scripts, pipelines and Launcher.
         & cargo build --release -p review-cli
-        if ($LASTEXITCODE -ne 0) { throw "cargo build of 3d-review-cli failed (exit $LASTEXITCODE)." }
+        if ($LASTEXITCODE -ne 0) { throw "cargo build of review3d-cli failed (exit $LASTEXITCODE)." }
         # The Explorer thumbnail + preview extension, with its own profile: release,
         # but unwinding on panic, since it runs inside processes Explorer owns.
         & cargo build --profile release-shell -p review-shell-windows
@@ -149,9 +149,9 @@ $exePath = Join-Path $repoRoot "target\release\$appExe"
 if (-not (Test-Path $exePath)) {
     throw "Release exe not found at $exePath. Run without -SkipBuild, or build first."
 }
-$cliPath = Join-Path $repoRoot 'target\release\3d-review-cli.exe'
+$cliPath = Join-Path $repoRoot 'target\release\review3d-cli.exe'
 if (-not (Test-Path $cliPath)) {
-    throw "3d-review-cli.exe not found at $cliPath. Run without -SkipBuild, or build first."
+    throw "review3d-cli.exe not found at $cliPath. Run without -SkipBuild, or build first."
 }
 $shellPath = Join-Path $repoRoot 'target\release-shell\review_shell.dll'
 if (-not (Test-Path $shellPath)) {

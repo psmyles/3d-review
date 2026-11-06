@@ -1,8 +1,8 @@
-//! Everything `3d-review-cli` prints, and the progress bar.
+//! Everything `review3d-cli` prints, and the progress bar.
 //!
 //! Lines go out whole: results on standard output, problems on standard error.
 //! A write that fails is ignored rather than allowed to end the run - a reader
-//! that stops reading (`3d-review-cli info models | head -1`, a tool that closes
+//! that stops reading (`review3d-cli info models | head -1`, a tool that closes
 //! its end) must not cost the models still to be done, nor abort before the
 //! report is written.
 //!

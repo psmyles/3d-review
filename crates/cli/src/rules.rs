@@ -1,4 +1,4 @@
-//! `3d-review-cli rules check`, `rules explain` and `rules catalog`: Asset
+//! `review3d-cli rules check`, `rules explain` and `rules catalog`: Asset
 //! Check's commands for the technical artist who writes `rules.json` and the
 //! rules files (AC9).
 //!

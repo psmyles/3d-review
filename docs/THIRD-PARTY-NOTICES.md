@@ -428,9 +428,9 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `zune-image` | 0.5.0 | MIT | Copyright (c) zune-image developers |
 | `zune-jpeg` | 0.5.15 | MIT | Copyright (c) zune-image developers |
 
-### Crates in `3d-review-cli` only
+### Crates in `review3d-cli` only
 
-`3d-review-cli`, the console tool installed beside the viewer, links a subset of the crates above
+`review3d-cli`, the console tool installed beside the viewer, links a subset of the crates above
 plus these, which the viewer does not: Asset Check's shared rules crate and what it needs to match
 file names and digest rules files. All are MIT (each offered as MIT OR Apache-2.0, or MIT OR
 Unlicense, and 3D Review elects MIT).
@@ -564,7 +564,7 @@ that the macOS target pulls in crates the Windows one does not (the `objc2` fami
 `core-foundation`, `fsevent-sys`, ...) and vice versa (the `windows` family, `clipboard-win`,
 `winapi-util`), which is why both trees are needed.
 
-The "Crates in `3d-review-cli` only" table is the same pair of queries with `-p review-cli`, less
+The "Crates in `review3d-cli` only" table is the same pair of queries with `-p review-cli`, less
 every crate the viewer's table already lists. `asset-rules` is a git dependency, so its license is
 read from its checkout under `~/.cargo/git/checkouts/`.
 

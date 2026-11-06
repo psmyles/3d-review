@@ -140,9 +140,9 @@ lists which parts are ported.
   **[serde_json](https://github.com/serde-rs/json)** - Erick Tryzelaar, David Tolnay and
   contributors. Opt workspace presets.
 - **[globset](https://github.com/BurntSushi/ripgrep/tree/master/crates/globset)** - Andrew
-  Gallant. The file-name patterns of Asset Check's rules, in `3d-review-cli`.
+  Gallant. The file-name patterns of Asset Check's rules, in `review3d-cli`.
 - **[sha2](https://github.com/RustCrypto/hashes)** - the RustCrypto developers. The rules digests
-  in Asset Check's results and cache, in `3d-review-cli`.
+  in Asset Check's results and cache, in `review3d-cli`.
 - **[bytemuck](https://github.com/Lokathor/bytemuck)** - Daniel "Lokathor" Gee. GPU buffer casts.
 - **[syn](https://github.com/dtolnay/syn)**, **[quote](https://github.com/dtolnay/quote)**,
   **[proc-macro2](https://github.com/dtolnay/proc-macro2)**,

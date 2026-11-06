@@ -150,7 +150,7 @@ const FUNCTION_SINKS: &[(&str, &[usize])] = &[
     ("LayoutJob::simple", &[0]),
     ("LayoutJob::simple_singleline", &[0]),
     ("LayoutJob::single_section", &[0]),
-    // `3d-review-cli`'s lines: a console line is that tool's label.
+    // `review3d-cli`'s lines: a console line is that tool's label.
     ("console::say", &[0]),
     ("console::heading", &[0]),
     ("console::warn", &[0]),
@@ -916,7 +916,7 @@ mod gate {
         assert!(findings(source).is_empty());
     }
 
-    /// Every console line of `3d-review-cli`, and every audit and Opt label, calls
+    /// Every console line of `review3d-cli`, and every audit and Opt label, calls
     /// its formatters through `use crate::keys::<file> as k`.
     #[test]
     fn a_formatter_called_through_an_alias_is_checked() {

@@ -1,4 +1,4 @@
-//! `3d-review-cli optimize`: the Opt workspace's operation stack over every model,
+//! `review3d-cli optimize`: the Opt workspace's operation stack over every model,
 //! written out as FBX.
 //!
 //! The stack is a preset saved from the viewer, with `--lods`, `--reduce` and
@@ -593,7 +593,7 @@ mod tests {
         stack.push_op(OpKind::VertexCache);
         let json = preset::to_json(&stack).expect("serializes");
         let path =
-            std::env::temp_dir().join(format!("3d-review-cli-preset-{}.json", std::process::id()));
+            std::env::temp_dir().join(format!("review3d-cli-preset-{}.json", std::process::id()));
         std::fs::write(&path, json).expect("written");
         let mut with_preset = args(Some(Lods::None), None);
         with_preset.preset = Some(path.clone());

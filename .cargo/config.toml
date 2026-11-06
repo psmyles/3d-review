@@ -1,6 +1,6 @@
 # The static CRT on Windows (FD20 in fire-decode's `fire-decode-plan.md`).
 #
-# Every Windows binary - `3d-review.exe`, `3d-review-cli.exe`, the Explorer shell
+# Every Windows binary - `3d-review.exe`, `review3d-cli.exe`, the Explorer shell
 # extension `review_shell.dll` - links the C and C++ runtimes into itself rather
 # than importing them. Built against the DLL runtime, the vendored C++ (psd_sdk,
 # the Tracy client) makes the viewer import `MSVCP140.dll` and every binary

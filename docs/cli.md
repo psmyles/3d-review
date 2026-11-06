@@ -1,25 +1,28 @@
-# 3d-review-cli
+# review3d-cli
 
-`3d-review-cli` runs the Opt and Aud workspaces' work without opening the viewer:
+`review3d-cli` runs the Opt and Aud workspaces' work without opening the viewer:
 optimizing models into LODs and FBX files, checking them against an engine's
 rules, and reading their stats. It is a console program shipped beside the viewer,
 built for scripts, build pipelines and Launcher tools. Everything it does is a
 library call the viewer also makes, so a run measures and writes exactly what the
 viewer would.
 
-Up to 0.8.0 it was called `review-cli`; scripts that call it by that name need the
-new one. Setup removes the old `review-cli.exe` from the install folder, and on
-macOS **Install Command Line Tool...** removes an old `/usr/local/bin/review-cli`
-link into the app.
+Up to 0.8.0 it was called `review-cli`, and 0.9.0's pre-release builds called it
+`3d-review-cli` - a name PowerShell cannot run as typed, since it reads `3d` as a
+number. Scripts that call it by an old name need the new one, and so does an Asset
+Check `rules.json`, which names it as the `model` type's `tool` and in `requires`.
+Setup removes an old `review-cli.exe` or `3d-review-cli.exe` from the install
+folder, and on macOS **Install Command Line Tool...** removes an old
+`/usr/local/bin/review-cli` or `/usr/local/bin/3d-review-cli` link into the app.
 
 ```text
-3d-review-cli optimize <models or folders>... --out <folder> [options]
-3d-review-cli audit    <models or folders>... | --staged [options]
-3d-review-cli info     <models or folders>... [options]
-3d-review-cli rules check <rules.json>
-3d-review-cli rules explain <files>... --rules <rules.json>
-3d-review-cli rules catalog
-3d-review-cli --version | --help | <command> --help
+review3d-cli optimize <models or folders>... --out <folder> [options]
+review3d-cli audit    <models or folders>... | --staged [options]
+review3d-cli info     <models or folders>... [options]
+review3d-cli rules check <rules.json>
+review3d-cli rules explain <files>... --rules <rules.json>
+review3d-cli rules catalog
+review3d-cli --version | --help | <command> --help
 ```
 
 It is also the model half of **Asset Check**, which checks the art committed to a
@@ -30,8 +33,8 @@ Unity project against a technical artist's rules: `audit --rules`, `--results`,
 
 | | |
 |---|---|
-| Windows | `3d-review-cli.exe` beside `3d-review.exe`, in the install folder the Uninstall key `{B6F4B0E9-2E1B-4C3A-9D2F-3D5E7A1C0F42}_is1` names as `InstallLocation` (`%LOCALAPPDATA%\Programs\3D Review` for a per-user install, `C:\Program Files\3D Review` for all users). Setup's **Add 3D Review to my PATH** task, off by default, puts that folder on the user's PATH. |
-| macOS | `3D Review.app/Contents/MacOS/3d-review-cli`. Find the app by its bundle id, `com.psmyles.3d-review` (`mdfind "kMDItemCFBundleIdentifier == 'com.psmyles.3d-review'"`). A `scripts/dev-app.sh` bundle has it too. The .dmg cannot install anything itself, so the app does it: **3D Review > Install Command Line Tool...** symlinks `/usr/local/bin/3d-review-cli` to that binary, asking for an administrator password when the folder needs one, and a notice says so at launch while no `3d-review-cli` is on the PATH. The link follows the app's updates, and breaks if the app is moved (the launch notice then comes back). |
+| Windows | `review3d-cli.exe` beside `3d-review.exe`, in the install folder the Uninstall key `{B6F4B0E9-2E1B-4C3A-9D2F-3D5E7A1C0F42}_is1` names as `InstallLocation` (`%LOCALAPPDATA%\Programs\3D Review` for a per-user install, `C:\Program Files\3D Review` for all users). Setup's **Add 3D Review to my PATH** task, off by default, puts that folder on the user's PATH. |
+| macOS | `3D Review.app/Contents/MacOS/review3d-cli`. Find the app by its bundle id, `com.psmyles.3d-review` (`mdfind "kMDItemCFBundleIdentifier == 'com.psmyles.3d-review'"`). A `scripts/dev-app.sh` bundle has it too. The .dmg cannot install anything itself, so the app does it: **3D Review > Install Command Line Tool...** symlinks `/usr/local/bin/review3d-cli` to that binary, asking for an administrator password when the folder needs one, and a notice says so at launch while no `review3d-cli` is on the PATH. The link follows the app's updates, and breaks if the app is moved (the launch notice then comes back). |
 
 ## The contract
 
@@ -111,8 +114,8 @@ status 0, where models and folders on the line that hold none are a problem.
 ## optimize
 
 ```text
-3d-review-cli optimize props --recurse --out build/lods --lods 50%,25%,12.5%
-3d-review-cli optimize hero.fbx --preset presets/hero.json --out build --if-exists replace
+review3d-cli optimize props --recurse --out build/lods --lods 50%,25%,12.5%
+review3d-cli optimize hero.fbx --preset presets/hero.json --out build --if-exists replace
 ```
 
 Runs an operation stack over each model and writes the result as FBX, as the Opt
@@ -159,8 +162,8 @@ an AO bake, exclude it in the preset.
 ## audit
 
 ```text
-3d-review-cli audit Assets/Models --recurse --profile unity --report audit.json
-3d-review-cli audit hero.fbx --profile team-profile.json --fail-on warning
+review3d-cli audit Assets/Models --recurse --profile unity --report audit.json
+review3d-cli audit hero.fbx --profile team-profile.json --fail-on warning
 ```
 
 Checks each model against an engine profile, as the Aud workspace does.
@@ -218,16 +221,16 @@ changes, so a technical artist can keep one short:
 ## Asset Check
 
 ```text
-3d-review-cli audit --staged --rules rules/rules.json --results .git/asset-check/results-3d-review-cli.json
-3d-review-cli audit --files-from changed.txt --rules rules/rules.json --results results.json
-3d-review-cli rules check rules/rules.json
-3d-review-cli rules explain Assets/Art/Props/SM_Crate.fbx --rules rules/rules.json
+review3d-cli audit --staged --rules rules/rules.json --results .git/asset-check/results-review3d-cli.json
+review3d-cli audit --files-from changed.txt --rules rules/rules.json --results results.json
+review3d-cli rules check rules/rules.json
+review3d-cli rules explain Assets/Art/Props/SM_Crate.fbx --rules rules/rules.json
 ```
 
 Asset Check checks the art committed to a Unity project against a technical
 artist's rules, from a git `pre-commit` hook, a Fork command, the Unity editor or
 CI, and shows the artist what is wrong, why, and how to fix it. `fire-cli` checks
-the images and `3d-review-cli` the models. Both decide which rules apply to a file
+the images and `review3d-cli` the models. Both decide which rules apply to a file
 through one shared crate, [`asset-rules`](https://github.com/psmyles/asset-rules),
 so they always give a file the same answer, and both write one results format.
 The design is `asset-check-plan.md` in the rules repository; this tool's part
@@ -256,7 +259,7 @@ artist writes. For each model it gives:
 The current folder's repository is where the branch comes from and what `paths`
 are matched against; outside a repository there is no branch, and only profiles
 without `paths` can match. When `rules.json`'s `requires` asks for a newer
-`3d-review-cli`, the run has one more finding, `tool.too_old`, saying what to
+`review3d-cli`, the run has one more finding, `tool.too_old`, saying what to
 update. A `rules.json` too new to read at all is a problem that stops the run,
 and the results still carry that finding when it can be made.
 
@@ -286,7 +289,7 @@ index a hook reads is the one git itself is committing.
 {
   "schema": "asset-check.results",
   "version": 1,
-  "tool": { "name": "3d-review-cli", "version": "0.9.0" },
+  "tool": { "name": "review3d-cli", "version": "0.9.0" },
   "rules": { "commit": "1a2b3c4", "digest": "sha256:..." },
   "context": { "branch": "main", "mode": "advise" },
   "findings": [],
@@ -344,11 +347,11 @@ built-in).
 For the technical artist. `rules check` lists the problems in a `rules.json` -
 an unknown type, stage or tool, a stage with no rules file, a rules file that is
 not there, an invalid or never-matching pattern, a duplicate id, an unknown field
-- and in each model rules file it names, read against 3d-review-cli's rules
-catalog: a rule 3d-review-cli doesn't have, a parameter of the wrong kind or out
+- and in each model rules file it names, read against review3d-cli's rules
+catalog: a rule review3d-cli doesn't have, a parameter of the wrong kind or out
 of range, a field it doesn't know (`fire-cli` checks the texture rules files).
 One per line, and it exits 1 if there is any, warnings included, so a CI step can
-stop on it. `rules catalog` prints every rule 3d-review-cli checks - its
+stop on it. `rules catalog` prints every rule review3d-cli checks - its
 category, parameters, defaults per engine and texts - as JSON, with the tool's
 version, for Rule Editor. `rules explain` says, for each file given, which type, profile, stage
 and rules file apply to it and why, or which patterns it was tried against and
@@ -374,7 +377,7 @@ folder that holds that `.cargo`. Delete it again before committing a
 ## info
 
 ```text
-3d-review-cli info hero.fbx --report stats.json
+review3d-cli info hero.fbx --report stats.json
 ```
 
 What each model holds, as the Model Stats panel shows it: polygons, triangles and
@@ -387,7 +390,7 @@ build them, draws, materials, UV sets, bones, animations and the file's unit.
 {
   "schema": "3d-review.cli-report",
   "version": 1,
-  "generator": "3d-review-cli 0.7.0",
+  "generator": "review3d-cli 0.7.0",
   "created_unix": 1791907669,
   "command": "optimize",
   "ok": false,

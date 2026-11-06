@@ -1,4 +1,4 @@
-### `3d-review-cli`: what the console tool prints.
+### `review3d-cli`: what the console tool prints.
 ###
 ### Option names (`--out`, `--if-exists`) and the words a choice takes (`skip`,
 ### `file-per-lod`) are the command line's own syntax and stay as they are in every
@@ -13,18 +13,18 @@ cli-help-usage = Usage:
 cli-help-commands = Commands:
 cli-help-options = Options:
 cli-help-models = Give any mix of models and folders. A folder stands for the FBX files in it.
-cli-help-more = Run 3d-review-cli <command> --help to see a command's options.
-cli-help-usage-main = 3d-review-cli <command> <models or folders>... [options]
-cli-help-usage-optimize = 3d-review-cli optimize <models or folders>... --out <folder> [options]
-cli-help-usage-audit = 3d-review-cli audit <models or folders>... | --staged [options]
-cli-help-usage-info = 3d-review-cli info <models or folders>... [options]
-cli-help-usage-rules-check = 3d-review-cli rules check <rules.json>
-cli-help-usage-rules-explain = 3d-review-cli rules explain <files>... --rules <rules.json>
-cli-help-usage-rules-catalog = 3d-review-cli rules catalog
+cli-help-more = Run review3d-cli <command> --help to see a command's options.
+cli-help-usage-main = review3d-cli <command> <models or folders>... [options]
+cli-help-usage-optimize = review3d-cli optimize <models or folders>... --out <folder> [options]
+cli-help-usage-audit = review3d-cli audit <models or folders>... | --staged [options]
+cli-help-usage-info = review3d-cli info <models or folders>... [options]
+cli-help-usage-rules-check = review3d-cli rules check <rules.json>
+cli-help-usage-rules-explain = review3d-cli rules explain <files>... --rules <rules.json>
+cli-help-usage-rules-catalog = review3d-cli rules catalog
 cli-help-command-optimize = Simplify models, make LODs and save them as FBX.
 cli-help-command-audit = Check models against an engine's rules, or against Asset Check's.
 cli-help-command-info = Show what a model holds: polygons, triangles, vertices and more.
-cli-help-command-rules = Check an Asset Check rules.json and its model rules files for mistakes, show which of its rules apply to a file and why, or print every rule 3d-review-cli checks (rules catalog) as JSON for Rule Editor.
+cli-help-command-rules = Check an Asset Check rules.json and its model rules files for mistakes, show which of its rules apply to a file and why, or print every rule review3d-cli checks (rules catalog) as JSON for Rule Editor.
 
 # What an option takes, shown after it: `--out <folder>`.
 cli-help-value-folder = folder
@@ -121,8 +121,8 @@ cli-audit-start = { $count ->
        *[other] Checking { $count } models against the { $profile } profile.
     }
 cli-audit-profile-unreadable = Couldn't read the audit profile { $file }: { $reason }
-# Heads the lines saying what a rules file or profile sets that 3d-review-cli can't use.
-cli-audit-passed-over = { $file }: 3d-review-cli passes over what it can't use here, and goes by the defaults instead:
+# Heads the lines saying what a rules file or profile sets that review3d-cli can't use.
+cli-audit-passed-over = { $file }: review3d-cli passes over what it can't use here, and goes by the defaults instead:
 cli-audit-failed = Couldn't check { $file }: { $problem }
 cli-audit-done = Done: { $done } checked, { $failed } didn't work.
 cli-audit-flagged = { $count ->
@@ -151,7 +151,7 @@ cli-audit-not-in-check = Left out: it isn't in the paths the rules check ("check
 cli-audit-skipped = Left out: the rules skip it.
 # `$label` is what the rules call the files they skip, e.g. Third-party.
 cli-audit-skipped-labelled = Left out: the rules skip it ({ $label }).
-cli-audit-no-rules-file = The { $profile } profile has no rules file for the { $stage } stage. Run 3d-review-cli rules check to see what is missing.
+cli-audit-no-rules-file = The { $profile } profile has no rules file for the { $stage } stage. Run review3d-cli rules check to see what is missing.
 cli-rules-unreadable = Couldn't read the rules { $file }: { $reason }
 cli-staged-failed = Couldn't list the staged files: { $reason }
 cli-staged-unreadable = Couldn't read what is staged: { $reason }

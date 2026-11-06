@@ -614,7 +614,7 @@ open groups. A focused finding and a scene selection are exclusive, like the Opt
 stack pane and the Outliner: `select_audit_focus` clears the selection and
 `release_stack_selection` clears the focus. Only the file dialogs travel as an
 `AuditIntent`. The exhaustive map from every typed audit value to catalog text
-(invariant 12) is `review-labels`' `audit` module, shared with `3d-review-cli`, and
+(invariant 12) is `review-labels`' `audit` module, shared with `review3d-cli`, and
 the chrome reaches it as `audit_labels`; `panels/outliner/issues.rs` is the Issues
 tab and `panels/aud_inspector.rs` the finding, object, summary and profile
 views. The Aud view group follows the 3D tools in the left cluster
@@ -649,7 +649,7 @@ load/save) travel as an `OptIntent`.
 
 Three modules exist for invariant 12: `labels.rs` maps every foreign enum variant
 the chrome alone shows to a catalog message (an operation's name, a rule's, a
-DCC unit's are `review-labels`', because `3d-review-cli` prints them too),
+DCC unit's are `review-labels`', because `review3d-cli` prints them too),
 `widgets/tooltip.rs` is the one tooltip shape (title, paragraph, manual link), and
 `help.rs` is the in-app manual — a native `egui::Window` over `docs::Page`, the
 page table this crate's `build.rs` generates from `docs/book/src`. Page *text* is
@@ -658,7 +658,7 @@ and one that is not there renders as its alt text.
 
 ### `audit` — `review-audit`
 
-The model audit behind the Aud workspace, as a pure library so `3d-review-cli audit`
+The model audit behind the Aud workspace, as a pure library so `review3d-cli audit`
 writes the same report the viewer does. `#![forbid(unsafe_code)]`; depends on
 `review-model`, `glam`, `serde`, `review-prof` and `asset-rules` — deliberately
 **not** on `review-optimize`, which is an FFI site the audit has no need of. Its
@@ -673,7 +673,7 @@ catalog's.
   audit's own facts (element kind, marker, views). `build.rs` has asset-rules
   check it and generate `RuleId` (in catalog order) from it, and adds those facts
   and the parameter specs. A rule added to the catalog fails the build until its
-  check exists in `checks/`. `3d-review-cli rules catalog` prints it.
+  check exists in `checks/`. `review3d-cli rules catalog` prints it.
 - `rule.rs` — `RuleId` (generated), with its stable wire name (`"uv.overlap"`,
   pinned by a test, because saved profiles and reports key on it), category,
   element kind, viewport marker, `related_view` and `see_also`; `Severity`;
@@ -843,7 +843,7 @@ and `ui-`, `app` takes `app-`, `shell-macos` takes `menu-`, `labels` takes
 
 The catalog text for the typed values the libraries hand back, written once
 because two programs print them: the viewer's chrome and notices, and
-`3d-review-cli`. `audit.rs` is every audit value — a check's name, what it checks,
+`review3d-cli`. `audit.rs` is every audit value — a check's name, what it checks,
 why it matters per engine and how to fix it, a severity, a category, a skip
 reason, a parameter, a measured figure, a profile's name, the **Copy summary**
 text and the actionable `AuditError`s. `opt.rs` is an operation's name and
@@ -874,9 +874,9 @@ requires each to decode correctly or be refused with an error - never a crash.
 ### `shell-macos` — `review-shell-macos`
 
 The macOS shell pieces: the Launch Services open hook, the menu bar, and linking
-the bundled `3d-review-cli` onto the PATH (`cli_install.rs` - the .dmg has no
+the bundled `review3d-cli` onto the PATH (`cli_install.rs` - the .dmg has no
 installer to do what Setup's PATH task does on Windows, so the application menu's
-Install Command Line Tool symlinks `/usr/local/bin/3d-review-cli` into the bundle,
+Install Command Line Tool symlinks `/usr/local/bin/review3d-cli` into the bundle,
 through the system's administrator prompt when the folder needs it). Every
 entry point is a no-op stub off macOS, so it is depended on unconditionally with
 no `cfg` at the call site.
@@ -1043,7 +1043,7 @@ report's coverage and any mismatch.
 
 ### `cli` — `review-cli`
 
-The console tool shipped beside the viewer as `3d-review-cli` (`docs/cli.md` is
+The console tool shipped beside the viewer as `review3d-cli` (`docs/cli.md` is
 its reference; the package keeps the name `review-cli`, since a Cargo package
 name cannot start with a digit, and was the binary's name up to 0.8.0):
 `optimize`, `audit` and `info` over any mix of models and folders, for scripts,
@@ -1515,7 +1515,7 @@ one settled.
 | D22 | psd_sdk is vendored as source and compiled with `cc` beside a C-ABI wrapper, with committed hand-kept bindings, so a clean checkout links without a prebuilt library. |
 | D23 | Explorer integration is a COM DLL over a shared, safe core (`crates/preview`) that the macOS Quick Look extensions call too, through a C-ABI dylib (`crates/shell-quicklook`) and two Swift app extensions. The thumbnail provider is **stream-initialized and isolated** in Explorer's COM Surrogate, and accepts that a stream has no directory: textures beside the model reach the preview pane, not the thumbnail (measured alternatives in GOTCHAS). The preview handler gets a `prevhost.exe` of its own AppID and a window thread of its own. Both render offscreen and read back. |
 | D24 | The shell DLL builds with the `release-shell` profile: `release` with `panic = "unwind"`, so `guard::guarded` can answer a panic with an `HRESULT` instead of aborting a surrogate Explorer shares with other vendors' handlers. |
-| D25 | Every Windows binary links the C and C++ runtimes statically (`-C target-feature=+crt-static` for `x86_64-pc-windows-msvc` in the committed `.cargo/config.toml`; FD20 in fire-decode's plan). The vendored C++ made the viewer import `MSVCP140.dll`, and no installer ships the redistributable, so a clean machine could not start it; the shell DLL also must not pick up whatever `msvcp140.dll` another vendor's handler loaded into the shared surrogate. Everything `cc` builds follows the flag (`/MT`), and nothing prebuilt is linked. The gate is the import tables of `3d-review.exe`, `3d-review-cli.exe` and `review_shell.dll`: no `MSVCP140`, `VCRUNTIME140*` or `api-ms-win-crt-*` entry. A `RUSTFLAGS` environment variable replaces the config's list, so it must repeat the flag. |
+| D25 | Every Windows binary links the C and C++ runtimes statically (`-C target-feature=+crt-static` for `x86_64-pc-windows-msvc` in the committed `.cargo/config.toml`; FD20 in fire-decode's plan). The vendored C++ made the viewer import `MSVCP140.dll`, and no installer ships the redistributable, so a clean machine could not start it; the shell DLL also must not pick up whatever `msvcp140.dll` another vendor's handler loaded into the shared surrogate. Everything `cc` builds follows the flag (`/MT`), and nothing prebuilt is linked. The gate is the import tables of `3d-review.exe`, `review3d-cli.exe` and `review_shell.dll`: no `MSVCP140`, `VCRUNTIME140*` or `api-ms-win-crt-*` entry. A `RUSTFLAGS` environment variable replaces the config's list, so it must repeat the flag. |
 
 The structural rules the decisions add up to:
 

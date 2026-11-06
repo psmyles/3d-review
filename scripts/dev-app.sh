@@ -67,9 +67,9 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 cp "$bin" "$app/Contents/MacOS/$name"
 # The console tool, where the release bundle has it - so a tool that finds the app by
-# its bundle id finds 3d-review-cli beside it in a dev bundle too.
-if [[ -x "$repo/target/$profile/3d-review-cli" ]]; then
-    cp "$repo/target/$profile/3d-review-cli" "$app/Contents/MacOS/3d-review-cli"
+# its bundle id finds review3d-cli beside it in a dev bundle too.
+if [[ -x "$repo/target/$profile/review3d-cli" ]]; then
+    cp "$repo/target/$profile/review3d-cli" "$app/Contents/MacOS/review3d-cli"
 fi
 
 # NSHighResolutionCapable is not optional: without it macOS runs the window through 1x scaling and

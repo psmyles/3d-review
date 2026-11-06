@@ -228,7 +228,7 @@ pub fn audit_summary_text(report: &AuditReport, profile: &AuditProfile, file: &s
 }
 
 /// [`audit_summary_text`] without its heading: the counts, then one line per
-/// failing check, worst first - what `3d-review-cli audit` prints under each
+/// failing check, worst first - what `review3d-cli audit` prints under each
 /// model's name.
 pub fn summary_lines(report: &AuditReport) -> Vec<String> {
     let mut lines = vec![k::text_counts(

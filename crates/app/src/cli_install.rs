@@ -1,4 +1,4 @@
-//! 3D Review > Install Command Line Tool (macOS): link the bundled `3d-review-cli`
+//! 3D Review > Install Command Line Tool (macOS): link the bundled `review3d-cli`
 //! onto the PATH, and suggest doing so at launch while it is not there.
 //!
 //! The work itself is `review-shell-macos`'s (`install_cli`), and it can sit on
@@ -15,7 +15,7 @@ use crate::events::UserEvent;
 use crate::{APP_NAME, App, keys};
 
 impl App {
-    /// At launch: say how to get `3d-review-cli` on the PATH if a shell cannot find it.
+    /// At launch: say how to get `review3d-cli` on the PATH if a shell cannot find it.
     /// An info card that expires on its own, since a user who never opens a terminal
     /// has nothing to fix.
     pub(crate) fn suggest_cli_install(&mut self) {

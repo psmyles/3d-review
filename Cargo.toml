@@ -49,7 +49,7 @@ rust-version = "1.88"
 [workspace.dependencies]
 anyhow = "1"
 # Asset Check's shared core (AC9 in `asset-check-plan.md`): which rules apply to a
-# file, the results format, the git helpers and the cache, so `3d-review-cli` and
+# file, the results format, the git helpers and the cache, so `review3d-cli` and
 # `fire-cli` give the same file the same answer. By tag, never by branch. To build
 # against unreleased changes, a `.cargo/config.toml` in the folder above patches it
 # to a checkout beside this one (`docs/cli.md`).
@@ -130,7 +130,7 @@ pulldown-cmark = { version = "0.13", default-features = false }
 # has to catch. Both are already in the graph via the serde/thiserror derives.
 proc-macro2 = { version = "1", features = ["span-locations"] }
 # The catalog text for the libraries' typed values (a check, an operation, a
-# warning), shared by the viewer and `3d-review-cli` (invariant 12).
+# warning), shared by the viewer and `review3d-cli` (invariant 12).
 review-labels = { path = "crates/labels" }
 # The generated typed message keys, and the `tr`/`tr_args` they resolve through.
 review-localization = { path = "crates/localization" }

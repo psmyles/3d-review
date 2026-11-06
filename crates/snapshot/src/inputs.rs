@@ -49,7 +49,7 @@ pub fn load(spec: &InputSpec) -> Result<Vec<Subject>> {
         || spec.path.display().to_string(),
         |name| name.to_string_lossy().into_owned(),
     );
-    // Loaded as the viewer and `3d-review-cli` load it - the model, its GPU-vertex
+    // Loaded as the viewer and `review3d-cli` load it - the model, its GPU-vertex
     // count, then the source-property capture - because a stack run reads the
     // capture too: extra colour sets and vertex creases are part of the weld
     // key, and the polygons ride the run as its carry. Without it the counts
@@ -57,7 +57,7 @@ pub fn load(spec: &InputSpec) -> Result<Vec<Subject>> {
     // file and stack. A capture that cannot be marshaled costs the model
     // nothing, as it costs them nothing.
     //
-    // This and the `@lods` stack below repeat `3d-review-cli`'s `load.rs` and
+    // This and the `@lods` stack below repeat `review3d-cli`'s `load.rs` and
     // `set_lods` in miniature: that crate is a binary, so there is no shared
     // home for them without a new library crate.
     let staged = review_import::load_model_staged(&spec.path, &|_| {})

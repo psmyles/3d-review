@@ -42,7 +42,7 @@ struct ProfileIn {
     name: String,
     /// Left out of a hand-written file - Asset Check's rules files are often
     /// written by hand, after the plan's `{version, generator, profile: {name,
-    /// rules}}` - it is the generic profile, as `3d-review-cli`'s `--profile`
+    /// rules}}` - it is the generic profile, as `review3d-cli`'s `--profile`
     /// is when it is left out.
     #[serde(default = "default_base")]
     base: Engine,

@@ -1,4 +1,4 @@
-//! `3d-review-cli audit`: every model checked against its profile, the way the
+//! `review3d-cli audit`: every model checked against its profile, the way the
 //! Aud workspace checks the model it has open.
 //!
 //! The same engine, the same source-property capture and the same report: each
