@@ -89,13 +89,21 @@ labels-audit-value-at-least = at least { $value }
 
 ## What a failing check found, with its figures: the "what" of a finding in Asset
 ## Check's results (`review3d-cli audit --results`). It follows the check's own
-## "-what" sentence. `$count` is how many triangles, edges or vertices it found and
-## `$objects` how many objects they are in; `$measured` is the figure measured and
-## `$limit`, `$min`, `$max` and `$target` the profile's limit, each with its unit.
+## "-what" sentence. `$count` is how many triangles, faces, edges or vertices it
+## found and `$objects` how many objects they are in; `$measured` is the figure
+## measured and `$limit`, `$min`, `$max` and `$target` the profile's limit, each
+## with its unit.
 
 labels-audit-found-triangles = Found { $count ->
         [one] one triangle
        *[other] { $count } triangles
+    } in { $objects ->
+        [one] one object.
+       *[other] { $objects } objects.
+    }
+labels-audit-found-faces = Found { $count ->
+        [one] one face
+       *[other] { $count } faces
     } in { $objects ->
         [one] one object.
        *[other] { $objects } objects.

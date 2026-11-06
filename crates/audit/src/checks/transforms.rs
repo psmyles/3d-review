@@ -81,8 +81,16 @@ pub(super) fn unfrozen(ctx: &Context<'_>) -> Outcome {
                             .any(|value| value.abs() > 1.0e-6)
                 })
             });
-            (degrees > ROTATION_EPSILON_DEGREES || geometric || pivots)
-                .then(|| Offender::node(index, Some(Measured::Degrees(f64::from(degrees)))))
+            let rotated = degrees > ROTATION_EPSILON_DEGREES;
+            // The rotation is the object's figure only when it has one: one left
+            // with just a geometric transform or offset pivots has no angle to
+            // state, and "0 deg" would read as nothing wrong.
+            (rotated || geometric || pivots).then(|| {
+                Offender::node(
+                    index,
+                    rotated.then(|| Measured::Degrees(f64::from(degrees))),
+                )
+            })
         })
         .collect();
     Outcome::judged(offenders, Threshold::None)

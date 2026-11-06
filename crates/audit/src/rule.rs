@@ -71,6 +71,9 @@ impl Severity {
 #[serde(rename_all = "snake_case")]
 pub enum ElementKind {
     Triangle,
+    /// Polygons as the file has them (each triangle, in a mesh without
+    /// polygons): counted as faces, drawn as their triangles.
+    Face,
     Edge,
     Vertex,
     Node,

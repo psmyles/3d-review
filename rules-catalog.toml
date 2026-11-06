@@ -141,7 +141,7 @@ why = "Unreal triangulates them on import its own way, which can differ from how
 severity = "info"
 
 [rule.app]
-element = "triangle"
+element = "face"
 marker = "fill"
 view = "issues"
 
@@ -204,7 +204,7 @@ severity = "error"
 severity = "warning"
 
 [rule.app]
-element = "triangle"
+element = "face"
 marker = "fill"
 view = "issues"
 

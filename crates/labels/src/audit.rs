@@ -179,6 +179,7 @@ pub fn finding_what(result: &RuleResult) -> String {
     let found = match result.rule.element() {
         _ if in_objects == 0 => None,
         ElementKind::Triangle => Some(k::found_triangles(count, objects)),
+        ElementKind::Face => Some(k::found_faces(count, objects)),
         ElementKind::Edge => Some(k::found_edges(count, objects)),
         ElementKind::Vertex => Some(k::found_vertices(count, objects)),
         ElementKind::Node => Some(k::found_objects(objects)),
@@ -305,5 +306,56 @@ mod tests {
     fn why_is_worded_for_the_engine() {
         assert!(rule_why(RuleId::Unit, Engine::Unity).starts_with("Unity works in meters."));
         assert!(rule_why(RuleId::Unit, Engine::Unreal).starts_with("Unreal works in centimeters."));
+    }
+
+    /// A failing result with one offender in object 0, `count` elements large.
+    fn failed(rule: RuleId, count: u64, measured: Option<Measured>) -> RuleResult {
+        let mut offender = review_audit::Offender::node(0, measured);
+        offender.count = count;
+        RuleResult {
+            rule,
+            status: Status::Fail,
+            severity: Severity::Warning,
+            measured: None,
+            threshold: Threshold::None,
+            offenders: vec![offender],
+            total: count,
+            truncated: false,
+            measure_key: 0,
+        }
+    }
+
+    /// Rules that count polygons say faces, even though the viewer draws their
+    /// triangles; those that count triangles still say triangles.
+    #[test]
+    fn a_finding_counts_what_its_rule_counts() {
+        for rule in [RuleId::Ngons, RuleId::InvertedNormals] {
+            assert_eq!(
+                finding_what(&failed(rule, 41, None)),
+                format!("{} Found 41 faces in one object.", rule_what(rule))
+            );
+        }
+        assert_eq!(
+            finding_what(&failed(RuleId::DegenerateTriangles, 16, None)),
+            format!(
+                "{} Found 16 triangles in one object.",
+                rule_what(RuleId::DegenerateTriangles)
+            )
+        );
+    }
+
+    /// An object with no figure of its own (an unfrozen transform that isn't a
+    /// rotation) gets no "Measured" sentence; one with a rotation states it.
+    #[test]
+    fn a_figure_is_stated_only_when_there_is_one() {
+        let what = rule_what(RuleId::Unfrozen);
+        assert_eq!(
+            finding_what(&failed(RuleId::Unfrozen, 1, None)),
+            format!("{what} Found in one object.")
+        );
+        assert_eq!(
+            finding_what(&failed(RuleId::Unfrozen, 1, Some(Measured::Degrees(30.0)))),
+            format!("{what} Found in one object. Measured 30 deg.")
+        );
     }
 }

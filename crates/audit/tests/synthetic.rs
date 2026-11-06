@@ -4,11 +4,12 @@
 
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use review_audit::{
-    AuditInput, AuditProfile, AuditReport, ElementSet, Engine, ParamValue, RuleId, RunOptions,
-    Status, run,
+    AuditInput, AuditProfile, AuditReport, ElementSet, Engine, Measured, ParamValue, RuleId,
+    RunOptions, Status, run,
 };
 use review_model::{
-    LocalTransform, ModelData, NodeKind, SceneNode, SkinCluster, SkinData, TopologyFace, Vertex,
+    LocalTransform, ModelData, NodeKind, SceneNode, SkinCluster, SkinData, SourceExtras,
+    TopologyFace, Vertex,
 };
 
 /// One polygon: its owning node and its corners as (position, uv).
@@ -106,6 +107,16 @@ fn audit_one(
     rule: RuleId,
     tweak: impl FnOnce(&mut AuditProfile),
 ) -> AuditReport {
+    audit_one_with(model, None, rule, tweak)
+}
+
+/// [`audit_one`], with the source properties a load would capture.
+fn audit_one_with(
+    model: &ModelData,
+    extras: Option<&SourceExtras>,
+    rule: RuleId,
+    tweak: impl FnOnce(&mut AuditProfile),
+) -> AuditReport {
     let mut profile = AuditProfile::builtin(Engine::Generic);
     for config in profile.rules.values_mut() {
         config.enabled = false;
@@ -113,15 +124,65 @@ fn audit_one(
     profile.rules.get_mut(&rule).unwrap().enabled = true;
     tweak(&mut profile);
     run(
-        AuditInput {
-            model,
-            extras: None,
-        },
+        AuditInput { model, extras },
         &profile,
         None,
         RunOptions::default(),
     )
     .unwrap()
+}
+
+/// Source properties for `model` with nothing on its nodes but the geometric
+/// transform `geometric` gives each.
+fn extras_with_geometric(model: &ModelData, geometric: impl Fn(usize) -> Mat4) -> SourceExtras {
+    use review_model::extras::{
+        Application, CoordinateAxis, InheritMode, NodeExtras, RotationOrder, SceneExtras, SnapMode,
+        Synthetic, TimeMode, TimeProtocol,
+    };
+    SourceExtras {
+        scene: SceneExtras {
+            creator: String::new(),
+            filename: String::new(),
+            original_file_path: String::new(),
+            version: 7700,
+            ascii: false,
+            original_application: Application::default(),
+            latest_application: Application::default(),
+            scene_props: Vec::new(),
+            settings_props: Vec::new(),
+            axes: [CoordinateAxis::Unknown; 3],
+            original_axis_up: CoordinateAxis::Unknown,
+            unit_meters: 1.0,
+            original_unit_meters: 1.0,
+            frames_per_second: 30.0,
+            ambient_color: Vec3::ZERO,
+            default_camera: String::new(),
+            time_mode: TimeMode::Fps30,
+            time_protocol: TimeProtocol::Default,
+            snap_mode: SnapMode::None,
+        },
+        nodes: (0..model.nodes.len())
+            .map(|index| NodeExtras {
+                props: Vec::new(),
+                rotation_order: RotationOrder::Xyz,
+                inherit_mode: InheritMode::Normal,
+                original_inherit_mode: InheritMode::Normal,
+                geometry_to_node: geometric(index),
+                synthetic: Synthetic::None,
+                visible: true,
+                attribute: None,
+            })
+            .collect(),
+        materials: Vec::new(),
+        textures: Vec::new(),
+        videos: Vec::new(),
+        meshes: Vec::new(),
+        poses: Vec::new(),
+        display_layers: Vec::new(),
+        selection_sets: Vec::new(),
+        anim_layers: Vec::new(),
+        animations: Vec::new(),
+    }
 }
 
 fn total(report: &AuditReport, rule: RuleId) -> u64 {
@@ -777,6 +838,41 @@ fn scale_and_mirroring() {
     let result = report.result(RuleId::NegativeScale).unwrap();
     assert_eq!(result.offenders.len(), 1);
     assert_eq!(result.offenders[0].node, Some(0));
+}
+
+#[test]
+fn an_unfrozen_object_states_its_rotation_only_when_it_has_one() {
+    // A is rotated 30 degrees; B has no rotation, only a geometric transform.
+    let mut model = build(
+        vec![mesh_node("A"), mesh_node("B")],
+        vec![quad(0, [0.0, 0.0, 0.0]), quad(1, [3.0, 0.0, 0.0])],
+    );
+    model.nodes[0].rest_local = LocalTransform {
+        translation: Vec3::ZERO,
+        rotation: Quat::from_rotation_y(30f32.to_radians()),
+        scale: Vec3::ONE,
+    };
+    let extras = extras_with_geometric(&model, |index| {
+        if index == 1 {
+            Mat4::from_translation(Vec3::new(0.0, 0.5, 0.0))
+        } else {
+            Mat4::IDENTITY
+        }
+    });
+    let report = audit_one_with(&model, Some(&extras), RuleId::Unfrozen, |_| {});
+    let result = report.result(RuleId::Unfrozen).unwrap();
+    assert_eq!(result.offenders.len(), 2);
+    assert_eq!(result.offenders[0].node, Some(0));
+    assert!(
+        matches!(result.offenders[0].measured, Some(Measured::Degrees(d)) if (d - 30.0).abs() < 0.01),
+        "{:?}",
+        result.offenders[0].measured
+    );
+    assert_eq!(result.offenders[1].node, Some(1));
+    assert_eq!(
+        result.offenders[1].measured, None,
+        "no rotation, so no angle"
+    );
 }
 
 #[test]

@@ -58,7 +58,7 @@ const CATEGORIES: &[&str] = &[
     "naming",
     "hierarchy",
 ];
-const ELEMENTS: &[&str] = &["triangle", "edge", "vertex", "node", "scene"];
+const ELEMENTS: &[&str] = &["triangle", "face", "edge", "vertex", "node", "scene"];
 const MARKERS: &[&str] = &["fill", "edge", "dot", "object", "none"];
 const VIEWS: &[&str] = &[
     "issues",
