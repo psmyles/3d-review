@@ -53,7 +53,7 @@ anyhow = "1"
 # `fire-cli` give the same file the same answer. By tag, never by branch. To build
 # against unreleased changes, a `.cargo/config.toml` in the folder above patches it
 # to a checkout beside this one (`docs/cli.md`).
-asset-rules = { git = "https://github.com/psmyles/asset-rules", tag = "v0.2.0" }
+asset-rules = { git = "https://github.com/psmyles/asset-rules", tag = "v0.2.1" }
 bytemuck = { version = "1", features = ["derive"] }
 cc = "1"
 # The local wall clock behind the log's timestamps and its day-named files

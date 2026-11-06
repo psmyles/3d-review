@@ -7,7 +7,7 @@
 - **B.1 is done**, and so are the **Windows** items: the step 0 baselines, the static CRT (FD20,
   recorded as D25), and the upgrade check, which includes a real upgrade over an installed 0.8.0.
 - **Still to do:** section 0 and B.2 on the Mac; B.3, which waits for fire-decode's first tag.
-- **A2, the rules catalog, is done** (5 November): below. It depends on asset-rules `v0.2.0`.
+- **A2, the rules catalog, is done** (5 November): below. It depends on asset-rules `v0.2.1`.
 
 The console tool was renamed from `review-cli` to `3d-review-cli` just before this work, and to
 **`review3d-cli`** on 6 November, before 0.9.0 shipped: PowerShell reads a command that starts
@@ -112,7 +112,7 @@ loading (`docs/cli.md`).
    characters. Only `.fbx` files are taken; other staged files are ignored.
 5. **`docs/cli.md`** documents all of the above, and **`crates/cli/tests/cli.rs`** covers each.
 
-- **Dependency:** `asset-rules` by git tag (`v0.1.0`; `v0.2.0` since A2). The repository's own
+- **Dependency:** `asset-rules` by git tag (`v0.1.0`; `v0.2.0` since A2; `v0.2.1` since the console tool became `review3d-cli`). The repository's own
   `.cargo/config.toml` is committed now (the static CRT), so a local patch for unreleased
   asset-rules goes in a `.cargo/config.toml` one folder up, beside both checkouts (`docs/cli.md`).
   The same applies to fire, whose `.cargo/config.toml` is tracked too. asset-rules' README and plan,
@@ -189,7 +189,7 @@ and every text (only three parameter descriptions, rewritten in the catalog, dif
 CrimeCrew's 281 models against its `rules.json` and each engine's defaults, and the 9 test models
 in each engine: the same results, reports and output before and after.
 
-It depends on asset-rules `v0.2.0`, tagged 5 November 2026.
+It depends on asset-rules `v0.2.0`, tagged 5 November 2026; `v0.2.1` since 6 November, which names the console tool `review3d-cli`.
 
 ## B. The fire-decode migration: 3D Review's side, later
 
