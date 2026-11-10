@@ -1,6 +1,9 @@
 # 3D Review - Work Plan
 
-**Status, 4 November 2026:** the Windows half is done.
+**Status, 10 November 2026:** the Windows half is done (4 November), and Asset Check is done across
+its repositories.
+- **The fire-decode plan was re-checked against this repo on 10 November.** It now settles step 4's
+  details: `texture()` takes no GPU limit and returns float textures as float. B.3 below lists them.
 - **A (AC13) is done:** `note`, `--results`, `--rules`, `--staged`, `--files-from`, the `rules`
   commands, `docs/cli.md`, and the tests in `crates/cli/tests/cli.rs`. Its gate is met on Windows
   (below).
@@ -32,7 +35,7 @@ Two designs touch this repository:
 **Priority: Asset Check first.** Order across repositories:
 1. `asset-rules` - its `docs/PLAN.md`;
 2. this repo's A-items, alongside fire's `fire-cli`;
-3. the Launcher's results table (done), then Asset Check's rules repo;
+3. the Launcher's results table (done), then Asset Check's rules repo (done);
 4. the migration.
 
 ## 0. Check the rename on the Mac first
@@ -203,12 +206,30 @@ It depends on asset-rules `v0.2.0`, tagged 5 November 2026; `v0.2.1` since 6 Nov
 3. **Step 4: adopt `texture()`.** This waits for fire-decode's first tag, which needs the Windows HEIF
    libraries. It covers:
    - `heif` on in every binary (viewer, shell DLL, Quick Look dylib, snapshot);
+   - **`texture()` with no fit and no GPU limit** (FD5). The upload-time mip skip stays, so a
+     texture over the GPU limit still uploads from its first mip that fits, and the Dimension stat
+     keeps the source size. The shells keep `fitted_within`.
+   - **Float textures come back as float** (`Rgba8OrFloat`, FD4) and are narrowed per slot:
+     - colour slots clamp and sRGB-encode, as `crates/psd` does for 32-bit documents today;
+     - data slots clamp with no curve;
+     - which of the two the Tex viewport uses is settled here. Today it shows a 32-bit PSD
+       sRGB-encoded.
    - deleting `crates/psd` in the same commit;
    - release switching to `panic = "unwind"`, with the decode-only abort hook in the viewer (shells
      keep their guards);
+     - review3d-cli installs no panic hook, so after the switch a panic there exits with code 101
+       instead of aborting. Check that Asset Check still reports it as the tool failing.
+     - `review-log`'s comments that a release build aborts on panic (`crates/log/src/lib.rs`) are
+       reworded.
    - a decode worker pool replacing thread-per-texture;
+   - the stats' Format row from the crate's `source`, not the file's extension (FD9);
+   - drag-and-drop and the texture dialog accepting the crate's `supported_extensions()`;
    - licences: the first LGPL component, with notices covering the DLL and dylib;
    - README / D22 / invariant 9 / the DDS non-goal reworded.
+
+   The static CRT it needs is already in place (D25). Phase 2 (fire-decode step 7) has one catch:
+   `render/build.rs` compiles `rhi/mips.rs` into the UV-checker bake, so that file can't simply be
+   deleted.
 
    The gates are in the fire-decode plan's step 4.
 
