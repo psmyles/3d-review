@@ -34,6 +34,8 @@
 #            so both builds rasterize the same pixels). CPU-only frame time is
 #            reported beside it: a regression in one and not the other says different
 #            things.
+#   textures for a fixture whose materials name textures: the median and longest
+#            frame drawn while they load, and the frame that binds and uploads them.
 #   memory   physical footprint, sampled while the process idles with the model up —
 #            what Activity Monitor calls "Memory", and the analogue of the Windows
 #            script's private bytes. **There is no separate VRAM row**: Apple silicon
@@ -213,6 +215,11 @@ for line in open(records_path):
         "audit_ms": (stamp.get("audit") or {}).get("ms"),
         "audit_report_kb": ((stamp.get("audit") or {}).get("report_bytes") or 0) / 1024
             if stamp.get("audit") else None,
+        # The model's own textures: null for a fixture that names none, absent from a
+        # build that predates the measure.
+        "tex_load_ms": stamp["textures"]["loading_ms"]["median"] if stamp.get("textures") else None,
+        "tex_load_max_ms": stamp["textures"]["loading_ms"]["max"] if stamp.get("textures") else None,
+        "tex_upload_ms": stamp["textures"]["upload_ms"] if stamp.get("textures") else None,
     })
 
 if not rows["B"]:
@@ -244,6 +251,9 @@ MEASURES = [
     ("footprint (MB)", "footprint_mb", memory_budget,  True,  1),
     ("audit (ms)",     "audit_ms",     None,           False, 1),
     ("audit rpt (KB)", "audit_report_kb", None,        False, 1),
+    ("tex load (ms)",  "tex_load_ms",  None,           False, 3),
+    ("tex load max",   "tex_load_max_ms", None,        False, 1),
+    ("tex upload (ms)", "tex_upload_ms", None,         False, 1),
 ]
 
 failures = []

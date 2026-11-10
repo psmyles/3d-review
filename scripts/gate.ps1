@@ -154,6 +154,11 @@ function Invoke-GateRun {
         # Absent from a build that predates the audit, null when none landed.
         AuditMs      = if ($json.audit) { [double]$json.audit.ms } else { $null }
         AuditReportBytes = if ($json.audit) { [double]$json.audit.report_bytes } else { $null }
+        # The model's own textures: null for a fixture that names none, absent from a
+        # build that predates the measure.
+        TexLoadMs    = if ($json.textures) { [double]$json.textures.loading_ms.median } else { $null }
+        TexLoadMaxMs = if ($json.textures) { [double]$json.textures.loading_ms.max } else { $null }
+        TexUploadMs  = if ($json.textures) { [double]$json.textures.upload_ms } else { $null }
     }
 }
 
@@ -227,6 +232,9 @@ $measures = @(
     @{ Name = 'gpu (MB)'; Property = 'GpuBytes'; Budget = $MemoryBudgetPercent; Relative = $true; Format = 'N1' }
     @{ Name = 'audit (ms)'; Property = 'AuditMs'; Budget = $null; Relative = $false; Format = 'N1' }
     @{ Name = 'audit report (MB)'; Property = 'AuditReportBytes'; Budget = $null; Relative = $false; Format = 'N3' }
+    @{ Name = 'tex load (ms)'; Property = 'TexLoadMs'; Budget = $null; Relative = $false; Format = 'N3' }
+    @{ Name = 'tex load max (ms)'; Property = 'TexLoadMaxMs'; Budget = $null; Relative = $false; Format = 'N1' }
+    @{ Name = 'tex upload (ms)'; Property = 'TexUploadMs'; Budget = $null; Relative = $false; Format = 'N1' }
 )
 
 $failures = @()

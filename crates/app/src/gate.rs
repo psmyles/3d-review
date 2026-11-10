@@ -27,6 +27,11 @@
 //!    query in the backend leaf that the Metal side would then owe a twin for — all
 //!    to learn what Windows already reports about any process.
 //!
+//! The model's own textures load after the model is on screen (`imported_textures`), so
+//! a fixture that names some is measured twice more: the frames presented while they
+//! load, and the frame that binds and uploads them, and the stamp waits for them. A
+//! fixture that names none (the startup gate's) records `null` and runs as before.
+//!
 //! The measured conditions are the viewer's own defaults (GTAO on, 2× MSAA) rather
 //! than overrides, so the gate measures what a user gets; the stamp records them so
 //! a comparison across two stamps can be checked rather than assumed. The one thing
@@ -75,6 +80,7 @@ const ORBIT_STEP: Vec2 = Vec2::new(0.35, 0.0);
 pub(crate) const WINDOW_SIZE: (u32, u32) = (1600, 960);
 
 /// One frame's timings, in milliseconds.
+#[derive(Clone, Copy)]
 struct Sample {
     /// Present-to-present: GPU + CPU, the throughput number.
     total_ms: f64,
@@ -114,6 +120,22 @@ pub(crate) struct Gate {
     vertices: usize,
     clips: usize,
     clip_playing: bool,
+    textures: TextureLoad,
+}
+
+/// The model's own textures, as the run saw them load.
+#[derive(Default)]
+struct TextureLoad {
+    /// A load is running: started, not yet bound.
+    pending: bool,
+    /// Bound, so the next present is the frame that uploads them.
+    bound: bool,
+    /// How many bindings the load made.
+    bindings: usize,
+    /// Present-to-present of each frame drawn, model up, while the load ran.
+    during: Vec<f64>,
+    /// The frame that uploaded them.
+    upload: Option<Sample>,
 }
 
 impl Gate {
@@ -130,6 +152,7 @@ impl Gate {
             vertices: 0,
             clips: 0,
             clip_playing: false,
+            textures: TextureLoad::default(),
         }
     }
 
@@ -182,6 +205,25 @@ impl App {
         let now = Instant::now();
         let previous = gate.last_present.replace(now);
 
+        // The model's textures, whatever the phase: they land when their decode
+        // finishes, which can be in the warm-up or the measured frames.
+        let model_up = !matches!(gate.phase, Phase::AwaitingModel);
+        if let (Some(previous), Some(start), Some(present)) =
+            (previous, gate.frame_start, before_present)
+            && model_up
+        {
+            let sample = Sample {
+                total_ms: now.duration_since(previous).as_secs_f64() * 1000.0,
+                cpu_ms: present.duration_since(start).as_secs_f64() * 1000.0,
+            };
+            if gate.textures.bound {
+                gate.textures.bound = false;
+                gate.textures.upload = Some(sample);
+            } else if gate.textures.pending {
+                gate.textures.during.push(sample.total_ms);
+            }
+        }
+
         match gate.phase {
             // The model is not up yet, so this present is the empty viewport.
             // Deliberately not stamped (see the module docs).
@@ -217,9 +259,41 @@ impl App {
 
         // The hold samples memory from outside, so it must not begin while the
         // audit's transient working set is still allocated: the resident report
-        // is what a user carries, the run's scratch is not.
-        if collected && self.audit_idle() {
+        // is what a user carries, the run's scratch is not. Nor before the model's
+        // textures have landed and been uploaded, which the stamp reports.
+        let textures_settled = self
+            .gate
+            .as_ref()
+            .is_some_and(|gate| !gate.textures.pending && !gate.textures.bound);
+        if collected && textures_settled && self.audit_idle() {
             self.gate_finish();
+        }
+    }
+
+    /// The model's own textures started loading.
+    pub(crate) fn gate_textures_loading(&mut self) {
+        if let Some(gate) = self.gate.as_mut() {
+            gate.textures.pending = true;
+        }
+    }
+
+    /// The model's texture load never started (its thread did not), so the run
+    /// stops waiting for it.
+    pub(crate) fn gate_textures_abandoned(&mut self) {
+        if let Some(gate) = self.gate.as_mut() {
+            gate.textures.pending = false;
+        }
+    }
+
+    /// The model's textures landed and `bindings` were bound: the next frame
+    /// uploads them.
+    pub(crate) fn gate_textures_bound(&mut self, bindings: usize) {
+        if let Some(gate) = self.gate.as_mut()
+            && gate.textures.pending
+        {
+            gate.textures.pending = false;
+            gate.textures.bound = true;
+            gate.textures.bindings = bindings;
         }
     }
 
@@ -354,9 +428,23 @@ impl Gate {
         let _ = match audit {
             Some((ms, bytes)) => writeln!(
                 out,
-                "  \"audit\": {{ \"ms\": {ms:.3}, \"report_bytes\": {bytes} }}"
+                "  \"audit\": {{ \"ms\": {ms:.3}, \"report_bytes\": {bytes} }},"
             ),
-            None => writeln!(out, "  \"audit\": null"),
+            None => writeln!(out, "  \"audit\": null,"),
+        };
+        // `null` for a fixture whose materials name no texture.
+        let _ = match self.textures.upload {
+            Some(upload) => writeln!(
+                out,
+                "  \"textures\": {{ \"bindings\": {}, \"loading_frames\": {}, \
+                 \"loading_ms\": {}, \"upload_ms\": {:.4}, \"upload_cpu_ms\": {:.4} }}",
+                self.textures.bindings,
+                self.textures.during.len(),
+                stats_json(&self.textures.during),
+                upload.total_ms,
+                upload.cpu_ms
+            ),
+            None => writeln!(out, "  \"textures\": null"),
         };
         out.push_str("}\n");
         out

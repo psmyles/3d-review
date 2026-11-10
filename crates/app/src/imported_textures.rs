@@ -66,6 +66,7 @@ impl App {
         let activity = self.notifications.begin_activity(review_localization::tr(
             keys::app_notifications::LOADING_TEXTURES,
         ));
+        self.gate_textures_loading();
         let Some(proxy) = self.textures.proxy.clone() else {
             // No event loop to post back through (a headless run): load in place.
             let loaded = load(&model, &extras, model_path, generation, activity);
@@ -83,6 +84,7 @@ impl App {
         if let Err(error) = spawned {
             log::error!("could not start the model texture thread: {error}");
             self.notifications.end_activity(activity);
+            self.gate_textures_abandoned();
         }
     }
 
@@ -139,6 +141,7 @@ impl App {
             missing.len(),
             unreadable.len()
         );
+        self.gate_textures_bound(bound);
         self.textures.revision = self.textures.revision.wrapping_add(1);
         self.refresh_texture_pool();
         self.refresh_materials();
