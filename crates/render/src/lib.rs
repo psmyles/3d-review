@@ -63,8 +63,8 @@ pub use texture::imported::{
     TextureSource, TextureUse,
 };
 pub use texture::{
-    ChannelSelect, DecodedImage, TextureSlot, decode_image, decode_workers, in_decode,
-    is_texture_extension, suggested_channel, texture_extensions,
+    ChannelSelect, DecodedImage, MipChains, TextureSlot, Upload, decode_image, decode_workers,
+    in_decode, is_texture_extension, suggested_channel, texture_extensions,
 };
 
 /// Size in bytes of one *engine-equivalent* vertex: position, normal, UV,

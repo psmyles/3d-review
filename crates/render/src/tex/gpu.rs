@@ -28,7 +28,7 @@ use crate::rhi::{
     Texture, Wrap, shader,
 };
 use crate::shaders::generated;
-use crate::texture::DecodedImage;
+use crate::texture::{DecodedImage, Upload};
 
 /// Most distinct textures kept resident on the GPU at once — an LRU bound so a long
 /// session inspecting many textures can't grow VRAM without limit. Opening a 17th
@@ -237,7 +237,8 @@ impl TexGpu {
         let texture = Texture::rgba8_mipped_or_white(
             image.width,
             image.height,
-            &image.rgba,
+            image.pixels_for(Upload::Shown),
+            image.mips(Upload::Shown),
             false,
             c"tex image",
         )?;

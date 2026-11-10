@@ -371,7 +371,7 @@ independent of the API underneath it.
 | `present.rs` | `PresentStatus` |
 | `shader.rs` | The generated `ShaderDesc` with this host's committed bytecode swapped in, and the `bytecode!` macro that picks the per-OS blob |
 | `pipeline.rs`, `buffer.rs` | Pipelines; `TransientBuffer` (per-frame geometry stream), immutable `VertexBuffer`/`IndexBuffer`, `StorageBuffer<T>` for the deform tables |
-| `texture.rs`, `mips.rs`, `sampler.rs` | Textures, the CPU mip chain, samplers |
+| `texture.rs`, `sampler.rs` | Textures (each upload takes its decoded image's mip chain, D7), samplers |
 | `target.rs` | Offscreen colour + depth attachments, plus the single-sample twin sokol resolves into at 2×+ MSAA |
 | `bindings.rs` | What a draw reads, as one value re-applied after every `apply_pipeline` — sokol has no sticky slot state |
 | `gpu_profiler.rs` | The `--tracy` GPU profiler: the `Zone` set, the Tracy GPU context and spans, the arming flag and the message channel |
@@ -527,8 +527,9 @@ and a broken shader is a build error.
 
 **The UV checker is baked at build time** (`build/uv_checker.rs`, run from the same
 `build.rs`). Each checker PNG in `assets/textures/` becomes its full mip chain —
-built by the runtime's own `rhi/mips.rs`, compiled into the build script by path,
-so it is the sRGB box filter every material map gets — BC7-encoded with the
+built by `build/mips.rs`, compiled into the build script by path: a copy of the
+runtime's filter (fire-decode's) that `tests/bake_mips.rs` holds to it byte for
+byte, so it is the sRGB box filter every material map gets — BC7-encoded with the
 encoder's slowest profile and deflated into `OUT_DIR`; `scene/checker.rs`
 `include!`s the description the script writes beside it. Loading a checker is then
 an inflate and an upload: 2-3 ms and 5.6 MB of VRAM per 2048² checker, against
@@ -1505,7 +1506,7 @@ one settled.
 | D4 | One annotated-GLSL shader source (`review.glsl`) compiled per backend by sokol-shdc. |
 | D5 | Shader bytecode is committed per host and its freshness judged by **content hash**, not timestamps — mtimes stop meaning anything once two hosts commit blobs. |
 | D6 | Dropping `egui-directx11` also unpinned egui, which that crate had held at 0.33. |
-| D7 | Mip chains are generated on the CPU; sokol has no `GenerateMips`. sRGB is averaged in linear light so the result matches what the hardware produced. |
+| D7 | Mip chains are generated on the CPU; sokol has no `GenerateMips`. sRGB is averaged in linear light so the result matches what the hardware produced. The builder is fire-decode's (its `mips` feature, FD11). Each chain is built once per decoded image and kind of upload (`DecodedImage::mips`), on the decode workers for a model's own textures and a reload, and kept with the image. |
 | D8 | GPU bring-up starts on the first line of `main`, on its own thread, and is joined when the window appears. |
 | D9 | Native dialogs run on a worker thread and answer through the event loop; a modal run loop entered from a winit callback aborts the process on macOS. |
 | D10 | File commands chord with the **primary** modifier — `Ctrl` on Windows and Linux, `Cmd` on macOS. `app`'s `shortcuts::primary_held` matches it; `ui`'s `primary_modifier()` is the one place that names it on screen, passed into a message as a variable, so no label hard-codes "Ctrl". |

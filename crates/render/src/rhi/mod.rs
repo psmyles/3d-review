@@ -42,7 +42,6 @@ mod format;
 pub(crate) mod gpu_profiler;
 mod job;
 mod make;
-mod mips;
 mod pipeline;
 mod present;
 mod sampler;
@@ -58,7 +57,6 @@ pub use error::{GpuError, GpuResult};
 pub use format::Format;
 pub(crate) use format::{SCENE_COLOR_FORMAT, SCENE_DEPTH_FORMAT};
 pub(crate) use gpu_profiler::Zone;
-pub(crate) use mips::halved_to_fit;
 pub(crate) use pipeline::{
     Blend, Cull, DEPTH_MIP_COLORS, Depth, DepthBias, GBUFFER_COLORS, OCCLUSION_COLORS, Pipeline,
     PipelineDesc, Topology, VertexFormat,
@@ -66,7 +64,7 @@ pub(crate) use pipeline::{
 pub use present::PresentStatus;
 pub(crate) use sampler::{Filter, Sampler, Wrap};
 pub(crate) use target::{ColorTarget, DepthTarget};
-pub(crate) use texture::Texture;
+pub(crate) use texture::{MAX_MIP_LEVELS, Texture};
 
 // `SwapchainJob` is declared below rather than in a module of its own: it is half of
 // `Frame`'s contract, and the two are read together.

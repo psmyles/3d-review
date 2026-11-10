@@ -15,8 +15,9 @@
 //! of encoding per checker, spread over every core and skipped altogether when
 //! nothing it reads has changed ([`STAMP`]).
 //!
-//! The chain comes from the run-time's own `src/rhi/mips.rs`, compiled into this
-//! script by path, so it is the chain the viewer used to build for itself: a 2×2 box
+//! The chain comes from `build/mips.rs`, compiled into this script by path: the
+//! run-time's filter (fire-decode's), which `tests/bake_mips.rs` holds it to byte
+//! for byte, so it is the chain the viewer would have built for itself: a 2×2 box
 //! averaged in linear light, which is what a material map gets too.
 
 use std::borrow::Cow;
@@ -238,7 +239,7 @@ fn digest(pngs: &[Vec<u8>]) -> String {
         hasher.update(png);
     }
     hasher.update(include_bytes!("uv_checker.rs"));
-    hasher.update(include_bytes!("../src/rhi/mips.rs"));
+    hasher.update(include_bytes!("mips.rs"));
     hasher
         .finalize()
         .iter()

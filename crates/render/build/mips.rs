@@ -1,17 +1,18 @@
-//! CPU mip-chain generation (D7).
+//! The UV-checker bake's mip filter (D7), compiled into the build script by path
+//! (`build.rs`) for `uv_checker.rs`.
 //!
-//! sokol_gfx has no `GenerateMips` — there is no portable equivalent of D3D11's
-//! "bind the texture as a render target and let the driver downsample it" — so the
-//! chain is built here and handed to `sg_make_image` alongside the base level, in
-//! one immutable upload ([`super::Texture::rgba8_mipped_or_white`]).
+//! The run-time builds its chains with fire-decode's builder (its `mips` feature,
+//! FD11). The bake keeps this copy because the build script would otherwise compile
+//! fire-decode a second time, for the build host, libwebp's C code included. The two
+//! are the same filter to the byte, which `tests/bake_mips.rs` holds them to, so the
+//! checker's baked chain is the one the viewer would have built for itself.
 //!
 //! Two things this has to get right, because both are visible:
 //!
 //! * **sRGB is averaged in linear light.** Hardware `GenerateMips` on an sRGB view
 //!   decodes, averages and re-encodes; averaging the stored bytes instead makes
-//!   every minified sRGB texture measurably too dark. The Tex viewport uploads raw
-//!   (`srgb = false`) so its displayed texel stays the stored texel — and its mips
-//!   average the stored bytes, which is what the hardware did for a UNORM view.
+//!   every minified sRGB texture measurably too dark. Raw (`srgb = false`), the
+//!   stored bytes are averaged, which is what the hardware did for a UNORM view.
 //! * **Alpha is never sRGB.** It is averaged as stored either way.
 //!
 //! The filter is a plain 2×2 box over the previous level, with the sample clamped so
@@ -19,15 +20,13 @@
 //! D3D11's own non-power-of-two kernel is slightly wider than that; the difference is
 //! a fraction of a code in a minified mip.
 //!
-//! The UV checker's chains are built from this same file at *build* time
-//! (`build/uv_checker.rs` includes it by path), so the module names nothing from the
-//! drawing API: its one sokol fact, [`MAX_LEVELS`], is a plain constant here that
-//! `texture.rs` pins to sokol's own.
+//! It names nothing from the drawing API: its one sokol fact, [`MAX_LEVELS`], is a
+//! plain constant here that `tests/bake_mips.rs` pins to sokol's own.
 
 use review_model::color::linear_to_srgb;
 
 /// The most mip levels an image can hold — sokol's `SG_MAX_MIPMAPS`, asserted equal
-/// beside the uploads that rely on it.
+/// in `tests/bake_mips.rs`.
 pub(crate) const MAX_LEVELS: u32 = 16;
 
 /// Levels in a full chain for a `width`×`height` texture: `floor(log2(max)) + 1`,
@@ -59,42 +58,6 @@ pub(crate) fn levels_below_base(rgba: &[u8], width: u32, height: u32, srgb: bool
         (src_width, src_height) = (dst_width, dst_height);
     }
     chain
-}
-
-/// `rgba` halved, with the same filter as the chain, until neither axis exceeds
-/// `max_side` — the mip level a GPU would sample for an image drawn that small,
-/// which is what lets a caller that will never draw it larger skip uploading
-/// and mipping the levels above it. `None` when it already fits.
-#[allow(
-    dead_code,
-    reason = "the build script includes this file by path for the chain alone"
-)]
-pub(crate) fn halved_to_fit(
-    rgba: &[u8],
-    (width, height): (u32, u32),
-    max_side: u32,
-    srgb: bool,
-) -> Option<(Vec<u8>, u32, u32)> {
-    let max_side = max_side.max(1) as usize;
-    let (mut src_width, mut src_height) = (width.max(1) as usize, height.max(1) as usize);
-    if src_width.max(src_height) <= max_side {
-        return None;
-    }
-    let tables = srgb.then(Tables::new);
-    let mut level: Option<Vec<u8>> = None;
-    while src_width.max(src_height) > max_side {
-        let dst_width = (src_width / 2).max(1);
-        let dst_height = (src_height / 2).max(1);
-        let src = level.as_deref().unwrap_or(rgba);
-        level = Some(halve(
-            src,
-            (src_width, src_height),
-            (dst_width, dst_height),
-            tables.as_ref(),
-        ));
-        (src_width, src_height) = (dst_width, dst_height);
-    }
-    level.map(|level| (level, src_width as u32, src_height as u32))
 }
 
 /// One 2×2 box-filter step. `tables` present means the RGB channels are sRGB-encoded
@@ -223,18 +186,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    /// Halving to fit stops at the first level inside the bound and leaves an
-    /// image that already fits alone.
-    #[test]
-    fn halving_to_fit_stops_at_the_first_level_inside_the_bound() {
-        let base = vec![7u8; 1000 * 300 * 4];
-        let (pixels, width, height) =
-            halved_to_fit(&base, (1000, 300), 256, false).expect("1000 px is over the bound");
-        assert_eq!((width, height), (250, 75));
-        assert_eq!(pixels.len(), 250 * 75 * 4);
-        assert!(halved_to_fit(&base, (1000, 300), 1000, false).is_none());
     }
 
     /// Half black, half white, averaged in linear light: the result is the sRGB

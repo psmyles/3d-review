@@ -238,12 +238,27 @@ impl App {
         };
         let generation = self.textures.generation;
         let failed_path = request.path().to_path_buf();
+        // A reload is uploaded as its last decode was, so the chains that decode was uploaded
+        // with are built on the worker, not on the render thread in the frame that re-uploads it.
+        let uploads = match &request {
+            TextureDecodeRequest::Reload { path } => self
+                .textures
+                .cache
+                .get(path)
+                .map(|image| image.prepared_uploads())
+                .unwrap_or_default(),
+            TextureDecodeRequest::Import { .. } => Vec::new(),
+        };
         let submitted = self.textures.workers.submit(Box::new(move || {
             // Time the decode in Tracy (a no-op unless `--tracy`).
             let result = {
                 let _z = prof::zone!("Decode Image");
                 decode_image(request.path())
             };
+            let result = result.inspect(|image| {
+                let _z = prof::zone!("Build Mips");
+                image.prepare_mips(uploads);
+            });
             // A send failure only means the event loop has exited; nothing to do.
             let _ = proxy.send_event(UserEvent::TextureDecoded(TextureDecode {
                 request,

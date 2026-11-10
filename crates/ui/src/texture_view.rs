@@ -270,6 +270,7 @@ mod tests {
                 source_bit_depth: 8,
                 rgba_linear: None,
                 source_format: "test",
+                mips: Default::default(),
             }),
             file_size: 0,
         }

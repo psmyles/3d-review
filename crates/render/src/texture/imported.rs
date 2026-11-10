@@ -31,7 +31,7 @@ use glam::Vec3;
 use review_model::{MaterialImportDefaults, MaterialMap, SourceExtras};
 
 use super::{
-    ChannelSelect, DecodedImage, TextureSlot, decode_bytes, decode_image, suggested_channel,
+    ChannelSelect, DecodedImage, TextureSlot, Upload, decode_bytes, decode_image, suggested_channel,
 };
 use crate::material::{AlphaMode, RoughnessWorkflow};
 
@@ -503,10 +503,20 @@ fn decode_one(
             decode_bytes(bytes, &extension, &texture.key)?
         }
     };
-    Ok(match max_side {
+    let image = match max_side {
         Some(max_side) => image.fitted_within(max_side, texture.is_color()),
         None => image,
-    })
+    };
+    // The chains the materials will upload it with, built here on the worker rather than on the
+    // render thread, in the frame that first draws the model's textures.
+    image.prepare_mips(
+        texture
+            .uses
+            .iter()
+            .filter_map(|texture_use| texture_use.binding(&texture.key, &image))
+            .map(|binding| Upload::for_slot(binding.slot)),
+    );
+    Ok(image)
 }
 
 /// Whether `image` is a tangent-space normal map rather than a height map: a
@@ -547,6 +557,7 @@ mod tests {
             source_bit_depth: 8,
             rgba_linear: None,
             source_format: "test",
+            mips: Default::default(),
         }
     }
 

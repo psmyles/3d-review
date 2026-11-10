@@ -455,9 +455,9 @@ that clearance is measured round the *pivot*, which the centring pan has moved
 The decoders accept 30000 px, but D3D11 and Metal stop at 16384. A refused
 upload used to fail every frame's material sync — the 3D view stopped drawing —
 and rebuild the whole CPU mip chain on each redraw. `Texture::rgba8_mipped_or_white`
-drops the levels above `max_image_size_2d` and makes the first that fits the
-base, and a refused upload still caches its fallback against the decoded image
-so it is not retried every frame.
+drops the levels above `max_image_size_2d` from the image's chain and makes the
+first that fits the base, and a refused upload still caches its fallback against
+the decoded image so it is not retried every frame.
 
 ---
 

@@ -150,8 +150,9 @@ review-prof = { path = "crates/prof" }
 # through libheif, the two sanctioned FFI sites outside this workspace (invariant 9). Until the
 # crate's first tag, its branch; local work on both goes through an untracked
 # `[patch."https://github.com/psmyles/fire-decode"]` in a `.cargo/config.toml` in the folder
-# holding both checkouts. `texture()` converts no colour, so `icc` stays off.
-fire-decode = { git = "https://github.com/psmyles/fire-decode", branch = "main", features = ["psd", "heif"] }
+# holding both checkouts. `texture()` converts no colour, so `icc` stays off; `mips` is the mip
+# builder every texture upload takes its chain from (FD11).
+fire-decode = { git = "https://github.com/psmyles/fire-decode", branch = "main", features = ["psd", "heif", "mips"] }
 rfd = "0.15"
 # Build-script only: the shader-bytecode manifest keys freshness on content, and
 # the packaging scripts on both OSes have to recompute the same digest from a

@@ -43,9 +43,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-// The run-time's own mip filter, so the checker's baked chain is the one the viewer
+// The bake's copy of the run-time's mip filter (fire-decode's), held to it byte for
+// byte by `tests/bake_mips.rs`, so the checker's baked chain is the one the viewer
 // would have built.
-#[path = "src/rhi/mips.rs"]
+#[path = "build/mips.rs"]
 mod mips;
 #[path = "build/uv_checker.rs"]
 mod uv_checker;

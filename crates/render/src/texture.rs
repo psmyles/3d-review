@@ -19,10 +19,20 @@
 //! the main thread and never inside a frame's render. The decoded pixels live behind an `Arc`
 //! ([`DecodedImage`]) so the per-frame scene render shares them by refcount, and the GPU upload is
 //! deduplicated by path (the material table's path-keyed cache).
+//!
+//! **Mip chains** (D7) are fire-decode's builder (its `mips` feature, FD11), one per way an image
+//! is uploaded ([`Upload`]), built once and kept with the image ([`DecodedImage::mips`]). The
+//! workers build the ones they know an image needs: a model's textures, those of the slots it
+//! binds; a reload, those its last decode had. Any other is built on first use. Each upload's
+//! cache (material slot, Tex viewport, UV view) then takes the chain rather than building its own.
 
 pub mod imported;
 
 use std::path::Path;
+use std::sync::OnceLock;
+
+use fire_decode::PixelFormat;
+use fire_decode::mips::MipOptions;
 
 /// The seven PBR texture slots a material carries, in the order `review.glsl`
 /// declares them. The numeric index is the offset from the first material texture
@@ -190,7 +200,56 @@ pub struct DecodedImage {
     /// The source file's format as the decoder found it from its content, not its name: `PNG`,
     /// `JPEG`, `OpenEXR`, or a DDS file's pixel format (`DDS BC7 sRGB`).
     pub source_format: &'static str,
+    /// The mip chains this image has been uploaded with ([`DecodedImage::mips`]). A new image
+    /// starts with none: `MipChains::default()`.
+    pub mips: MipChains,
 }
+
+/// How a texture is uploaded: which of an image's readings, and how its mips average. Each is one
+/// mip chain ([`DecodedImage::mips`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Upload {
+    /// Sampled as sRGB colour (`Rgba8Srgb`): a colour slot, and the UV view. The colour reading,
+    /// its mips averaged in linear light, as a GPU's `GenerateMips` does for an sRGB format.
+    Colour,
+    /// Sampled as data (`Rgba8`): a data slot. The data reading, its mips averaged as stored.
+    Data,
+    /// Shown as stored (`Rgba8`): the Tex viewport, where the texel on screen is the texel in the
+    /// file. The colour reading, its mips averaged as stored. An integer source has one reading,
+    /// so this is its [`Upload::Data`] chain.
+    Shown,
+}
+
+impl Upload {
+    /// What a material slot uploads: colour when it samples sRGB, data otherwise.
+    pub fn for_slot(slot: TextureSlot) -> Upload {
+        if slot.is_srgb() {
+            Upload::Colour
+        } else {
+            Upload::Data
+        }
+    }
+
+    /// Whether the upload samples as sRGB, which is also whether its mips average in linear light.
+    pub fn srgb(self) -> bool {
+        matches!(self, Upload::Colour)
+    }
+}
+
+/// A [`DecodedImage`]'s mip chains, levels `1..` each, built once per [`Upload`] and kept for the
+/// image's life: each upload cache that shows the image takes the chain rather than building its
+/// own, and one evicted (the Tex viewport's, on leaving it) uploads again without a rebuild.
+/// Derived from the pixels, so it takes no part in the image's equality.
+#[derive(Debug, Clone, Default)]
+pub struct MipChains([OnceLock<Vec<Vec<u8>>>; 3]);
+
+impl PartialEq for MipChains {
+    fn eq(&self, _: &MipChains) -> bool {
+        true
+    }
+}
+
+impl Eq for MipChains {}
 
 impl DecodedImage {
     /// The RGBA8 bytes a texture sampled as `srgb` colour (or not, as data) uploads: the two
@@ -202,29 +261,101 @@ impl DecodedImage {
         }
     }
 
+    /// The RGBA8 bytes `upload` uploads as level 0.
+    pub fn pixels_for(&self, upload: Upload) -> &[u8] {
+        match upload {
+            Upload::Data => self.rgba_for(false),
+            Upload::Colour | Upload::Shown => &self.rgba,
+        }
+    }
+
+    /// Levels `1..` of `upload`'s mip chain (largest first, `rgba8_mipped_or_white`'s layout),
+    /// built on first use and kept. The decode workers build the ones they know of
+    /// ([`DecodedImage::prepare_mips`]); any other is built on the thread that asks, the render
+    /// thread at its first upload.
+    pub fn mips(&self, upload: Upload) -> &[Vec<u8>] {
+        self.mips.0[self.chain_of(upload)].get_or_init(|| {
+            fire_decode::mips::chain(
+                self.pixels_for(upload),
+                self.width,
+                self.height,
+                PixelFormat::Rgba8Unorm,
+                &mip_options(upload.srgb()),
+            )
+        })
+    }
+
+    /// Build `uploads`' chains now, on the calling thread: a decode worker, for the uploads it
+    /// knows the image will get.
+    pub fn prepare_mips(&self, uploads: impl IntoIterator<Item = Upload>) {
+        for upload in uploads {
+            self.mips(upload);
+        }
+    }
+
+    /// The uploads whose chains are built, for a reload to build them again on its worker.
+    pub fn prepared_uploads(&self) -> Vec<Upload> {
+        [Upload::Colour, Upload::Data, Upload::Shown]
+            .into_iter()
+            .filter(|&upload| self.mips.0[self.chain_of(upload)].get().is_some())
+            .collect()
+    }
+
+    /// Where `upload`'s chain is kept. An integer source's two readings are one, so its shown and
+    /// data chains are too.
+    fn chain_of(&self, upload: Upload) -> usize {
+        match upload {
+            Upload::Colour => 0,
+            Upload::Data => 1,
+            Upload::Shown if self.rgba_linear.is_none() => 1,
+            Upload::Shown => 2,
+        }
+    }
+
     /// This image halved until neither side exceeds `max_side` — the mip level a
     /// GPU would sample for it drawn that small — averaging RGB in linear light
-    /// when it is `srgb` color, exactly as the mip chain does. Unchanged when it
-    /// already fits. A float source's data reading is halved as data. The
-    /// `source_*` fields still describe the file.
+    /// when it is `srgb` color, exactly as the mip chain does (fire-decode's
+    /// `mips::fit`). Unchanged when it already fits. A float source's data reading
+    /// is halved as data. The `source_*` fields still describe the file.
     pub fn fitted_within(self, max_side: u32, srgb: bool) -> DecodedImage {
-        let size = (self.width, self.height);
-        match crate::rhi::halved_to_fit(&self.rgba, size, max_side, srgb) {
+        let (width, height) = (self.width, self.height);
+        let fit = |pixels: &[u8], srgb: bool| {
+            fire_decode::mips::fit(
+                pixels,
+                width,
+                height,
+                PixelFormat::Rgba8Unorm,
+                max_side,
+                &mip_options(srgb),
+            )
+        };
+        match fit(&self.rgba, srgb) {
             Some((rgba, width, height)) => {
-                let rgba_linear = self.rgba_linear.as_ref().and_then(|linear| {
-                    crate::rhi::halved_to_fit(linear, size, max_side, false).map(|(l, ..)| l)
-                });
+                let rgba_linear = self
+                    .rgba_linear
+                    .as_deref()
+                    .and_then(|linear| fit(linear, false))
+                    .map(|(linear, ..)| linear);
                 DecodedImage {
                     width,
                     height,
                     rgba,
                     rgba_linear,
+                    mips: MipChains::default(),
                     ..self
                 }
             }
             None => self,
         }
     }
+}
+
+/// The options every chain here is built with: `srgb` as the upload samples, at most the levels
+/// sokol holds, threads from fire-decode's budget.
+pub(crate) fn mip_options(srgb: bool) -> MipOptions {
+    let mut options = MipOptions::new(srgb);
+    options.max_levels = crate::rhi::MAX_MIP_LEVELS;
+    options
 }
 
 /// The formats a texture can be read from, lower-case, as the import dialog and drag-and-drop
@@ -277,7 +408,6 @@ fn decode_bytes(bytes: &[u8], extension: &str, path: &Path) -> Result<DecodedIma
 
 /// fire-decode's buffer as RGBA8: as it is for an integer source, both narrowings for a float one.
 fn from_fire_decode(image: fire_decode::DecodedImage) -> DecodedImage {
-    use fire_decode::PixelFormat;
     let (rgba, rgba_linear) = match image.format {
         PixelFormat::Rgba8Unorm => (image.pixels, None),
         PixelFormat::Rgba16Float => {
@@ -321,6 +451,7 @@ fn from_fire_decode(image: fire_decode::DecodedImage) -> DecodedImage {
         source_channels: image.source.channels,
         source_bit_depth: image.source.bit_depth,
         source_format: image.source.name,
+        mips: MipChains::default(),
     }
 }
 

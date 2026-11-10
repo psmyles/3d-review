@@ -10,17 +10,20 @@ use std::ffi::CStr;
 
 use sokol::gfx as sg;
 
+use fire_decode::PixelFormat;
+
 use super::error::{GpuError, GpuResult, ResourceKind};
 use super::format::Format;
 use super::make;
-use super::mips;
 
-// `mips` stays free of sokol so the build script can compile it; this is where its
-// level cap is held to the one sokol actually has.
-const _: () = assert!(
-    mips::MAX_LEVELS as usize == sg::MAX_MIPMAPS,
-    "mips::MAX_LEVELS no longer matches sokol's SG_MAX_MIPMAPS"
-);
+/// The most mip levels an image can hold, level 0 included: sokol's `SG_MAX_MIPMAPS`, which
+/// every chain is capped at (`texture::mip_options`).
+pub(crate) const MAX_MIP_LEVELS: u32 = sg::MAX_MIPMAPS as u32;
+
+/// Levels in a full chain for a `width`×`height` texture, capped at what sokol holds.
+fn level_count(width: u32, height: u32) -> u32 {
+    fire_decode::mips::level_count(width, height).min(MAX_MIP_LEVELS)
+}
 
 /// An immutable 2D texture and its sampling view.
 pub(crate) struct Texture {
@@ -74,10 +77,15 @@ impl Texture {
         Self::from_desc(&desc, label)
     }
 
-    /// Upload a decoded RGBA8 image (sRGB or raw) with a full CPU-generated mip
-    /// chain — the Tex viewport's images, the material slots and the UV view's
-    /// texture. A degenerate or short pixel buffer falls back to a 1×1 white texel: a
-    /// decode hiccup must never fail the render path.
+    /// Upload a decoded RGBA8 image (sRGB or raw) with its full mip chain — the Tex
+    /// viewport's images, the material slots and the UV view's texture. A degenerate
+    /// or short pixel buffer falls back to a 1×1 white texel: a decode hiccup must
+    /// never fail the render path.
+    ///
+    /// `levels` is the chain below `rgba`, largest first: the image's own, from
+    /// [`DecodedImage::mips`](crate::DecodedImage::mips), which the decode workers
+    /// built where they could. One that is not this image's chain (`&[]`, for the
+    /// UV checker's 32-texel tile) is built here, with the same filter.
     ///
     /// Nor must a large image. The decoders accept up to 30000 px a side, which is
     /// what source art can be, but a device creates nothing past its 2D limit (16384
@@ -87,15 +95,15 @@ impl Texture {
     /// texture is the same image one or more mips down, the box filter's own
     /// downsample, and a sampler never knows the difference.
     ///
-    /// The chain is built here rather than on the decode worker D7 names, because it
-    /// is not a property of the decoded image alone — the same pixels are uploaded
-    /// raw by the Tex viewport and sRGB by a material slot, and the two chains differ
-    /// (see [`mips`]). It costs a few milliseconds once per texture, on the frame it
-    /// is first looked at.
+    /// The chain used to be built here, on the render thread, once for each cache a
+    /// texture was shown in: 25-45 ms a 4K-5K texture, on the frame it was first
+    /// looked at. It is the image's now, built once per upload kind
+    /// ([`crate::Upload`]), and a model's textures arrive with theirs.
     pub(crate) fn rgba8_mipped_or_white(
         width: u32,
         height: u32,
         rgba: &[u8],
+        levels: &[Vec<u8>],
         srgb: bool,
         label: &CStr,
     ) -> GpuResult<Self> {
@@ -112,12 +120,24 @@ impl Texture {
             return Self::immutable_2d(&[255, 255, 255, 255], 1, 1, format, label);
         };
 
-        let levels = mips::levels_below_base(rgba, width, height, srgb);
+        let built;
+        let levels = if is_chain_of(levels, width, height) {
+            levels
+        } else {
+            built = fire_decode::mips::chain(
+                rgba,
+                width,
+                height,
+                PixelFormat::Rgba8Unorm,
+                &crate::texture::mip_options(srgb),
+            );
+            &built
+        };
         let skip = max_image_size()
             .map_or(0, |limit| levels_over_limit(width, height, limit))
             .min(levels.len());
         let (base, below) = match skip {
-            0 => (rgba, levels.as_slice()),
+            0 => (rgba, levels),
             skip => (levels[skip - 1].as_slice(), &levels[skip..]),
         };
         let (base_width, base_height) = ((width >> skip).max(1), (height >> skip).max(1));
@@ -171,7 +191,7 @@ impl Texture {
                 "'{name}' is {width}x{height}, which is not a whole number of 4x4 blocks"
             )));
         }
-        if levels == 0 || levels > mips::level_count(width, height) {
+        if levels == 0 || levels > level_count(width, height) {
             return Err(GpuError::invalid_arg(format!(
                 "'{name}' asks for {levels} levels, which a {width}x{height} image cannot have"
             )));
@@ -306,10 +326,20 @@ fn max_image_size() -> Option<u32> {
         .filter(|&size| size > 0)
 }
 
+/// Whether `levels` is the RGBA8 chain below a `width`×`height` level 0: as many
+/// levels as sokol holds for it, each the size its dimensions demand.
+fn is_chain_of(levels: &[Vec<u8>], width: u32, height: u32) -> bool {
+    levels.len() + 1 == level_count(width, height) as usize
+        && levels.iter().enumerate().all(|(index, level)| {
+            let (w, h) = fire_decode::level_dims(width, height, index as u32 + 1);
+            level.len() == w as usize * h as usize * 4
+        })
+}
+
 /// How many of a `width`×`height` chain's top levels exceed `limit` on either axis —
 /// the levels [`Texture::rgba8_mipped_or_white`] leaves out. Each level halves with
-/// a floor and never drops below one texel, exactly as [`mips`] builds them, so the
-/// count indexes that chain.
+/// a floor and never drops below one texel, exactly as fire-decode's builder makes
+/// them, so the count indexes that chain.
 fn levels_over_limit(width: u32, height: u32, limit: u32) -> usize {
     let limit = limit.max(1);
     // A one-texel level fits any limit, and `u32 >> 31` is at most one, so this
@@ -341,7 +371,14 @@ mod tests {
         // base that is uploaded is the base the device was asked for.
         let (width, height) = (40, 12);
         let base = vec![0u8; width * height * 4];
-        let chain = mips::levels_below_base(&base, width as u32, height as u32, false);
+        let chain = fire_decode::mips::chain(
+            &base,
+            width as u32,
+            height as u32,
+            PixelFormat::Rgba8Unorm,
+            &crate::texture::mip_options(false),
+        );
+        assert!(is_chain_of(&chain, width as u32, height as u32));
         let skip = levels_over_limit(width as u32, height as u32, 16);
         assert_eq!(skip, 2);
         assert_eq!(chain[skip - 1].len(), (40 >> 2) * (12 >> 2) * 4);

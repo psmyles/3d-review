@@ -16,7 +16,7 @@ use std::sync::{Arc, Weak};
 use crate::config::MaterialMode;
 use crate::rhi::{Bindings, GpuResult, Sampler, Texture};
 use crate::shaders::generated;
-use crate::texture::{DecodedImage, TEXTURE_SLOT_COUNT, TextureSlot};
+use crate::texture::{DecodedImage, TEXTURE_SLOT_COUNT, TextureSlot, Upload};
 
 use super::mode::unmaterialed_material;
 use super::state::{MaterialState, MaterialUniform, TextureBinding};
@@ -244,6 +244,7 @@ impl MaterialTable {
     /// is the slot's fallback, cached in its place (see [`Self::sync`]).
     fn upload(&mut self, slot: TextureSlot, binding: &TextureBinding, tick: u64) -> Arc<Texture> {
         let srgb = slot.is_srgb();
+        let upload = Upload::for_slot(slot);
         let key = (binding.path.clone(), srgb);
         if let Some(cached) = self.cache.get_mut(&key)
             && cached.is_of(&binding.image)
@@ -255,7 +256,8 @@ impl MaterialTable {
             binding.image.width,
             binding.image.height,
             // A float source's reading for this slot: sRGB-encoded for colour, clamped as data.
-            binding.image.rgba_for(srgb),
+            binding.image.pixels_for(upload),
+            binding.image.mips(upload),
             srgb,
             c"material texture",
         ) {
@@ -422,6 +424,7 @@ mod tests {
             source_bit_depth: 8,
             rgba_linear: None,
             source_format: "test",
+            mips: Default::default(),
         })
     }
 

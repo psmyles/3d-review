@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::material::MaterialEntry;
 use crate::rhi::{Frame, GpuResult, Texture, VertexBuffer};
 use crate::shaders::generated;
-use crate::texture::DecodedImage;
+use crate::texture::{DecodedImage, Upload};
 use crate::{TexBackground, TonemapSettings, UvCamera, UvFrame, UvTexture, ViewportBackground};
 
 use super::gpu_types::{SceneUniforms, SceneVertex};
@@ -267,7 +267,8 @@ impl SceneGpu {
         let texture = Texture::rgba8_mipped_or_white(
             wanted.image.width,
             wanted.image.height,
-            &wanted.image.rgba,
+            wanted.image.pixels_for(Upload::Colour),
+            wanted.image.mips(Upload::Colour),
             true,
             c"uv texture",
         )?;
@@ -300,6 +301,8 @@ impl SceneGpu {
             CHECKER_TILE,
             CHECKER_TILE,
             &checker_tile(),
+            // Built here: 32 texels a side, once per view.
+            &[],
             true,
             c"uv checker",
         )?;
