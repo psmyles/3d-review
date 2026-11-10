@@ -25,8 +25,9 @@
 //! path pays no disk I/O for it.
 //!
 //! **The file is written unbuffered, one line per record.** Log volume is a few
-//! lines a second at worst, and a release build aborts on panic — a buffer
-//! would lose exactly the lines that explain the crash.
+//! lines a second at worst, and the viewer aborts on any panic that isn't a
+//! texture decode's ([`install_aborting`]) — a buffer would lose exactly the
+//! lines that explain the crash.
 
 #![forbid(unsafe_code)]
 
@@ -214,7 +215,26 @@ impl log::Log for Logger {
 ///
 /// Call once, first thing in `main`. A second call, or a process that already
 /// has a logger, changes nothing.
+///
+/// The panic then unwinds as the build's profile says. That is what the shell
+/// extensions want: every entry point catches a panic and answers its host
+/// instead (`guard.rs`).
 pub fn install(app_crate: &'static str) {
+    install_hook(app_crate, None);
+}
+
+/// [`install`], with a hook that ends the process after logging any panic for
+/// which `survivable` says no, as a release viewer did when it was built with
+/// `panic = "abort"`. The viewer passes `review_render::in_decode`: a panic inside
+/// a texture decode is fire-decode's to catch and return as an error (its FD7),
+/// and every other panic still ends the viewer loudly, so no thread the viewer
+/// starts needs a `catch_unwind` of its own. Asked on the panicking thread,
+/// before it unwinds.
+pub fn install_aborting(app_crate: &'static str, survivable: fn() -> bool) {
+    install_hook(app_crate, Some(survivable));
+}
+
+fn install_hook(app_crate: &'static str, survivable: Option<fn() -> bool>) {
     let _ = APP_CRATE.set(app_crate);
     if log::set_logger(&LOGGER).is_ok() {
         log::set_max_level(log::LevelFilter::Debug);
@@ -222,6 +242,9 @@ pub fn install(app_crate: &'static str) {
         std::panic::set_hook(Box::new(move |info| {
             record(Level::Error, PANIC_TARGET, format!("panic: {info}"));
             previous(info);
+            if survivable.is_some_and(|survivable| !survivable()) {
+                std::process::abort();
+            }
         }));
     }
 }
@@ -347,8 +370,8 @@ fn record(level: Level, target: &str, message: String) {
         line
     };
     // Not `eprint!`: it panics when stderr cannot be written - a closed pipe,
-    // say - and a release build aborts on panic. A line the console missed is
-    // still in the file.
+    // say - and the viewer aborts on a panic outside a decode. A line the
+    // console missed is still in the file.
     let _ = std::io::stderr().write_all(line.as_bytes());
     review_prof::msg(line.trim_end());
     wake();

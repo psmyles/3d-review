@@ -226,7 +226,7 @@ impl ThreadBudget {
     pub(crate) fn finished_one(&self) {
         let _ = self
             .unfinished
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
                 left.checked_sub(1)
             });
     }

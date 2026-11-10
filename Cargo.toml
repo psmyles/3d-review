@@ -12,7 +12,6 @@ members = [
     "crates/optimize",
     "crates/preview",
     "crates/prof",
-    "crates/psd",
     "crates/render",
     "crates/shell-macos",
     "crates/shell-quicklook",
@@ -44,7 +43,8 @@ undocumented_unsafe_blocks = "deny"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/psmyles/3d-review"
-rust-version = "1.88"
+# fire-decode's floor (its `rust-version`), which every texture decode goes through.
+rust-version = "1.99"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -145,9 +145,13 @@ review-log = { path = "crates/log" }
 # macros panic when no client is running, so every crate that instruments itself
 # needs the same `Client::running()` guard around them.
 review-prof = { path = "crates/prof" }
-# Internal prebuilt-FFI crate: decodes layered PSD source art via psd_sdk (the
-# only FFI site besides `crates/import` + the sanctioned D3D11 sites — invariant 9).
-review-psd = { path = "crates/psd" }
+# The shared texture decoder (fire-decode plan, FD1; its step 4 is this repo's adoption), from its
+# own repository: every source format, PSD through its psd_sdk bridge and HEIC / HEIF / AVIF
+# through libheif, the two sanctioned FFI sites outside this workspace (invariant 9). Until the
+# crate's first tag, its branch; local work on both goes through an untracked
+# `[patch."https://github.com/psmyles/fire-decode"]` in a `.cargo/config.toml` in the folder
+# holding both checkouts. `texture()` converts no colour, so `icc` stays off.
+fire-decode = { git = "https://github.com/psmyles/fire-decode", branch = "main", features = ["psd", "heif"] }
 rfd = "0.15"
 # Build-script only: the shader-bytecode manifest keys freshness on content, and
 # the packaging scripts on both OSes have to recompute the same digest from a
@@ -174,14 +178,6 @@ syn = { version = "2", features = ["full", "visit"] }
 thiserror = "2"
 # Fluent's own locale identifier — what `fluent-bundle` keys a bundle on.
 unic-langid = "0.9"
-# zune is the fast decode path for JPEG textures (platform intrinsics + unsafe
-# fast paths via `DecoderOptions::new_fast`). The `image` crate stays primary for
-# PNG/TGA/TIFF/HDR (measured faster/correct there); PSD goes through `review-psd`.
-zune-core = "0.5"
-# Only the JPEG codec (+ SIMD fast paths) — default features pull in the whole zune
-# codec tree (PNG/JXL/…) plus jxl-oxide, which we don't use (the `image` crate owns
-# those formats here).
-zune-image = { version = "0.5", default-features = false, features = ["jpeg", "simd"] }
 # Tracy profiler client. Always compiled into the binary (incl. release) but
 # runtime-gated: `manual-lifetime` means the client never auto-starts — `main`
 # calls `Client::start()` only when `--tracy` is passed; `ondemand` means a
@@ -231,23 +227,29 @@ incremental = false
 [profile.test]
 incremental = false
 
-# Optimized, self-contained build for distribution. `strip` and `panic = "abort"`
-# drop debug symbols and the unwinding machinery a shipped viewer doesn't need;
+# Optimized, self-contained build for distribution. `strip` drops debug symbols;
 # `lto` + single codegen unit trade build time for a faster, smaller binary. The
 # console window is suppressed separately via `windows_subsystem` in `main.rs`.
+#
+# `panic = "unwind"`, because fire-decode catches a panic inside a decode and returns it as
+# an error (its FD7), which `abort` would make inert: a crafted texture would take the
+# viewer down. Every other panic still ends the viewer loudly: the hook `review-log`
+# installs in a release viewer aborts on any panic that isn't a decode's
+# (`install_aborting`).
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
-panic = "abort"
+panic = "unwind"
 strip = true
 
-# The Explorer shell extension (`crates/shell-windows`): `release` in every way
-# but one. It is a DLL loaded into processes Explorer owns — its COM Surrogate,
-# which hosts other vendors' thumbnail providers beside ours, and a preview host —
-# where an abort kills the process and everything else in it. With unwinding, its
-# every entry point catches a panic and answers an HRESULT instead
-# (`shell-windows/src/guard.rs`). Builds into `target/release-shell/`.
+# The Explorer shell extension (`crates/shell-windows`): a DLL loaded into processes
+# Explorer owns — its COM Surrogate, which hosts other vendors' thumbnail providers beside
+# ours, and a preview host — where an abort kills the process and everything else in it.
+# With unwinding, its every entry point catches a panic and answers an HRESULT instead
+# (`shell-windows/src/guard.rs`). `release` unwinds too now (for fire-decode's guard); this
+# profile stays its own so the shells keep unwinding whatever `release` does. Builds into
+# `target/release-shell/`.
 [profile.release-shell]
 inherits = "release"
 panic = "unwind"

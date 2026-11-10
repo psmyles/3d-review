@@ -40,7 +40,7 @@ use review_optimize::{ExportOptions, ProcessedResult, preset};
 
 use crate::events::UserEvent;
 use crate::keys;
-use crate::loading::{OpenIntent, TEXTURE_EXTENSIONS};
+use crate::loading::OpenIntent;
 use crate::{App, prof};
 
 /// A dialog to open, carrying whatever its answer will act on.
@@ -163,7 +163,8 @@ impl Dialog {
             Dialog::ImportTextures => picker
                 .add_filter(
                     review_localization::tr(keys::app_dialogs::FILTER_IMAGE),
-                    &TEXTURE_EXTENSIONS,
+                    // Every format fire-decode decodes (FD9), as drag-and-drop accepts them.
+                    review_render::texture_extensions(),
                 )
                 .set_title(review_localization::tr(keys::app_dialogs::IMPORT_TEXTURES))
                 .pick_files()

@@ -48,17 +48,11 @@ impl TexturePoolEntry {
             .into_owned()
     }
 
-    /// Uppercased source-file format label from the extension (e.g. `PNG`, `TGA`),
-    /// or, when the path carries none, the stats card's own mark for a value with
-    /// nothing to report. Shown in the Tex viewport's stats panel.
+    /// The source file's format, as the decoder found it from the file's content rather than its
+    /// name (invariant 5): `PNG`, `JPEG`, `OpenEXR`, a DDS file's pixel format. A PNG saved as
+    /// `.psd` reads `PNG`. Shown in the Tex viewport's stats panel.
     pub fn format_label(&self) -> String {
-        self.path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext.to_ascii_uppercase())
-            .unwrap_or_else(|| {
-                review_localization::tr(crate::keys::ui_stats::UNMEASURED).into_owned()
-            })
+        self.image.source_format.to_owned()
     }
 }
 

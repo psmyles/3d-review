@@ -74,7 +74,12 @@ disk once and shared by every material that uses it. The **Texture files**
 section lists the pool with small previews and a way to remove an image.
 
 The viewer reads these picture formats itself: PNG, JPEG, TGA, TIFF, PSD
-(layered Photoshop files, shown flattened), BMP, GIF, HDR and PNM.
+(layered Photoshop files, shown flattened), DDS, OpenEXR, HDR, HEIC, HEIF, AVIF,
+WebP, JPEG XL, BMP, GIF, QOI and PNM. A texture is shown as the file stores it:
+a photo's camera rotation is not applied, so the picture matches its UVs. A
+floating-point texture (OpenEXR, HDR, a 32-bit PSD) is clipped to the 0 to 1
+range: sRGB-encoded in the Base Color and Emissive slots, as the plain values in
+the others.
 
 A texture that is in use is watched on disk. When you save it in Photoshop or
 Substance, the viewer notices and reloads it, so the change appears without

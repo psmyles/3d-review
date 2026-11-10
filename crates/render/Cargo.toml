@@ -21,13 +21,9 @@ log.workspace = true
 # Unpacks the UV checker's BC7 mip chains, which the build script deflated
 # (`build/uv_checker.rs`, `src/scene/checker.rs`).
 miniz_oxide.workspace = true
-# PSD source art is decoded through the vendored psd_sdk FFI crate (invariant 9's
-# third sanctioned FFI site) — replaces the old bundled-ImageMagick shell-out.
-review-psd.workspace = true
-# zune is the fast JPEG decode path (see `texture.rs`); `image` stays primary for
-# the other source formats.
-zune-core.workspace = true
-zune-image.workspace = true
+# Every source texture is decoded through fire-decode (`texture.rs`): the `texture()` setup,
+# with its PSD and HEIF bridges (invariant 9's sanctioned FFI sites outside the workspace).
+fire-decode.workspace = true
 review-model = { path = "../model" }
 # sokol_gfx — the one drawing API on both OSes (Platform decisions D1). Every GPU
 # call the renderer makes goes through it; the only platform code left is the

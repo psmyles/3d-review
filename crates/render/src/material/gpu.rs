@@ -254,7 +254,8 @@ impl MaterialTable {
         let texture = match Texture::rgba8_mipped_or_white(
             binding.image.width,
             binding.image.height,
-            &binding.image.rgba,
+            // A float source's reading for this slot: sRGB-encoded for colour, clamped as data.
+            binding.image.rgba_for(srgb),
             srgb,
             c"material texture",
         ) {
@@ -419,6 +420,8 @@ mod tests {
             rgba: vec![9, 9, 9, 255],
             source_channels: 4,
             source_bit_depth: 8,
+            rgba_linear: None,
+            source_format: "test",
         })
     }
 

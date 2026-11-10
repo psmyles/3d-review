@@ -9,7 +9,9 @@ its repositories.
   (below).
 - **B.1 is done**, and so are the **Windows** items: the step 0 baselines, the static CRT (FD20,
   recorded as D25), and the upgrade check, which includes a real upgrade over an installed 0.8.0.
-- **Still to do:** section 0 and B.2 on the Mac; B.3, which waits for fire-decode's first tag.
+- **Still to do:** section 0 and B.2 on the Mac. **B.3 (fire-decode step 4) is done on the Mac on
+  the `fire-decode` branch** (10 November 2026); it merges with fire-decode's first tag, which needs
+  the Windows HEIF libraries, and its Windows half is under "Needs Windows".
 - **A2, the rules catalog, is done** (5 November): below. It depends on asset-rules `v0.2.1`.
 
 The console tool was renamed from `review-cli` to `3d-review-cli` just before this work, and to
@@ -253,7 +255,66 @@ It depends on asset-rules `v0.2.0`, tagged 5 November 2026; `v0.2.1` since 6 Nov
    - **threads:** a worker pool of half the cores needs no thread share per decode. The crate's
      process-wide budget divides the cores between them.
 
+   **Done on the Mac, on the `fire-decode` branch** (10 November 2026), against fire-decode
+   `13454b7`. `Cargo.toml` names fire-decode's `main` branch, patched to the checkout beside this
+   one by an untracked `~/Dev/.cargo/config.toml`; the tag replaces the branch at merge. Builds use
+   `cargo +1.99.1` (the crate's floor; `rust-version` is now 1.99, and this Mac's `stable` is
+   1.98.1).
+   - **`crates/psd` is gone**, and with it the zune and `image` decode paths: `texture.rs` calls
+     `fire_decode::decode` with `texture()`. The two had to go in one change, since both PSD
+     crates declare `links = "fire_psd"`.
+   - **Float textures:** `DecodedImage` keeps RGBA8, with a second reading for a float source
+     (`rgba_linear`). Colour slots and the UV view take the sRGB-encoded one, data slots the
+     clamped one (`rgba_for`). **The Tex viewport shows the colour reading**, as it showed a
+     32-bit PSD before, since the data reading of linear light looks too dark shown as sRGB.
+   - **The stats' Format row** is `DecodedImage::source_format`, from the decoder.
+   - **Extensions:** the import dialog and drag-and-drop take `review_render::texture_extensions()`
+     (fire-decode's `supported_extensions()`), so DDS, OpenEXR, HEIC, AVIF and the rest open.
+   - **Threads:** pool imports and reloads run on `texture_manager`'s `DecodeWorkers`, half the
+     cores, in place of a thread per texture. A model's own textures keep `imported.rs`'s scoped
+     pool, now sized by the same rule (`decode_workers()`), rather than moving onto the app's
+     workers as the plan said: that loader also serves the preview and both shells, which have
+     no app pool.
+   - **Panics:** `release` unwinds. A release viewer installs `review_log::install_aborting`,
+     which aborts on any panic outside a decode (`review_render::in_decode`, fire-decode's
+     `in_decode()`, which covers its helper threads too). A debug viewer keeps unwinding, as
+     before. The shells keep `review_log::install` and their guards. `review-log`'s comments are
+     reworded.
+   - **Docs:** ARCHITECTURE's crate map, invariant 9, D22, D24, D25 and the DDS non-goal; README;
+     CREDITS; the manual's About and Materials pages. **THIRD-PARTY-NOTICES** now covers the
+     viewer, `review3d-cli`, the DLL and the dylib, adds libheif / libde265 (the first LGPL
+     component, with the relink terms), dav1d and libwebp, and the 40 crates fire-decode brings;
+     `licenses/` gains `LGPL-3.0.txt` and `GPL-3.0.txt`.
+   - Rust 1.99 deprecates `fetch_update`; `review-optimize` uses `try_update`.
+
+   **The macOS gate** (fire-decode's `docs/baselines.md`, "Step 4"):
+   - tests pass, but for `a_classic_material_imports_as_a_dielectric`, which fails on `main` too
+     (no local fixture declares a ReflectionFactor); clippy clean;
+   - startup gate against `746f64b`, 15 runs each: startup +4.5 ms (+1.6%, budget +10), frame
+     -0.5%, footprint +0.2%. Passed. (5 runs read +20.9 ms; 15 settled it.);
+   - sizes: `3d-review` 27,247,728 bytes (+7.6 MB), `libreview_quicklook.dylib` 13,195,376
+     (+5.5 MB): the HEIF stack, JPEG XL, OpenEXR. Imports unchanged; `minos` 11.0 for both;
+   - pixel comparison against `main`, 111 files: every difference is one the plan names (16-bit
+     PSDs round, Radiance HDR's colour reading is sRGB-encoded, a 32-bit PSD's colour reading is
+     byte-identical), and HEIC, AVIF and OpenEXR load where they failed;
+   - an FBX with an embedded HEIC, and one with an embedded AVIF, draw their photo in Quick Look
+     (thumbnail and preview, `scripts/quicklook-check.sh`) and in `review-snapshot`;
+   - a 20000-px texture draws, uploaded from its first mip that fits Metal's 16384.
+
 ## Needs Windows
+
+- **fire-decode step 4's Windows half** (this repo's B.3), on the `fire-decode` branch:
+  - `scripts/check.ps1` and the startup gate against the Windows step 0 baseline;
+  - sizes and import tables of `3d-review.exe`, `review3d-cli.exe` and `review_shell.dll` against
+    step 0: no `MSVCP140`, `VCRUNTIME140*` or `api-ms-win-crt-*` (fire-decode's HEIF libraries
+    are `/MT`);
+  - a HEIC and an AVIF texture in the viewer and in Explorer's preview pane and thumbnail (an FBX
+    embedding one, as on the Mac);
+  - shell panics still caught (the shells' guards are unchanged);
+  - **Asset Check reports a `review3d-cli` panic as the tool failing**: with `release` unwinding,
+    a panic now exits with code 101, where an abort gave `0xC0000409`. The rules repository's
+    hook (SandboxVR/exp-content-rules) must read any code but 0, 1 and 2 as a failure; it isn't
+    on the Mac to check.
 
 - **The upgrade check:** Setup's new `[InstallDelete]` removes the old `review-cli.exe` from the
   install folder, so verify it.

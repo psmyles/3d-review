@@ -441,9 +441,12 @@ between mismatched formats is a silent no-op.
   load, which re-decodes every map, retires the last model's uploads rather than
   matching a reused address). The GPU table is keyed on the model revision, the mode and,
   in Unique mode, the part count, so the Opt split's two meshes never share one.
-- `texture.rs` — source-texture decode by magic-byte dispatch: PSD via
-  `review-psd`, JPEG via zune's fast path, PNG/TGA/TIFF/HDR/BMP/GIF/PNM via the
-  `image` crate. Plus filename channel auto-detect.
+- `texture.rs` — source-texture decode through fire-decode's `texture()` setup
+  (every format it reads: PNG, JPEG, TGA, TIFF, PSD, DDS, OpenEXR, Radiance HDR,
+  HEIC / HEIF / AVIF, WebP, JPEG XL and more), routed by content, not name. A float
+  source keeps two RGBA8 readings, sRGB-encoded for colour slots and clamped for
+  data slots, and each upload takes its slot's (`DecodedImage::rgba_for`). Plus
+  filename channel auto-detect.
 - `texture/imported.rs` (`review_render::imported_textures`) — the textures a
   model's own materials name: `plan` (which slot each map feeds; embedded bytes or
   the first authored path that exists, then the file name beside the model and in
@@ -854,22 +857,25 @@ map is exhaustive, and the crate links no egui and no GPU, which is what lets th
 console tool depend on it. Its messages are the `labels-*.ftl` files.
 `#![forbid(unsafe_code)]`.
 
-### `psd` — `review-psd`
+### Texture decoding — fire-decode (a git dependency)
 
-A safe `decode_psd` over a C-ABI bridge to psd_sdk (C++), returning a PSD's merged
-composite as RGBA8. Vendors psd_sdk as **source** and compiles it with `cc`
-alongside the C-ABI `wrapper.cpp`; `bindings.rs` is committed Rust hand-kept
-against `wrapper.h`, so no bindgen or libclang runs at build time.
+Not a workspace crate: [fire-decode](https://github.com/psmyles/fire-decode), the
+decoder 3D Review shares with fire and bite, which `render`'s `texture.rs` calls
+with its `texture()` setup. It replaced this repository's own `crates/psd` (the
+psd_sdk bridge), the zune JPEG path and the `image` crate's decoders (fire-decode
+plan, step 4). It carries:
 
-The decode is staged — open (header only), check, decode, read — so the wrapper
-refuses what psd_sdk would mishandle *before* psd_sdk allocates for it: only 8,
-16 and 32-bit Grayscale or RGB, 1 to 56 channels, and the same size caps the Rust
-side applies (`PsdError::Unsupported`). The vendored tree is **patched**, not an
-unmodified snapshot: its RLE decoder was unchecked and its image-data section
-sized buffers with 32-bit arithmetic, and `vendor/review.patch` + `NOTICE.txt`
-record the bounds checks added to both. `tests/synthetic.rs` builds malformed
-PSDs in-test (grayscale with alpha, 1-bit, too many channels, truncated RLE) and
-requires each to decode correctly or be refused with an error - never a crash.
+- **psd_sdk**, compiled from source by its `psd-sdk-sys` crate, with the bridge
+  3D Review had merged into it (the staged open / check / decode / read, the
+  patched RLE decoder and image-data section, the same malformed-PSD suite);
+- **libheif, libde265 and dav1d** for HEIC / HEIF / AVIF, prebuilt static
+  libraries committed in its `heif-sys` crate, behind a C++ wrapper that catches
+  every exception;
+- the pure-Rust decoders for everything else, and limits checked before anything
+  is allocated (30000 px and 1 GiB in `texture()`).
+
+A panic inside a decode comes back as an error rather than unwinding into the
+caller (its FD7), which is why the release profile unwinds (D24).
 
 ### `shell-macos` — `review-shell-macos`
 
@@ -1104,7 +1110,6 @@ and `console::say` / `console::warn` as text sinks: the terminal is its screen.
 | `third_party/ufbx` | `ufbx.c` / `ufbx.h` — FBX reading |
 | `third_party/meshoptimizer` | The Opt operations |
 | `third_party/ufbx-write` | `ufbx_write.c` / `.h` — the Opt FBX export. **Patched** (`review.patch`, listed in `NOTICE.txt`): property flags + explicit values, the `Null` attribute, topology layers, LOD groups + layered textures, curve nodes with only the curves asked for |
-| `crates/psd/vendor/Psd` | PSD decoding |
 | `vendor/sokol-rust` | The graphics API bindings |
 
 The first three are compiled only if present, and the workspace still builds
@@ -1219,9 +1224,10 @@ and cancels it, pinning the hand-painted chrome to physical pixels so it halved 
 apparent size on a 2× display while the native `Window`/`Panel` chrome beside it
 did not. Don't reintroduce a px-to-point conversion.
 
-**9. All unsafe and all C/FFI lives in `import`, `psd` and `optimize`** — plus the
+**9. All unsafe and all C/FFI lives in `import` and `optimize`** — plus the
 scoped GPU site below, `shell-macos`'s one Objective-C hook, `shell-windows`' COM
-server and `shell-quicklook`'s C ABI. No unsafe leaks into `model` or `ui`, nor into `render`'s geometry,
+server and `shell-quicklook`'s C ABI, and, outside the workspace, fire-decode's PSD
+and HEIF bridges. No unsafe leaks into `model` or `ui`, nor into `render`'s geometry,
 material or camera modules.
 Before `slice::from_raw_parts`, null-check the pointer and treat len 0 as empty
 (`checked_slice`). Free the C scene on **both** success and error paths.
@@ -1256,11 +1262,12 @@ convention.
 
 The sanctioned exceptions:
 
-- **psd_sdk FFI** (`crates/psd`). The C-ABI bridge to vendored psd_sdk C++ that
-  decodes a PSD's merged composite, so the viewer reads layered PSDs without a
-  bundled ImageMagick. The unsafe is confined to `decode_psd`, which validates
-  header dimensions with checked arithmetic before sizing the output buffer.
-  `render`'s `texture.rs` calls it through the safe API only.
+- **fire-decode's PSD and HEIF bridges** (outside the workspace: its
+  `psd-sdk-sys` and `heif-sys`). The C-ABI bridges to psd_sdk (C++) and libheif,
+  which decode a PSD's merged composite and HEIC / HEIF / AVIF. Each checks the
+  file's header against the caller's limits before the native code allocates,
+  catches every C++ exception at its boundary, and keeps its `unsafe` in its own
+  crate; `render`'s `texture.rs` calls fire-decode's safe API only.
 - **meshoptimizer + ufbx_write FFI** (`crates/optimize`). The two libraries are
   bound differently *because their APIs differ*. meshoptimizer's is already flat
   over raw pointers, so `ffi.rs` declares its entry points directly and
@@ -1473,12 +1480,13 @@ direction-aligned loop growing, loop shifting, a Blossom-Quad fallback — is a
 licence-clean, non-neural triangle-to-quad converter and the best candidate if
 the quad merge is ever extended.
 
-**Engine-cooked compressed textures (KTX2, DDS) are intentionally not a goal.**
-Artists test *source* assets (PNG, TGA, …); KTX2 and DDS are produced inside an
-engine's content pipeline and never hand-authored or carried, so the viewer is
-never handed one. We do use GPU block compression internally — the baked IBL cubes
-are BC6H and the UV checker's chains BC7 — but those are our own bakes, not an
-import path.
+**Engine-cooking workflows are intentionally not a goal**: no KTX2, no platform
+texture formats, no compression settings. Artists test *source* assets (PNG, TGA,
+…). A DDS is read like any other texture, because fire-decode reads it — an FBX
+exported from an engine's content folder often names one — but the viewer decodes
+it to plain RGBA8 and never cooks or recompresses anything. We do use GPU block
+compression internally — the baked IBL cubes are BC6H and the UV checker's chains
+BC7 — but those are our own bakes, not an import path.
 
 ---
 
@@ -1512,10 +1520,10 @@ one settled.
 | D19 | The IBL precompute is offline only, behind the `bake` feature, on a headless sokol device; image readback is another per-OS leaf. |
 | D20 | The swapchain is plain UNORM, not an sRGB format — the flip model disallows `*_SRGB` — so the composite, egui and Tex shaders encode sRGB themselves. |
 | D21 | `vendor/sokol-rust` is a pinned upstream checkout, `exclude`d in the root manifest so `-D warnings` does not lint it. `--exclude` on the command line is not enough: cargo lints every path dependency inside the workspace directory as local. |
-| D22 | psd_sdk is vendored as source and compiled with `cc` beside a C-ABI wrapper, with committed hand-kept bindings, so a clean checkout links without a prebuilt library. |
+| D22 | Textures decode through fire-decode, a git dependency (fire-decode plan, step 4). psd_sdk still compiles from source, inside it; the HEIF stack (libheif, libde265, dav1d) arrives as prebuilt static libraries committed in its tree, built `/MT` on Windows and for macOS 11. They are the first LGPL code in the binaries (libheif, libde265), statically linked under the relink terms in `docs/THIRD-PARTY-NOTICES.md`. |
 | D23 | Explorer integration is a COM DLL over a shared, safe core (`crates/preview`) that the macOS Quick Look extensions call too, through a C-ABI dylib (`crates/shell-quicklook`) and two Swift app extensions. The thumbnail provider is **stream-initialized and isolated** in Explorer's COM Surrogate, and accepts that a stream has no directory: textures beside the model reach the preview pane, not the thumbnail (measured alternatives in GOTCHAS). The preview handler gets a `prevhost.exe` of its own AppID and a window thread of its own. Both render offscreen and read back. |
-| D24 | The shell DLL builds with the `release-shell` profile: `release` with `panic = "unwind"`, so `guard::guarded` can answer a panic with an `HRESULT` instead of aborting a surrogate Explorer shares with other vendors' handlers. |
-| D25 | Every Windows binary links the C and C++ runtimes statically (`-C target-feature=+crt-static` for `x86_64-pc-windows-msvc` in the committed `.cargo/config.toml`; FD20 in fire-decode's plan). The vendored C++ made the viewer import `MSVCP140.dll`, and no installer ships the redistributable, so a clean machine could not start it; the shell DLL also must not pick up whatever `msvcp140.dll` another vendor's handler loaded into the shared surrogate. Everything `cc` builds follows the flag (`/MT`), and nothing prebuilt is linked. The gate is the import tables of `3d-review.exe`, `review3d-cli.exe` and `review_shell.dll`: no `MSVCP140`, `VCRUNTIME140*` or `api-ms-win-crt-*` entry. A `RUSTFLAGS` environment variable replaces the config's list, so it must repeat the flag. |
+| D24 | Every binary unwinds on panic. The shell DLL and dylib build with the `release-shell` profile, so `guard::guarded` answers a panic with an `HRESULT` (or a fallback) instead of aborting a surrogate Explorer shares with other vendors' handlers. The viewer's `release` profile unwinds too, so fire-decode can turn a decode's panic into an error (its FD7); the hook `review-log` installs in a release viewer (`install_aborting`) still aborts on every other panic. `review3d-cli` installs no hook, so a panic there exits with code 101. |
+| D25 | Every Windows binary links the C and C++ runtimes statically (`-C target-feature=+crt-static` for `x86_64-pc-windows-msvc` in the committed `.cargo/config.toml`; FD20 in fire-decode's plan). The vendored C++ made the viewer import `MSVCP140.dll`, and no installer ships the redistributable, so a clean machine could not start it; the shell DLL also must not pick up whatever `msvcp140.dll` another vendor's handler loaded into the shared surrogate. Everything `cc` builds follows the flag (`/MT`), and the one prebuilt set, fire-decode's HEIF libraries, is built `/MT` for it (its `heif-sys` refuses a Windows build without `crt-static`). The gate is the import tables of `3d-review.exe`, `review3d-cli.exe` and `review_shell.dll`: no `MSVCP140`, `VCRUNTIME140*` or `api-ms-win-crt-*` entry. A `RUSTFLAGS` environment variable replaces the config's list, so it must repeat the flag. |
 
 The structural rules the decisions add up to:
 

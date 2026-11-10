@@ -1,8 +1,11 @@
 # Third-party notices
 
-3D Review is a single statically-linked executable - `3d-review.exe` on Windows, the binary inside
-`3D Review.app` on macOS. Everything it needs at runtime is compiled into that one file, so the
-binary you receive contains code, typefaces and image data from the projects listed below. Their
+3D Review ships as statically-linked binaries: the viewer (`3d-review.exe` on Windows, the binary
+inside `3D Review.app` on macOS), the console tool `review3d-cli`, and the file-browser extensions
+(`review_shell.dll` on Windows, `libreview_quicklook.dylib` inside the app's Quick Look extensions
+on macOS). Everything each needs at runtime is compiled into it, so the binaries you receive
+contain code, typefaces and image data from the projects listed below; the viewer and both
+extensions decode textures, so the texture libraries are in all three. Their
 licenses require that their copyright notices and license terms travel with the binary - this
 document, together with the [`../licenses/`](../licenses/) directory, is how they do.
 
@@ -30,8 +33,9 @@ of it is linked into the binary.
 
 ### Native libraries
 
-These are C/C++ libraries, vendored as source under `third_party/`, `crates/psd/vendor/` and
-`vendor/`, or carried by a `-sys` crate, compiled with `cc` and statically linked.
+These are C/C++ libraries, vendored as source under `third_party/` and `vendor/`, or carried by a
+`-sys` crate (fire-decode's among them), compiled with `cc` and statically linked. libheif,
+libde265 and dav1d are the exception: fire-decode carries them as prebuilt static libraries.
 
 #### ufbx - MIT (offered as MIT OR Unlicense; 3D Review elects MIT)
 
@@ -71,11 +75,67 @@ License text: [`licenses/meshoptimizer-MIT.txt`](../licenses/meshoptimizer-MIT.t
 
 #### psd_sdk - BSD-2-Clause
 
-*The Photoshop `.psd` reader behind PSD textures. Vendored unmodified at `crates/psd/vendor/Psd/`
-from upstream commit `f51449543273cbf12058ae92b230e0c4209f5066` and compiled by
-`crates/psd/build.rs` with the project's C-ABI wrapper.*
+*The Photoshop `.psd` reader behind PSD textures, through fire-decode. Compiled from source by
+fire-decode's `psd-sdk-sys`, from upstream commit `f51449543273cbf12058ae92b230e0c4209f5066`
+with fire-decode's hardening patches (marked in the source; `crates/psd-sdk-sys/vendor/VENDOR.txt`
+in <https://github.com/psmyles/fire-decode>).*
 Copyright 2011-2020, Molecular Matters GmbH - <https://github.com/MolecularMatters/psd_sdk>
 License text: [`licenses/BSD-2-Clause.txt`](../licenses/BSD-2-Clause.txt)
+
+**This copy is modified.** The patches bound psd_sdk's RLE decoder and its image-data section's
+buffer arithmetic; the BSD license does not require them to be marked, and they are anyway.
+
+#### libheif - LGPL-3.0-or-later
+
+*The HEIF / HEIC / AVIF container reader behind those textures, through fire-decode. Version
+1.23.7, a prebuilt static library in fire-decode's `crates/heif-sys/vendor/<target>/lib/`.*
+Copyright (c) Dirk Farin and contributors - <https://github.com/strukturag/libheif>
+License text: [`licenses/LGPL-3.0.txt`](../licenses/LGPL-3.0.txt), which incorporates
+[`licenses/GPL-3.0.txt`](../licenses/GPL-3.0.txt). See "Your rights under the LGPL" below.
+
+#### libde265 - LGPL-3.0-or-later
+
+*The HEVC decoder for HEIC / HEIF textures, through fire-decode. Version 1.1.3, prebuilt as
+libheif is.*
+Copyright (c) struktur AG and contributors - <https://github.com/strukturag/libde265>
+License text: [`licenses/LGPL-3.0.txt`](../licenses/LGPL-3.0.txt). See below.
+
+#### dav1d - BSD-2-Clause
+
+*The AV1 decoder for AVIF textures, through fire-decode. Version 1.5.4, prebuilt as libheif is.*
+Copyright (c) 2018-2024 VideoLAN and dav1d authors. All rights reserved. -
+<https://code.videolan.org/videolan/dav1d>
+License text: [`licenses/BSD-2-Clause.txt`](../licenses/BSD-2-Clause.txt)
+
+#### libwebp - BSD-3-Clause
+
+*The WebP decoder behind lossy `.webp` textures, through fire-decode. Version 1.6.0, compiled
+from source by the `libwebp-sys` crate.*
+Copyright (c) 2010, Google Inc. All rights reserved. - <https://chromium.googlesource.com/webm/libwebp>
+License text: [`licenses/BSD-3-Clause.txt`](../licenses/BSD-3-Clause.txt). Google also grants a
+patent licence for WebP; its terms are in the `PATENTS` file of the libwebp source.
+
+> #### Your rights under the LGPL
+>
+> libheif and libde265 are licensed under the **GNU Lesser General Public License, version 3 or
+> any later version**. The viewer, `review_shell.dll` and `libreview_quicklook.dylib` link them
+> statically, so LGPL-3.0 section 4 entitles you to modify those libraries and relink the
+> binaries against your modified versions. 3D Review does not restrict that in any way:
+>
+> * **3D Review's complete source is public**, and so is fire-decode's.
+> * **The exact static libraries are in fire-decode's tree at the tag 3D Review uses**, in
+>   `crates/heif-sys/vendor/<target>/lib/`, beside the headers they were built against, and its
+>   `crates/heif-sys/vendor/VENDOR.txt` is the recipe they were built by.
+> * **Each fire-decode tag's GitHub release carries the upstream source tarballs** of the exact
+>   versions.
+>
+> **To relink:** build your own libheif / libde265 static libraries from modified sources; put
+> them in a local checkout of that fire-decode tag, in `crates/heif-sys/vendor/<target>/lib/`,
+> under the names already there; point 3D Review at that checkout with a
+> `[patch."https://github.com/psmyles/fire-decode"]` entry in an untracked
+> `.cargo/config.toml`; and build. On macOS, re-sign the relinked app and its extensions.
+>
+> Neither library is modified.
 
 #### sokol - Zlib
 
@@ -203,17 +263,17 @@ licenses apply to those parts. Each ported function says so in a comment beside 
 
 ## 2. Rust crates
 
-201 crates are linked into the 3D Review binary (the union of both shipped targets). Where a crate
+241 crates are linked into the 3D Review binary (the union of both shipped targets). Where a crate
 offers a choice of licenses, the column below records **the license 3D Review elects**, not the
 full SPDX expression - 3D Review elects MIT wherever MIT is offered, then the most permissive of
 what is left. A crate whose license is a conjunction (`AND`) lists every term. Full texts:
 
 | License | Text |
 |---|---|
-| MIT (168 crates, plus 5 where it is combined with another term) | [`licenses/MIT.txt`](../licenses/MIT.txt) |
+| MIT (204 crates, plus 5 where it is combined with another term) | [`licenses/MIT.txt`](../licenses/MIT.txt) |
 | Unicode-3.0 (18, plus 1 in addition to MIT) | [`licenses/Unicode-3.0.txt`](../licenses/Unicode-3.0.txt) |
 | Apache-2.0 (3, plus 1 in addition to MIT) | [`licenses/Apache-2.0.txt`](../licenses/Apache-2.0.txt) |
-| BSD-3-Clause (2, plus 1 in addition to MIT) | [`licenses/BSD-3-Clause.txt`](../licenses/BSD-3-Clause.txt); Tracy's own text is [`licenses/Tracy-BSD-3-Clause.txt`](../licenses/Tracy-BSD-3-Clause.txt) |
+| BSD-3-Clause (6, plus 1 in addition to MIT) | [`licenses/BSD-3-Clause.txt`](../licenses/BSD-3-Clause.txt); Tracy's own text is [`licenses/Tracy-BSD-3-Clause.txt`](../licenses/Tracy-BSD-3-Clause.txt) |
 | BSL-1.0 (2) | [`licenses/BSL-1.0.txt`](../licenses/BSL-1.0.txt) |
 | Zlib (1) | [`licenses/Zlib.txt`](../licenses/Zlib.txt) |
 | MPL-2.0 (1) | [`licenses/MPL-2.0.txt`](../licenses/MPL-2.0.txt) - see the note below |
@@ -229,15 +289,21 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `accesskit` | 0.24.1 | MIT | (no notice in crate; authors: The AccessKit contributors) |
 | `adler2` | 2.0.1 | MIT | Copyright (C) Jonas Schievink <jonasschievink@gmail.com> |
 | `ahash` | 0.8.12 | MIT | Copyright (c) 2018 Tom Kaitchuck |
+| `alloc-no-stdlib` | 2.0.4 | BSD-3-Clause | Copyright (c) 2016 Dropbox, Inc. |
+| `alloc-stdlib` | 0.2.4 | BSD-3-Clause | (no notice in crate; authors: Daniel Reiter Horn <danielrh@dropbox.com>) |
 | `anyhow` | 1.0.103 | MIT | (no notice in crate; authors: David Tolnay <dtolnay@gmail.com>) |
 | `arboard` | 3.6.1 | MIT | Copyright (c) 2022 The Arboard contributors |
 | `arrayvec` | 0.7.7 | MIT | Copyright (c) Ulrik Sverdrup "bluss" 2015-2023 |
+| `bcdec_rs` | 0.2.1 | MIT | (no notice in crate; authors: ScanMountGoat) |
+| `bit_field` | 0.10.3 | MIT | Copyright (c) 2016 Philipp Oppermann |
 | `bitflags` | 1.3.2 | MIT | Copyright (c) 2014 The Rust Project Developers |
 | `bitflags` | 2.13.0 | MIT | Copyright (c) 2014 The Rust Project Developers |
 | `block2` | 0.5.1 | MIT | (no notice in crate; authors: Steven Sheldon, Mads Marquart <mads@marquart.dk>) |
 | `block2` | 0.6.2 | MIT | (no notice in crate; authors: Mads Marquart <mads@marquart.dk>) |
+| `brotli-decompressor` | 5.0.3 | MIT | Copyright (c) 2016 Dropbox, Inc. |
 | `bytemuck` | 1.25.0 | MIT | Copyright (c) 2019 Daniel "Lokathor" Gee. |
 | `bytemuck_derive` | 1.10.2 | MIT | Copyright (c) 2019 Daniel "Lokathor" Gee. |
+| `byteorder` | 1.5.0 | MIT | Copyright (c) 2015 Andrew Gallant |
 | `byteorder-lite` | 0.1.0 | MIT | Copyright (c) 2015 Andrew Gallant |
 | `cfg-if` | 1.0.4 | MIT | Copyright (c) 2014 Alex Crichton |
 | `clipboard-win` | 5.4.1 | BSL-1.0 | (no notice in crate; authors: Douman <douman@gmx.se>) |
@@ -249,8 +315,11 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `core-graphics-types` | 0.1.3 | MIT | Copyright (c) 2012-2013 Mozilla Foundation |
 | `crc32fast` | 1.5.0 | MIT | Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors |
 | `crossbeam-channel` | 0.5.16 | MIT | Copyright (c) 2019 The Crossbeam Project Developers |
+| `crossbeam-deque` | 0.8.8 | MIT | Copyright (c) 2019 The Crossbeam Project Developers |
+| `crossbeam-epoch` | 0.9.21 | MIT | Copyright (c) 2019 The Crossbeam Project Developers |
 | `crossbeam-utils` | 0.8.21 | MIT | Copyright (c) 2019 The Crossbeam Project Developers |
 | `cursor-icon` | 1.2.0 | MIT | Copyright (c) 2023 Kirill Chibisov |
+| `ddsfile` | 0.6.0 | MIT | Copyright (c) Michael Dilger & Connor Fitzgerald |
 | `dirs` | 6.0.0 | MIT | Copyright (c) 2018-2019 dirs-rs contributors |
 | `dirs-sys` | 0.5.0 | MIT | Copyright (c) 2018-2019 dirs-rs contributors |
 | `dispatch` | 0.2.0 | MIT | (no notice in crate; authors: Steven Sheldon) |
@@ -271,9 +340,11 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `epaint_default_fonts` | 0.36.1 | MIT AND OFL-1.1 AND Ubuntu-font-1.0 | (no notice in crate; authors: Emil Ernerfeldt <emil.ernerfeldt@gmail.com>); bundles four fonts under their own licenses (see section 1) |
 | `error-code` | 3.3.2 | BSL-1.0 | (no notice in crate; authors: Douman <douman@gmx.se>) |
 | `euclid` | 0.22.14 | MIT | Copyright (c) 2012-2013 Mozilla Foundation |
+| `exr` | 1.74.3 | BSD-3-Clause | Copyright (c) Contributors to the OpenEXR Project. All rights reserved. |
 | `fax` | 0.2.7 | MIT | Copyright © 2021 The pdf-rs contributers. |
 | `fdeflate` | 0.3.7 | MIT | (no notice in crate; authors: The image-rs Developers) |
 | `fearless_simd` | 0.4.1 | MIT | Copyright (c) 2018 Raph Levien |
+| `fire-decode` | 0.0.0 | MIT | Copyright (c) 2026 Chandan Singh |
 | `flate2` | 1.1.9 | MIT | Copyright (c) 2014-2026 Alex Crichton |
 | `fluent-bundle` | 0.16.0 | MIT | Copyright 2017 Mozilla |
 | `fluent-langneg` | 0.13.1 | MIT | (no notice in crate; authors: Zibi Braniecki <gandalf@mozilla.com>) |
@@ -290,6 +361,7 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `half` | 2.7.1 | MIT | (no notice in crate; authors: Kathryn Long <squeeself@gmail.com>) |
 | `harfrust` | 0.12.0 | MIT | Copyright (c) HarfBuzz developers; Copyright (c) 2020 Yevhenii Reizner |
 | `hashbrown` | 0.17.1 | MIT | Copyright (c) 2016 Amanieu d'Antras |
+| `heif-sys` | 0.0.0 | MIT | Copyright (c) 2026 Chandan Singh; links libheif, libde265 and dav1d (see section 1) |
 | `icu_collections` | 2.2.0 | Unicode-3.0 | Copyright © 2020-2024 Unicode, Inc. |
 | `icu_locale_core` | 2.2.0 | Unicode-3.0 | Copyright © 2020-2024 Unicode, Inc. |
 | `icu_normalizer` | 2.2.0 | Unicode-3.0 | Copyright © 2020-2024 Unicode, Inc. |
@@ -300,14 +372,30 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `idna` | 1.1.0 | MIT | Copyright (c) 2013-2025 The rust-url developers |
 | `idna_adapter` | 1.2.2 | MIT | Copyright (c) The rust-url developers |
 | `image` | 0.25.10 | MIT | (no notice in crate; authors: The image-rs Developers) |
+| `image-webp` | 0.2.4 | MIT | (no notice in crate; the image-rs developers) |
 | `intl-memoizer` | 0.5.3 | MIT | Copyright 2017 Mozilla |
 | `intl_pluralrules` | 7.0.2 | MIT | (no notice in crate; authors: Kekoa Riggin <kekoariggin@gmail.com>, Zibi Braniecki <zbraniecki@mozilla.com>) |
 | `itertools` | 0.15.0 | MIT | Copyright (c) 2015 |
 | `itoa` | 1.0.18 | MIT | (no notice in crate; authors: David Tolnay <dtolnay@gmail.com>) |
 | `jpeg-encoder` | 0.7.0 | MIT AND IJG | Copyright (c) 2021 Volker Ströbel <volkerstroebel@mysurdity.de> |
+| `jxl-bitstream` | 1.1.0 | MIT | (no notice in crate; authors: Wonwoo Choi <chwo9843@gmail.com>) |
+| `jxl-coding` | 1.0.1 | MIT | (no notice in crate; authors: Wonwoo Choi <chwo9843@gmail.com>) |
+| `jxl-color` | 0.11.0 | MIT | (no notice in crate; authors: Wonwoo Choi <chwo9843@gmail.com>) |
+| `jxl-frame` | 0.13.3 | MIT | (no notice in crate; authors: Wonwoo Choi <chwo9843@gmail.com>) |
+| `jxl-grid` | 0.6.2 | MIT | (no notice in crate; authors: Wonwoo Choi <chwo9843@gmail.com>) |
+| `jxl-image` | 0.13.0 | MIT | (no notice in crate; authors: Wonwoo Choi <chwo9843@gmail.com>) |
+| `jxl-jbr` | 0.2.1 | MIT | (no notice in crate; authors: Wonwoo Choi <chwo9843@gmail.com>) |
+| `jxl-modular` | 0.11.3 | MIT | (no notice in crate; authors: Wonwoo Choi <chwo9843@gmail.com>) |
+| `jxl-oxide` | 0.12.6 | MIT | (no notice in crate; authors: Wonwoo Choi <chwo9843@gmail.com>) |
+| `jxl-oxide-common` | 1.0.0 | MIT | (no notice in crate; authors: Wonwoo Choi <chwo9843@gmail.com>) |
+| `jxl-render` | 0.12.4 | MIT | (no notice in crate; authors: Wonwoo Choi <chwo9843@gmail.com>) |
+| `jxl-threadpool` | 1.0.0 | MIT | (no notice in crate; authors: Wonwoo Choi <chwo9843@gmail.com>) |
+| `jxl-vardct` | 0.11.1 | MIT | (no notice in crate; authors: Wonwoo Choi <chwo9843@gmail.com>) |
 | `keyboard-types` | 0.7.0 | MIT | Copyright (c) 2017 Pyfisch |
 | `kurbo` | 0.13.1 | MIT | Copyright (c) 2018 Raph Levien |
+| `lebe` | 0.5.3 | BSD-3-Clause | Copyright (c) 2022 Contributors to the lebe Project. All rights reserved. |
 | `libc` | 0.2.186 | MIT | Copyright (c) The Rust Project Developers |
+| `libwebp-sys` | 0.14.4 | MIT | (no notice in crate; authors: XianYou <xianyou.cyq@alibaba-inc.com>, Kornel Lesiński <kornel@geekhood.net>); compiles libwebp (see section 1) |
 | `linebender_resource_handle` | 0.1.1 | MIT | (no copyright notice supplied by the crate) |
 | `litemap` | 0.8.2 | Unicode-3.0 | Copyright © 2020-2024 Unicode, Inc. |
 | `lock_api` | 0.4.14 | MIT | Copyright (c) 2016 The Rust Project Developers |
@@ -318,6 +406,7 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `miniz_oxide` | 0.8.9 | MIT | Copyright 2013-2014 RAD Game Tools and Valve Software; Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC; Copyright (c) 2017 Frommi; Copyright (c) 2017-2024 oyvindln |
 | `moxcms` | 0.8.1 | BSD-3-Clause | Copyright (c) Radzivon Bartoshyk. All rights reserved. |
 | `muda` | 0.19.3 | MIT | Copyright (c) 2022-2022 Tauri Programme within The Commons Conservancy |
+| `multiversion` | 0.8.1 | MIT | Copyright 2019 Caleb Zulawski |
 | `nohash-hasher` | 0.2.0 | MIT | Copyright 2018 Parity Technologies (UK) Ltd. |
 | `notify` | 8.2.0 | CC0-1.0 | (no notice in crate; authors: Félix Saparelli <me@passcod.name>, Daniel Faust <hessijames@gmail.com>, Aron Heinecke <Ox0p54r36@t-online.de>) |
 | `notify-types` | 2.1.0 | MIT | Copyright (c) 2023 Notify Contributors |
@@ -346,11 +435,15 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `potential_utf` | 0.1.5 | Unicode-3.0 | Copyright © 2020-2024 Unicode, Inc. |
 | `proc-macro2` | 1.0.106 | MIT | (no notice in crate; authors: David Tolnay <dtolnay@gmail.com>, Alex Crichton <alex@alexcrichton.com>) |
 | `profiling` | 1.0.18 | MIT | (no notice in crate; authors: Philip Degarmo <aclysma@gmail.com>) |
+| `psd-sdk-sys` | 0.0.0 | MIT | Copyright (c) 2026 Chandan Singh; compiles psd_sdk (see section 1) |
 | `pulldown-cmark` | 0.13.4 | MIT | Copyright 2015 Google Inc. All rights reserved. |
 | `pxfm` | 0.1.29 | BSD-3-Clause | Copyright (c) Radzivon Bartoshyk. All rights reserved. |
+| `qoi` | 0.4.1 | MIT | Copyright (c) 2022 Ivan Smirnov |
 | `quick-error` | 2.0.1 | MIT | Copyright (c) 2015 The quick-error Developers |
 | `quote` | 1.0.46 | MIT | (no notice in crate; authors: David Tolnay <dtolnay@gmail.com>) |
 | `raw-window-handle` | 0.6.2 | MIT | Copyright (c) 2019 Osspial |
+| `rayon` | 1.12.0 | MIT | Copyright (c) 2010 The Rust Project Developers |
+| `rayon-core` | 1.13.0 | MIT | Copyright (c) 2010 The Rust Project Developers |
 | `read-fonts` | 0.41.0 | MIT | Copyright (c) 2019 Fontations Developers |
 | `rfd` | 0.15.4 | MIT | Copyright (c) 2022 Bartłomiej Maryńczak |
 | `rustc-hash` | 2.1.3 | MIT | (no notice in crate; authors: The Rust Project Developers) |
@@ -369,6 +462,7 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `syn` | 2.0.118 | MIT | (no notice in crate; authors: David Tolnay <dtolnay@gmail.com>) |
 | `synstructure` | 0.13.2 | MIT | Copyright 2016 Nika Layzell |
 | `sys-locale` | 0.3.2 | MIT | Copyright (c) 2021 1Password |
+| `target-features` | 0.1.6 | MIT | Copyright 2022 Caleb Zulawski |
 | `thiserror` | 2.0.18 | MIT | (no notice in crate; authors: David Tolnay <dtolnay@gmail.com>) |
 | `thiserror-impl` | 2.0.18 | MIT | (no notice in crate; authors: David Tolnay <dtolnay@gmail.com>) |
 | `tiff` | 0.11.3 | MIT | Copyright (c) 2018 PistonDevelopers |
@@ -424,9 +518,15 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `zerovec` | 0.11.6 | Unicode-3.0 | Copyright © 2020-2024 Unicode, Inc. |
 | `zerovec-derive` | 0.11.3 | Unicode-3.0 | Copyright © 2020-2024 Unicode, Inc. |
 | `zmij` | 1.0.21 | MIT | (no notice in crate; authors: David Tolnay <dtolnay@gmail.com>) |
+| `zune-bmp` | 0.5.2 | MIT | Copyright (c) zune-image developers |
 | `zune-core` | 0.5.1 | MIT | Copyright (c) zune-image developers |
+| `zune-farbfeld` | 0.5.2 | MIT | Copyright (c) zune-image developers |
 | `zune-image` | 0.5.0 | MIT | Copyright (c) zune-image developers |
+| `zune-inflate` | 0.2.54 | MIT | (no notice in crate; the zune-image developers) |
 | `zune-jpeg` | 0.5.15 | MIT | Copyright (c) zune-image developers |
+| `zune-jpegxl` | 0.5.2 | MIT | Copyright (c) zune-image developers |
+| `zune-ppm` | 0.5.1 | MIT | Copyright (c) zune-image developers |
+| `zune-qoi` | 0.5.2 | MIT | Copyright (c) zune-image developers |
 
 ### Crates in `review3d-cli` only
 

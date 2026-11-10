@@ -19,17 +19,30 @@ notices, see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 ## Textures and image decoding
 
 - **[image](https://github.com/image-rs/image)** - the image-rs developers. PNG, TGA, TIFF,
-  Radiance HDR, BMP, GIF and PNM textures, and the interface icons. Includes
+  Radiance HDR, BMP and GIF textures (through fire-decode), and the interface icons. Includes
   **[png](https://github.com/image-rs/image-png)**,
   **[tiff](https://github.com/image-rs/image-tiff)**,
   **[fdeflate](https://github.com/image-rs/fdeflate)** and
   **[weezl](https://github.com/image-rs/weezl)**, plus **[fax](https://github.com/pdf-rs/fax)** by
   the pdf-rs contributors and **[moxcms](https://github.com/awxkee/moxcms)** /
   **[pxfm](https://github.com/awxkee/pxfm)** by Radzivon Bartoshyk.
+- **[fire-decode](https://github.com/psmyles/fire-decode)** - Chandan Singh. Every texture
+  format, through the libraries below it.
 - **[zune-image](https://github.com/etemesi254/zune-image)** - Caleb Etemesi and the zune-image
-  developers. JPEG textures.
+  developers. JPEG, BMP, PNM and JPEG XL textures, through fire-decode.
 - **[psd_sdk](https://github.com/MolecularMatters/psd_sdk)** - Stefan Reinalter / Molecular
-  Matters. Photoshop `.psd` textures.
+  Matters. Photoshop `.psd` textures, through fire-decode.
+- **[libheif](https://github.com/strukturag/libheif)** - Dirk Farin and the libheif developers,
+  with **[libde265](https://github.com/strukturag/libde265)** (struktur AG) and
+  **[dav1d](https://code.videolan.org/videolan/dav1d)** (VideoLAN and dav1d authors). HEIC, HEIF
+  and AVIF textures, through fire-decode.
+- **[exr](https://github.com/johannesvollmer/exrs)** - Johannes Vollmer. OpenEXR textures, through
+  fire-decode.
+- **[ddsfile](https://github.com/SiegeEngine/ddsfile)** and
+  **[bcdec_rs](https://github.com/ifeelsoangry/bcdec_rs)** - DDS textures, through fire-decode.
+- **[jxl-oxide](https://github.com/tirr-c/jxl-oxide)**, **[libwebp](https://chromium.googlesource.com/webm/libwebp)**
+  and **[image-webp](https://github.com/image-rs/image-webp)** - JPEG XL and WebP textures,
+  through fire-decode.
 - **[half](https://github.com/VoidStarKat/half-rs)** - Kathryn Long. `f16` for HDR data.
 
 ## Window, GPU and interface
@@ -161,7 +174,7 @@ lists which parts are ported.
 Used to build 3D Review; not linked into the binary.
 
 - **[cc](https://github.com/rust-lang/cc-rs)** - the Rust project. Compiles ufbx, ufbx_write,
-  meshoptimizer, psd_sdk and sokol.
+  meshoptimizer, psd_sdk (inside fire-decode) and sokol.
 - **`sokol-shdc`** - Andre Weissflog. Shader cross-compilation to Direct3D and Metal.
 - **`fxc` (Windows SDK) and `xcrun metal` (Xcode)** - Microsoft and Apple. Offline shader
   compilers.

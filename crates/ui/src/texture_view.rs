@@ -268,6 +268,8 @@ mod tests {
                 rgba: vec![255; (width * height * 4) as usize],
                 source_channels: 4,
                 source_bit_depth: 8,
+                rgba_linear: None,
+                source_format: "test",
             }),
             file_size: 0,
         }

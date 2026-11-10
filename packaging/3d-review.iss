@@ -131,9 +131,9 @@ Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreve
 Source: "..\docs\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\docs\CREDITS.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\licenses\*.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
-; No external tools to ship: PSD is decoded in-process by the prebuilt psd_sdk FFI
-; crate (review-psd), JPEG by zune, and the rest by the Rust `image` crate — the
-; old bundled ImageMagick CLI is gone.
+; No external tools to ship: every texture is decoded in-process by fire-decode
+; (psd_sdk, libheif and the pure-Rust decoders, statically linked) — the old
+; bundled ImageMagick CLI is gone.
 
 [InstallDelete]
 ; The console tool was review-cli.exe up to 0.8.0, and 3d-review-cli.exe in 0.9.0's

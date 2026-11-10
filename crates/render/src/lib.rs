@@ -62,7 +62,10 @@ pub use texture::imported::{
     self as imported_textures, ImportedBinding, ImportedTexture, ImportedTextures, LoadedTextures,
     TextureSource, TextureUse,
 };
-pub use texture::{ChannelSelect, DecodedImage, TextureSlot, decode_image, suggested_channel};
+pub use texture::{
+    ChannelSelect, DecodedImage, TextureSlot, decode_image, decode_workers, in_decode,
+    is_texture_extension, suggested_channel, texture_extensions,
+};
 
 /// Size in bytes of one *engine-equivalent* vertex: position, normal, UV,
 /// tangent and color — the tuple a game engine's vertex buffer would hold for

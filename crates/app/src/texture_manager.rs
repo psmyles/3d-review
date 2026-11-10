@@ -3,16 +3,16 @@
 //! Owns the import → decode → cache → pool → assign flow and the file-watcher
 //! that re-decodes a pooled texture when its source changes on disk. The state
 //! lives in [`TextureSubsystem`] (`App::textures`); this module holds its logic.
-//! Every decode runs on a worker thread and posts its result back through the
-//! winit event loop ([`UserEvent`]) so all renderer mutation + redraw stays on
-//! the main thread in `app` (invariant 6). One decode per path is in flight at a
+//! Every decode runs on one of a fixed set of worker threads ([`DecodeWorkers`]) and posts its
+//! result back through the winit event loop ([`UserEvent`]) so all renderer mutation + redraw
+//! stays on the main thread in `app` (invariant 6). One decode per path is in flight at a
 //! time — a second request folds into the running one ([`Admission`]) — and each
 //! carries the scene generation it was started for, so a result that lands after
 //! a new model was opened is dropped rather than pooled into the wrong scene.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, mpsc};
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use review_render::{ChannelSelect, DecodedImage, TextureSlot, decode_image, suggested_channel};
@@ -218,9 +218,9 @@ impl App {
         self.redraw.requested = true;
     }
 
-    /// Spawn a background thread that decodes `request`'s source image and posts the
-    /// result back to the event loop. Decoding (especially a large PSD composite or
-    /// a 4K image) can take a while, so it must never run on the main thread.
+    /// Hand `request`'s source image to a decode worker, which posts the result back to
+    /// the event loop. Decoding (especially a large PSD composite or a 4K image) can
+    /// take a while, so it must never run on the main thread.
     fn spawn_decode(&mut self, request: TextureDecodeRequest, activity: ActivityId) {
         let Some(proxy) = self.textures.proxy.clone() else {
             // Without a proxy the decode can never land back: end the paired
@@ -238,25 +238,21 @@ impl App {
         };
         let generation = self.textures.generation;
         let failed_path = request.path().to_path_buf();
-        let spawned = std::thread::Builder::new()
-            .name("texture-decode".into())
-            .spawn(move || {
-                // Name the decode thread + time the decode in Tracy (both no-op unless
-                // `--tracy`).
-                prof::thread_name("texture-decode");
-                let result = {
-                    let _z = prof::zone!("Decode Image");
-                    decode_image(request.path())
-                };
-                // A send failure only means the event loop has exited; nothing to do.
-                let _ = proxy.send_event(UserEvent::TextureDecoded(TextureDecode {
-                    request,
-                    generation,
-                    result,
-                    activity,
-                }));
-            });
-        if let Err(error) = spawned {
+        let submitted = self.textures.workers.submit(Box::new(move || {
+            // Time the decode in Tracy (a no-op unless `--tracy`).
+            let result = {
+                let _z = prof::zone!("Decode Image");
+                decode_image(request.path())
+            };
+            // A send failure only means the event loop has exited; nothing to do.
+            let _ = proxy.send_event(UserEvent::TextureDecoded(TextureDecode {
+                request,
+                generation,
+                result,
+                activity,
+            }));
+        }));
+        if let Err(error) = submitted {
             // No worker, so this decode will never land: release its admission,
             // close its card, and say so.
             log::error!("could not start a texture decode thread: {error}");
@@ -533,6 +529,65 @@ pub(crate) struct TextureSubsystem {
     /// change events and a large PSD takes long enough that every one of them
     /// used to start its own full decode.
     in_flight: HashMap<PathBuf, InFlight>,
+    /// The threads the decodes run on, started with the first one.
+    workers: DecodeWorkers,
+}
+
+/// One decode, as a worker runs it.
+type DecodeJob = Box<dyn FnOnce() + Send>;
+
+/// The texture decodes' worker threads: a fixed set of
+/// [`review_render::decode_workers`] (half the cores), fed from one queue, in place of a
+/// thread per texture (fire-decode plan, FD8). Twenty textures imported at once queue for
+/// them rather than start twenty decodes, each holding its file and pixels at once.
+/// fire-decode's process-wide thread budget divides the cores between the decodes that do
+/// run. Started with the first decode; the threads end when the queue is dropped with the
+/// subsystem.
+#[derive(Default)]
+pub(crate) struct DecodeWorkers {
+    queue: Option<mpsc::Sender<DecodeJob>>,
+}
+
+impl DecodeWorkers {
+    /// Queue `job` for the next free worker, starting the workers if this is the first.
+    fn submit(&mut self, job: DecodeJob) -> Result<(), String> {
+        if self.queue.is_none() {
+            self.queue = Some(Self::start().map_err(|error| error.to_string())?);
+        }
+        match &self.queue {
+            Some(queue) => queue
+                .send(job)
+                .map_err(|_| "the decode workers have stopped".to_owned()),
+            None => Err("the decode workers did not start".to_owned()),
+        }
+    }
+
+    fn start() -> std::io::Result<mpsc::Sender<DecodeJob>> {
+        let (queue, jobs) = mpsc::channel::<DecodeJob>();
+        let jobs = Arc::new(Mutex::new(jobs));
+        for _ in 0..review_render::decode_workers() {
+            let jobs = Arc::clone(&jobs);
+            std::thread::Builder::new()
+                .name("texture-decode".into())
+                .spawn(move || {
+                    // Name the decode thread in Tracy (a no-op unless `--tracy`).
+                    prof::thread_name("texture-decode");
+                    loop {
+                        // One worker waits on the queue at a time; the lock is released
+                        // before the job runs.
+                        let job = match jobs.lock() {
+                            Ok(jobs) => jobs.recv(),
+                            Err(_) => return,
+                        };
+                        match job {
+                            Ok(job) => job(),
+                            Err(_) => return, // the queue was dropped
+                        }
+                    }
+                })?;
+        }
+        Ok(queue)
+    }
 }
 
 impl TextureSubsystem {

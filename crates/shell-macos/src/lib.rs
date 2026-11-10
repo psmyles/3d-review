@@ -2,7 +2,7 @@
 //! putting the bundled `review3d-cli` on the PATH.
 //!
 //! Its own crate rather than a module of `review-app` for the same reason
-//! `review-psd` and `render`'s `rhi/backend/` are separate: the open hook needs
+//! `import` and `render`'s `rhi/backend/` are separate: the open hook needs
 //! `unsafe` — adding a method to winit's application delegate is `class_addMethod`
 //! and nothing else — and invariant 9 keeps `crates/app` at
 //! `#![forbid(unsafe_code)]`. Confining it here means the shell's one `unsafe` site

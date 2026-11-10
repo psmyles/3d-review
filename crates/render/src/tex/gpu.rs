@@ -231,7 +231,9 @@ impl TexGpu {
             return Ok(());
         }
         // Raw upload (`Rgba8`, no sRGB decode) so the displayed texel equals the
-        // stored texel; a degenerate buffer falls back to a white texel.
+        // stored texel; a degenerate buffer falls back to a white texel. A float
+        // source shows its colour reading, sRGB-encoded, as the picture it is (its
+        // data reading would show linear light as if it were sRGB, too dark).
         let texture = Texture::rgba8_mipped_or_white(
             image.width,
             image.height,

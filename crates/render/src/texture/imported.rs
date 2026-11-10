@@ -446,8 +446,8 @@ pub fn load(
     LoadedTextures { planned, images }
 }
 
-/// Decode every planned texture, in parallel, each halved to fit `max_side`
-/// when it is given. The result is parallel to `planned.textures`; a failure
+/// Decode every planned texture, in parallel on [`decode_workers`](crate::decode_workers)
+/// threads, each halved to fit `max_side` when it is given. The result is parallel to `planned.textures`; a failure
 /// is the decoder's own message.
 pub fn decode(
     planned: &ImportedTextures,
@@ -459,9 +459,7 @@ pub fn decode(
     if count == 0 {
         return Vec::new();
     }
-    let workers = std::thread::available_parallelism()
-        .map_or(1, std::num::NonZeroUsize::get)
-        .min(count);
+    let workers = crate::texture::decode_workers().min(count);
     let next = AtomicUsize::new(0);
     let decoded = std::sync::Mutex::new(&mut results);
     std::thread::scope(|scope| {
@@ -515,7 +513,8 @@ fn decode_one(
 /// normal map is blue on average (its vectors point out of the surface) with
 /// red and green centred, where a height map is grey.
 fn looks_like_normal_map(image: &DecodedImage) -> bool {
-    let texels = image.rgba.as_chunks::<4>().0;
+    // A float source's data reading: a normal map's vectors are data, not colour.
+    let texels = image.rgba_for(false).as_chunks::<4>().0;
     if texels.is_empty() {
         return false;
     }
@@ -546,6 +545,8 @@ mod tests {
                 .collect(),
             source_channels: channels,
             source_bit_depth: 8,
+            rgba_linear: None,
+            source_format: "test",
         }
     }
 

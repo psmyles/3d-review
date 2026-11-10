@@ -32,7 +32,7 @@ in the app, which opens the same pages right next to your model.
 | **[Debug overlays](docs/book/src/en/overlays.md)**                   | Face and vertex normals, a bounding box with its size on the edges, texture seams, the pivot and the skeleton. Every one of them moves with an animated model.                                                                               |
 | **[Rendering quality](docs/book/src/en/rendering-quality.md)**       | Lighting from real photographed environments, soft shadows in corners that clean themselves up while the view is still, five tone-mapping recipes, and edge smoothing.                                                                       |
 | **[Outliner and Inspector](docs/book/src/en/outliner-inspector.md)** | The list of parts, materials and animations on the left; facts about the selection and a live material editor on the right.                                                                                                                  |
-| **[Materials and textures](docs/book/src/en/materials.md)**          | Seven material slots with per-channel routing, a shared texture pool, and PNG, JPEG, TGA, TIFF, PSD, BMP, GIF, HDR and PNM read directly. The textures a file names are found and loaded with it, and reload by themselves when you save them. |
+| **[Materials and textures](docs/book/src/en/materials.md)**          | Seven material slots with per-channel routing, a shared texture pool, and PNG, JPEG, TGA, TIFF, PSD, DDS, OpenEXR, HDR, HEIC, AVIF and more read directly. The textures a file names are found and loaded with it, and reload by themselves when you save them. |
 | **[File Explorer](docs/book/src/en/explorer.md)**                    | On Windows, `.fbx` thumbnails in File Explorer, and a live, textured preview in its preview pane that you can orbit and zoom - drawn by the viewer's own renderer.                                                                           |
 | **[Skinning and animation](docs/book/src/en/animation.md)**          | Bone-driven bending done on the GPU, whole-part animation and blend shapes, every animation in the file as a clip, with playback controls.                                                                                                   |
 | **[Model statistics](docs/book/src/en/stats.md)**                    | Only real measured numbers: the artist's own point count next to what a game really has to store, and the gap between them.                                                                                                                  |
@@ -95,15 +95,16 @@ the Dock and opening from Finder, because a bare executable gets none of them.
 
 ### Bundled code
 
-These libraries are built from source by the build scripts, so you do not need
-any prebuilt libraries.
+These libraries are built from source by the build scripts. Textures decode
+through [fire-decode](https://github.com/psmyles/fire-decode), a git dependency:
+psd_sdk compiles from source inside it, and the HEIF stack (libheif, libde265,
+dav1d) arrives prebuilt with it, so there is still nothing to install.
 
 | Tree                        | What it is                                                                                    |
 | --------------------------- | --------------------------------------------------------------------------------------------- |
 | `third_party/ufbx`          | Reads FBX files                                                                               |
 | `third_party/meshoptimizer` | The Opt operations                                                                            |
 | `third_party/ufbx-write`    | Writes FBX files for the Opt export (with a documented set of patches - see its `NOTICE.txt`) |
-| `crates/psd/vendor/Psd`     | Reads Photoshop PSD files                                                                     |
 | `vendor/sokol-rust`         | Talks to the GPU                                                                              |
 
 The first three are only compiled if they are present. The workspace still
@@ -189,7 +190,6 @@ and the lines between them matter.
 | `optimize`           | The meshoptimizer operations, the operation list, presets, and FBX export.                                                                                                                           |
 | `localization`       | The message catalogs and the runtime that looks them up.                                                                                                                                             |
 | `localization-build` | The build-time half: turns the English catalog into typed keys.                                                                                                                                      |
-| `psd`                | Photoshop PSD decoding over a bundled psd_sdk bridge, with a safe API.                                                                                                                               |
 | `shell-macos`        | The two macOS shell pieces: the Finder open hook and the menu bar. Does nothing on other platforms.                                                                                                  |
 | `preview`            | What a file browser shows of a model - a thumbnail and an interactive preview - drawn by the real renderer on a windowless GPU. Safe and platform-neutral, shared by the shell extensions.          |
 | `shell-windows`      | The File Explorer extension: a COM DLL providing `.fbx` thumbnails and the preview pane over `preview`.                                                                                              |

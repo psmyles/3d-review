@@ -17,8 +17,10 @@ The viewer is built with the help of these open source projects:
   Opt export.
 - [meshoptimizer](https://github.com/zeux/meshoptimizer) - the operations in
   the Opt workspace.
-- [psd_sdk](https://github.com/MolecularMatters/psd_sdk) - reads Photoshop PSD
-  files.
+- [fire-decode](https://github.com/psmyles/fire-decode) - reads every texture
+  format, with [psd_sdk](https://github.com/MolecularMatters/psd_sdk) for
+  Photoshop files and [libheif](https://github.com/strukturag/libheif) for HEIC
+  and AVIF.
 - [sokol](https://github.com/floooh/sokol) - talks to the GPU.
 - [egui](https://github.com/emilk/egui) - draws the buttons and panels.
 

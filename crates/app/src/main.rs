@@ -80,8 +80,15 @@ fn main() -> anyhow::Result<()> {
     // The logger, before anything can say something: an atomic store and nothing
     // else, so the GPU bring-up below is not held up by it and what it logs is
     // kept. The file it writes to is opened further down (`logging::open`), and
-    // gets everything logged until then.
-    review_log::install(env!("CARGO_CRATE_NAME"));
+    // gets everything logged until then. In a release build a panic outside a texture
+    // decode ends the viewer, as `panic = "abort"` did; one inside a decode is
+    // fire-decode's to turn into an error (its FD7), so a crafted texture is just a
+    // file that didn't load. A debug build keeps unwinding, as it always has.
+    if cfg!(debug_assertions) {
+        review_log::install(env!("CARGO_CRATE_NAME"));
+    } else {
+        review_log::install_aborting(env!("CARGO_CRATE_NAME"), review_render::in_decode);
+    }
 
     // The GPU device and `sg_setup` need no window and are the longest single item on
     // the launch path, so they start here, before anything else, and run alongside

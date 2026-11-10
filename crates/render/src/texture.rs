@@ -1,29 +1,27 @@
 //! Source-image decoding for the material texture slots.
 //!
-//! Decoding uses existing decoder libraries only: the Rust `image` crate for the
-//! formats it covers (PNG/TGA/TIFF/HDR/BMP/GIF/PNM), **zune** for the JPEG fast path
-//! (platform intrinsics + unsafe fast paths, measured faster than `image`'s decoder),
-//! and the psd_sdk FFI crate ([`review_psd`], psd_sdk vendored as source and compiled
-//! with `cc`) for layered **PSD** source art (its merged composite). This replaces
-//! the old bundled-ImageMagick `magick.exe` shell-out — no external binary is shipped
-//! anymore.
+//! Every format goes through **fire-decode**, the decoder 3D Review shares with fire and bite
+//! (fire-decode plan, step 4): its `texture()` setup, which reads a file as stored (no EXIF
+//! rotation, no colour conversion, never shrunk) within 30000 px and 1 GiB. It routes by magic
+//! bytes first and the extension second, so a PNG saved as `.psd` still reaches the PNG decoder,
+//! and it brings PSD (through psd_sdk), HEIC / HEIF / AVIF (through libheif), DDS, OpenEXR,
+//! Radiance HDR, JPEG XL, WebP and the rest. Its two native bridges are the sanctioned FFI sites
+//! outside this workspace (invariant 9); the decode code here stays safe.
 //!
-//! Dispatch is by magic bytes first (robust to mislabeled extensions — common in
-//! game-asset exports), with the file extension as a fallback for formats that carry
-//! no signature (e.g. TGA) — never the other way round, so a PNG saved as `.psd`
-//! still reaches the PNG decoder. Only the `review_psd` path is `unsafe`/FFI, and it
-//! is confined to that crate (invariant 9); the decode code here stays safe.
+//! The renderer samples one layout, RGBA8. fire-decode hands an integer source over as RGBA8
+//! (16-bit rounded to nearest) and a float source (OpenEXR, Radiance HDR, a 32-bit PSD) as float,
+//! because only the slot it lands in can say how to narrow it: a colour slot clamps it and
+//! sRGB-encodes it, a data slot clamps it with no curve. A float source therefore carries both
+//! narrowings, and each upload takes the one its slot needs ([`DecodedImage::rgba_for`]).
 //!
-//! [`decode_image`] runs on a worker thread `app`'s texture manager spawns per decode
-//! (a file imported into the scene texture pool, or a reload after it changes on
-//! disk) — never on the main thread, and never inside a frame's render. The decoded
-//! RGBA8 pixels live behind an `Arc` ([`DecodedImage`]) so the per-frame scene render
-//! shares them by refcount, and the GPU upload is deduplicated by path (the material
-//! table's path-keyed cache).
+//! [`decode_image`] runs on the texture manager's decode workers (a file imported into the scene
+//! texture pool, or a reload after it changes on disk), or on a model's own scoped pool, never on
+//! the main thread and never inside a frame's render. The decoded pixels live behind an `Arc`
+//! ([`DecodedImage`]) so the per-frame scene render shares them by refcount, and the GPU upload is
+//! deduplicated by path (the material table's path-keyed cache).
 
 pub mod imported;
 
-use std::io::Cursor;
 use std::path::Path;
 
 /// The seven PBR texture slots a material carries, in the order `review.glsl`
@@ -167,15 +165,20 @@ impl ChannelSelect {
 /// scene render and the GPU upload reference the same buffer without copying.
 ///
 /// The pixels are always RGBA8 (the renderer / Tex viewer sample one layout); the
-/// `source_*` fields preserve the *original* file's channel count and per-channel
-/// bit depth so the Tex viewport's stats panel can report them faithfully
+/// `source_*` fields preserve the *original* file's channel count, per-channel bit
+/// depth and format so the Tex viewport's stats panel can report them faithfully
 /// (invariant 5) — they describe the file on disk, not this decoded buffer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedImage {
     pub width: u32,
     pub height: u32,
-    /// Tightly-packed RGBA8 rows, `width * height * 4` bytes.
+    /// Tightly-packed RGBA8 rows, `width * height * 4` bytes: the colour reading. An integer
+    /// source's samples as stored (16-bit rounded to nearest); a float source's clamped to 0..1
+    /// with its colour sRGB-encoded, so a slot sampled as sRGB gets the linear values back.
     pub rgba: Vec<u8>,
+    /// A float source's data reading: clamped to 0..1 with no curve, for the slots sampled as
+    /// linear data. `None` for an integer source, whose bytes are the same either way.
+    pub rgba_linear: Option<Vec<u8>>,
     /// Channel count of the source file as the decode reads it (1 grey, 2
     /// grey+alpha, 3 RGB, 4 RGBA): what the file's pixels carry, not how they are
     /// stored. A CMYK JPEG is colour without transparency, so it is 3; a PSD's
@@ -184,31 +187,75 @@ pub struct DecodedImage {
     pub source_channels: u8,
     /// Bits per channel of the source file (e.g. 8, 16), before the RGBA8 decode.
     pub source_bit_depth: u8,
+    /// The source file's format as the decoder found it from its content, not its name: `PNG`,
+    /// `JPEG`, `OpenEXR`, or a DDS file's pixel format (`DDS BC7 sRGB`).
+    pub source_format: &'static str,
 }
 
 impl DecodedImage {
+    /// The RGBA8 bytes a texture sampled as `srgb` colour (or not, as data) uploads: the two
+    /// differ only for a float source.
+    pub fn rgba_for(&self, srgb: bool) -> &[u8] {
+        match (&self.rgba_linear, srgb) {
+            (Some(linear), false) => linear,
+            _ => &self.rgba,
+        }
+    }
+
     /// This image halved until neither side exceeds `max_side` — the mip level a
     /// GPU would sample for it drawn that small — averaging RGB in linear light
     /// when it is `srgb` color, exactly as the mip chain does. Unchanged when it
-    /// already fits. The `source_*` fields still describe the file.
+    /// already fits. A float source's data reading is halved as data. The
+    /// `source_*` fields still describe the file.
     pub fn fitted_within(self, max_side: u32, srgb: bool) -> DecodedImage {
-        match crate::rhi::halved_to_fit(&self.rgba, (self.width, self.height), max_side, srgb) {
-            Some((rgba, width, height)) => DecodedImage {
-                width,
-                height,
-                rgba,
-                ..self
-            },
+        let size = (self.width, self.height);
+        match crate::rhi::halved_to_fit(&self.rgba, size, max_side, srgb) {
+            Some((rgba, width, height)) => {
+                let rgba_linear = self.rgba_linear.as_ref().and_then(|linear| {
+                    crate::rhi::halved_to_fit(linear, size, max_side, false).map(|(l, ..)| l)
+                });
+                DecodedImage {
+                    width,
+                    height,
+                    rgba,
+                    rgba_linear,
+                    ..self
+                }
+            }
             None => self,
         }
     }
 }
 
-/// Decode `path` into RGBA8 pixels. Reads the file once, then dispatches by magic
-/// bytes (with the extension as a fallback for signature-less formats like TGA):
-/// PSD → the psd_sdk FFI crate ([`review_psd`]); JPEG → zune's fast path; everything
-/// else → the `image` crate. Returns a human-readable error string on failure (the
-/// caller warns + falls back to the slot's neutral 1×1 texture).
+/// The formats a texture can be read from, lower-case, as the import dialog and drag-and-drop
+/// name them: everything this build of fire-decode decodes (FD9). A dropped file not on it opens
+/// as a model.
+pub fn texture_extensions() -> &'static [&'static str] {
+    fire_decode::supported_extensions()
+}
+
+/// Whether the calling thread is inside a texture decode, or one of its helper threads: for the
+/// viewer's panic hook, which aborts on every other panic ([`fire_decode::in_decode`]).
+pub fn in_decode() -> bool {
+    fire_decode::in_decode()
+}
+
+/// How many textures to decode at once: half the cores, at least one (bite's `default_jobs`
+/// rule; fire-decode plan, FD8). Each decode's own passes draw on fire-decode's process-wide
+/// thread budget, which divides the cores between the decodes running; this bounds how many run,
+/// and so how many files and pixel buffers are held at once.
+pub fn decode_workers() -> usize {
+    (std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get) / 2).max(1)
+}
+
+/// Whether `ext` (no leading dot, any case) is in [`texture_extensions`].
+pub fn is_texture_extension(ext: &str) -> bool {
+    fire_decode::is_supported_extension(ext)
+}
+
+/// Decode `path` into RGBA8 pixels through fire-decode's `texture()` setup. Reads the file once;
+/// the extension is only the hint for a format with no signature (TGA). Returns a human-readable
+/// error string on failure (the caller warns + falls back to the slot's neutral 1×1 texture).
 pub fn decode_image(path: &Path) -> Result<DecodedImage, String> {
     let bytes = std::fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?;
     let extension = path
@@ -222,149 +269,87 @@ pub fn decode_image(path: &Path) -> Result<DecodedImage, String> {
 /// [`decode_image`] over bytes already read, with `extension` (lower case) as the
 /// hint for a signature-less format; `path` only names the file in an error.
 fn decode_bytes(bytes: &[u8], extension: &str, path: &Path) -> Result<DecodedImage, String> {
-    // PSD: layered source art. psd_sdk reads the merged/composited image (present
-    // when saved with "Maximize Compatibility"), the thing the viewer displays.
-    // Every PSD (and PSB) opens with this signature, so the extension adds nothing
-    // here — and routing a `.psd` by name alone sent a PNG or TIFF that had been
-    // saved under it to a decoder that could only refuse it.
-    if bytes.starts_with(b"8BPS") {
-        return decode_psd(bytes, path);
-    }
-
-    // JPEG: the fast path. If zune rejects it (e.g. a truncated/odd variant), fall
-    // through to the `image` crate rather than failing outright.
-    if (bytes.starts_with(&[0xFF, 0xD8, 0xFF]) || matches!(extension, "jpg" | "jpeg"))
-        && let Ok(image) = decode_jpeg_zune(bytes)
-    {
-        return Ok(image);
-    }
-
-    // Everything else (PNG/TGA/TIFF/HDR/BMP/GIF/PNM): the `image` crate.
-    dynamic_to_decoded(decode_via_image_crate(bytes, extension, path)?)
-}
-
-/// Flatten a decoded [`image::DynamicImage`] into a [`DecodedImage`], capturing the
-/// source color type *before* the RGBA8 conversion so the Tex viewport can report
-/// the file's real channel count + bit depth (invariant 5).
-fn dynamic_to_decoded(image: image::DynamicImage) -> Result<DecodedImage, String> {
-    let color = image.color();
-    let source_channels = color.channel_count().max(1);
-    let source_bit_depth = (color.bits_per_pixel() / source_channels as u16) as u8;
-
-    let rgba = image.to_rgba8();
-    let (width, height) = rgba.dimensions();
-    Ok(DecodedImage {
-        width,
-        height,
-        rgba: rgba.into_raw(),
-        source_channels,
-        source_bit_depth,
-    })
-}
-
-/// Decode with the `image` crate, guessing the format from the content's magic
-/// bytes rather than the extension — so a mislabeled file (a PNG saved as `.jpg`,
-/// common in game-asset exports) reaches the right decoder. Signature-less formats
-/// (TGA) that content-sniffing misses fall back to the `extension` hint.
-fn decode_via_image_crate(
-    bytes: &[u8],
-    extension: &str,
-    path: &Path,
-) -> Result<image::DynamicImage, String> {
-    let mut reader = image::ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|error| format!("read {}: {error}", path.display()))?;
-    if reader.format().is_none()
-        && let Some(format) = image::ImageFormat::from_extension(extension)
-    {
-        reader.set_format(format);
-    }
-    // Bound the decode: a malformed header claiming absurd dimensions must fail
-    // cleanly here, not balloon RAM (the default limits cap allocation but not
-    // dimensions). 30000 px matches the PSD path's ceiling.
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(30_000);
-    limits.max_image_height = Some(30_000);
-    reader.limits(limits);
-    reader
-        .decode()
-        .map_err(|error| format!("decode {}: {error}", path.display()))
-}
-
-/// Decode JPEG bytes with zune's speed-first options, normalized to RGBA8. JPEG is
-/// always 8-bit; the source channel count is read from the file's own colour
-/// space, from its header, for the stats panel.
-fn decode_jpeg_zune(bytes: &[u8]) -> Result<DecodedImage, String> {
-    use zune_core::bytestream::ZCursor;
-    use zune_core::colorspace::ColorSpace;
-    use zune_core::options::DecoderOptions;
-    use zune_image::codecs::jpeg::JpegDecoder;
-    use zune_image::traits::DecoderTrait;
-
-    // Speed is a project goal: enable platform intrinsics + unsafe fast paths.
-    let options = DecoderOptions::new_fast();
-    // The decoder `Image::read` would pick for these bytes, driven by hand so its
-    // header can be asked what the file holds before it decodes: once decoded, the
-    // image's colour space is the decoder's *output*, which is RGB whatever the file
-    // stored, so a greyscale JPEG used to report three channels.
-    let mut decoder = JpegDecoder::new_with_options(ZCursor::new(bytes), options);
-    decoder
-        .decode_headers()
-        .map_err(|error| format!("zune decode jpeg: {error}"))?;
-    let source_channels = decoder.input_colorspace().map_or(3, jpeg_source_channels);
-    let mut image = <JpegDecoder<_> as DecoderTrait>::decode(&mut decoder)
-        .map_err(|error| format!("zune decode jpeg: {error}"))?;
-
-    image
-        .convert_color(ColorSpace::RGBA)
-        .map_err(|error| format!("zune convert jpeg to rgba: {error}"))?;
-
-    let (width, height) = image.dimensions();
-    let frame = image
-        .frames_ref()
-        .first()
-        .ok_or_else(|| "zune jpeg has no frames".to_string())?;
-    let rgba = frame.flatten::<u8>();
-
-    Ok(DecodedImage {
-        width: width as u32,
-        height: height as u32,
-        rgba,
-        source_channels,
-        source_bit_depth: 8,
-    })
-}
-
-/// The [`DecodedImage::source_channels`] of a JPEG stored in `colorspace`: 1 for
-/// greyscale, and 3 for everything else a JPEG holds — YCbCr and RGB, and CMYK /
-/// YCCK too, whose fourth component is ink rather than transparency and is folded
-/// into the colour the decoder hands back.
-fn jpeg_source_channels(colorspace: zune_core::colorspace::ColorSpace) -> u8 {
-    use zune_core::colorspace::ColorSpace;
-
-    match colorspace {
-        ColorSpace::Luma => 1,
-        ColorSpace::LumaA => 2,
-        other if other.has_alpha() => 4,
-        _ => 3,
-    }
-}
-
-/// Decode a PSD's merged/composited image via the psd_sdk FFI crate. The
-/// `unsafe`/FFI is fully contained in [`review_psd`] (invariant 9); this only maps
-/// its result into a [`DecodedImage`], reporting the channels the composite is
-/// drawn from (not the planes stored: a spot or saved-selection channel past the
-/// transparency is never read) and the bit depth from the PSD header.
-fn decode_psd(bytes: &[u8], path: &Path) -> Result<DecodedImage, String> {
-    let psd = review_psd::decode_psd(bytes)
+    let ext = (!extension.is_empty()).then_some(extension);
+    let image = fire_decode::decode(bytes, ext, &fire_decode::DecodeOptions::texture())
         .map_err(|error| format!("decode {}: {error}", path.display()))?;
-    Ok(DecodedImage {
-        width: psd.width,
-        height: psd.height,
-        source_channels: psd.drawn_channels(),
-        source_bit_depth: psd.bits_per_channel.clamp(1, 255) as u8,
-        rgba: psd.rgba8,
-    })
+    Ok(from_fire_decode(image))
+}
+
+/// fire-decode's buffer as RGBA8: as it is for an integer source, both narrowings for a float one.
+fn from_fire_decode(image: fire_decode::DecodedImage) -> DecodedImage {
+    use fire_decode::PixelFormat;
+    let (rgba, rgba_linear) = match image.format {
+        PixelFormat::Rgba8Unorm => (image.pixels, None),
+        PixelFormat::Rgba16Float => {
+            let floats: Vec<f32> = image
+                .pixels
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| half::f16::from_bits(u16::from_ne_bytes(*b)).to_f32())
+                .collect();
+            narrow_float(&floats)
+        }
+        PixelFormat::Rgba32Float => {
+            let floats: Vec<f32> = image
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| f32::from_ne_bytes(*b))
+                .collect();
+            narrow_float(&floats)
+        }
+        // `texture()` narrows unorm to 8-bit itself (`Output::Rgba8OrFloat`); were a 16-bit
+        // buffer ever to arrive, round it the same way rather than misread it.
+        PixelFormat::Rgba16Unorm => (
+            image
+                .pixels
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| ((u16::from_ne_bytes(*b) as u32 * 255 + 32767) / 65535) as u8)
+                .collect(),
+            None,
+        ),
+    };
+    DecodedImage {
+        width: image.width,
+        height: image.height,
+        rgba,
+        rgba_linear,
+        source_channels: image.source.channels,
+        source_bit_depth: image.source.bit_depth,
+        source_format: image.source.name,
+    }
+}
+
+/// A float RGBA buffer's two RGBA8 readings: colour (clamped, colour channels sRGB-encoded) and
+/// data (clamped, no curve). Alpha is coverage, not light, and is never encoded. The colour
+/// reading is the one 3D Review's own PSD bridge gave a 32-bit document, to the byte: the same
+/// IEC 61966-2-1 curve in `f32`, clamped first (NaN to 0), rounded by adding a half.
+fn narrow_float(floats: &[f32]) -> (Vec<u8>, Option<Vec<u8>>) {
+    fn clamped(v: f32) -> f32 {
+        if v > 0.0 { v.min(1.0) } else { 0.0 } // NaN fails `> 0.0` and lands on 0
+    }
+    fn srgb(v: f32) -> f32 {
+        if v <= 0.0031308 {
+            v * 12.92
+        } else {
+            1.055 * v.powf(1.0 / 2.4) - 0.055
+        }
+    }
+    let byte = |v: f32| (v * 255.0 + 0.5) as u8;
+    let mut colour = Vec::with_capacity(floats.len());
+    let mut data = Vec::with_capacity(floats.len());
+    for px in floats.as_chunks::<4>().0 {
+        for (c, &v) in px.iter().enumerate() {
+            let v = clamped(v);
+            data.push(byte(v));
+            colour.push(byte(if c < 3 { srgb(v) } else { v }));
+        }
+    }
+    (colour, Some(data))
 }
 
 /// Best-effort channel routing for a freshly-assigned slot, guessed from the
@@ -425,6 +410,7 @@ fn packed_channel(token: &str, slot: TextureSlot) -> Option<ChannelSelect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn orm_suffix_routes_each_property_to_its_channel() {
@@ -464,12 +450,11 @@ mod tests {
         );
     }
 
-    /// A JPEG routes through the zune fast path: exercise `decode_image` end-to-end
-    /// on an encoded JPEG and confirm it comes back as a full RGBA8 buffer with the
-    /// source channel count reported (3 for RGB). JPEG is lossy, so this asserts
+    /// A JPEG decodes end to end through `decode_image` into a full RGBA8 buffer with
+    /// the source channel count reported (3 for RGB). JPEG is lossy, so this asserts
     /// structure (dimensions / buffer size / channels), not exact pixel values.
     #[test]
-    fn jpeg_decodes_via_zune_path() {
+    fn a_jpeg_decodes() {
         let mut src = image::RgbImage::new(4, 2);
         for (x, y, pixel) in src.enumerate_pixels_mut() {
             *pixel = image::Rgb([(x * 40) as u8, (y * 80) as u8, 60]);
@@ -479,16 +464,18 @@ mod tests {
             .write_to(&mut buf, image::ImageFormat::Jpeg)
             .expect("encode jpeg fixture");
 
-        let path = std::env::temp_dir().join(format!("review_zune_{}.jpg", std::process::id()));
+        let path = std::env::temp_dir().join(format!("review_jpeg_{}.jpg", std::process::id()));
         std::fs::write(&path, buf.into_inner()).expect("write temp jpeg");
         let decoded = decode_image(&path);
         let _ = std::fs::remove_file(&path);
 
-        let decoded = decoded.expect("zune should decode the jpeg");
+        let decoded = decoded.expect("the jpeg decodes");
         assert_eq!((decoded.width, decoded.height), (4, 2));
         assert_eq!(decoded.rgba.len(), 4 * 2 * 4);
         assert_eq!(decoded.source_channels, 3);
         assert_eq!(decoded.source_bit_depth, 8);
+        assert_eq!(decoded.source_format, "JPEG");
+        assert!(decoded.rgba_linear.is_none());
     }
 
     /// Encode `image` as `format` in memory.
@@ -507,7 +494,8 @@ mod tests {
             image::DynamicImage::ImageLuma8(grey),
             image::ImageFormat::Jpeg,
         );
-        let decoded = decode_jpeg_zune(&bytes).expect("zune decodes a greyscale jpeg");
+        let decoded =
+            decode_bytes(&bytes, "jpg", Path::new("t.jpg")).expect("a greyscale jpeg decodes");
         assert_eq!(decoded.source_channels, 1);
         assert_eq!(decoded.rgba.len(), 4 * 4 * 4);
         // The pixels are still grey, expanded to RGBA.
@@ -521,19 +509,8 @@ mod tests {
         );
     }
 
-    /// CMYK and YCCK are colour without transparency, as the decode draws them.
-    #[test]
-    fn a_jpeg_colour_space_maps_to_the_channels_drawn() {
-        use zune_core::colorspace::ColorSpace;
-        assert_eq!(jpeg_source_channels(ColorSpace::Luma), 1);
-        assert_eq!(jpeg_source_channels(ColorSpace::YCbCr), 3);
-        assert_eq!(jpeg_source_channels(ColorSpace::RGB), 3);
-        assert_eq!(jpeg_source_channels(ColorSpace::CMYK), 3);
-        assert_eq!(jpeg_source_channels(ColorSpace::YCCK), 3);
-    }
-
     /// BMP and GIF are offered by the texture pickers, so they must decode: both
-    /// carry a signature, and both go to the `image` crate.
+    /// carry a signature.
     #[test]
     fn bmp_and_gif_decode() {
         let pixels =
@@ -570,6 +547,92 @@ mod tests {
         let decoded = decode_bytes(&png, "psd", Path::new("t.psd")).expect("decodes by content");
         assert_eq!(decoded.rgba, pixels.into_raw());
         assert_eq!(decoded.source_channels, 4);
+        assert_eq!(
+            decoded.source_format, "PNG",
+            "the Format row names the content"
+        );
+    }
+
+    /// A 16-bit source rounds to nearest, where 3D Review's own PSD path truncated
+    /// (`>> 8`): `0xFF00` is 254.0 of 255 and stays 254, where truncation made it
+    /// 255; `0x0081` is 0.502 and rounds up to 1, where truncation made it 0.
+    #[test]
+    fn sixteen_bit_rounds_to_nearest() {
+        let pixels = image::ImageBuffer::<image::Rgba<u16>, _>::from_raw(
+            2,
+            1,
+            vec![0xFF00, 0x0081, 0xFFFF, 0xFFFF, 0, 0x0080, 0x8000, 0xFFFF],
+        )
+        .unwrap();
+        let png = encoded(
+            image::DynamicImage::ImageRgba16(pixels),
+            image::ImageFormat::Png,
+        );
+        let decoded = decode_bytes(&png, "png", Path::new("t.png")).expect("decodes");
+        assert_eq!(decoded.rgba, [254, 1, 255, 255, 0, 0, 128, 255]);
+        assert_eq!(decoded.source_bit_depth, 16);
+        assert!(decoded.rgba_linear.is_none());
+    }
+
+    /// A float source carries both readings: colour clamps and sRGB-encodes, data
+    /// clamps with no curve, and alpha is never encoded. Linear 0.5 is sRGB 188.
+    #[test]
+    fn a_float_source_narrows_per_slot() {
+        let hdr = encoded(
+            image::DynamicImage::ImageRgb32F(
+                image::ImageBuffer::from_raw(2, 1, vec![0.5f32, 0.0, 4.0, 0.2140, 1.0, 0.0])
+                    .unwrap(),
+            ),
+            image::ImageFormat::Hdr,
+        );
+        let decoded = decode_bytes(&hdr, "hdr", Path::new("t.hdr")).expect("decodes");
+        assert_eq!(decoded.source_format, "Radiance HDR");
+        let colour = decoded.rgba_for(true);
+        let data = decoded.rgba_for(false);
+        // RGBE stores a shared exponent, so allow a code either way.
+        let near = |a: &[u8], b: &[u8]| a.iter().zip(b).all(|(x, y)| x.abs_diff(*y) <= 1);
+        assert!(near(&colour[..4], &[188, 0, 255, 255]), "{colour:?}");
+        assert!(near(&data[..4], &[128, 0, 255, 255]), "{data:?}");
+        assert!(near(&colour[4..], &[128, 255, 0, 255]), "{colour:?}");
+        assert!(near(&data[4..], &[55, 255, 0, 255]), "{data:?}");
+        assert_eq!(decoded.rgba_for(true), decoded.rgba.as_slice());
+    }
+
+    /// The float narrowing matches the PSD bridge 3D Review used to carry, to the byte.
+    #[test]
+    fn the_colour_reading_is_the_old_psd_bridges() {
+        let old = |v: f32| -> u8 {
+            let v = if v > 0.0 { v.min(1.0) } else { 0.0 };
+            let e = if v <= 0.0031308 {
+                v * 12.92
+            } else {
+                1.055 * v.powf(1.0 / 2.4) - 0.055
+            };
+            (e * 255.0 + 0.5) as u8
+        };
+        let samples: Vec<f32> = (0..=4096).map(|i| i as f32 / 4000.0 - 0.01).collect();
+        let floats: Vec<f32> = samples.iter().flat_map(|&v| [v, v, v, 1.0]).collect();
+        let (colour, _) = narrow_float(&floats);
+        for (i, &v) in samples.iter().enumerate() {
+            assert_eq!(colour[i * 4], old(v), "{v}");
+        }
+        assert_eq!(
+            narrow_float(&[f32::NAN, 2.0, -1.0, 0.5]).0,
+            [0, 255, 0, 128]
+        );
+    }
+
+    /// The import dialog and drag-and-drop accept what fire-decode decodes: DDS,
+    /// OpenEXR and HEIC too, which the old fixed list of nine left out.
+    #[test]
+    fn the_texture_extensions_are_fire_decodes() {
+        for ext in [
+            "png", "jpg", "tga", "psd", "dds", "exr", "hdr", "heic", "avif", "PNG",
+        ] {
+            assert!(is_texture_extension(ext), ".{ext}");
+        }
+        assert!(!is_texture_extension("fbx"));
+        assert!(texture_extensions().contains(&"dds"));
     }
 
     /// The psd_sdk FFI decodes a real layered PSD's merged composite into a
@@ -583,6 +646,7 @@ mod tests {
             return;
         }
         let decoded = decode_image(&path).expect("psd_sdk should decode the merged composite");
+        assert_eq!(decoded.source_format, "PSD");
         assert!(decoded.width > 0 && decoded.height > 0);
         assert_eq!(
             decoded.rgba.len() as u32,

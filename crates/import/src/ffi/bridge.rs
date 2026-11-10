@@ -43,8 +43,7 @@ use super::raw_scene::{ReviewImportError, ReviewImportScene};
 /// `Result` path — the marshal's error is deliberately deferred past it — but not
 /// for an unwind: a progress sink that panics during the Building stage would
 /// skip it and strand the whole C-side scene. [`ExtrasHandle`] below already had
-/// this shape, as does `review-psd`'s document handle; the scene was the one
-/// bridge resource still freed by hand.
+/// this shape; the scene was the one bridge resource still freed by hand.
 struct SceneHandle {
     raw: BridgeScene,
 }
