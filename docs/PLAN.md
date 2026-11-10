@@ -214,7 +214,9 @@ It depends on asset-rules `v0.2.0`, tagged 5 November 2026; `v0.2.1` since 6 Nov
      - data slots clamp with no curve;
      - which of the two the Tex viewport uses is settled here. Today it shows a 32-bit PSD
        sRGB-encoded.
-   - deleting `crates/psd` in the same commit;
+   - deleting `crates/psd` in the same commit. Its suites already live on in fire-decode's
+     psd-sdk-sys: the 17 synthetic cases and the real-file test, adapted to the merged bridge, which
+     keeps the document's depth and draws CMYK (fire-decode step 2a, 10 November 2026);
    - release switching to `panic = "unwind"`, with the decode-only abort hook in the viewer (shells
      keep their guards);
      - review3d-cli installs no panic hook, so after the switch a panic there exits with code 101
