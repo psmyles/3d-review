@@ -205,7 +205,9 @@ It depends on asset-rules `v0.2.0`, tagged 5 November 2026; `v0.2.1` since 6 Nov
    - the sizes of the app binary and `libreview_quicklook.dylib`.
 3. **Step 4: adopt `texture()`.** This waits for fire-decode's first tag, which needs the Windows HEIF
    libraries. It covers:
-   - `heif` on in every binary (viewer, shell DLL, Quick Look dylib, snapshot);
+   - `heif` on in every binary (viewer, shell DLL, Quick Look dylib, snapshot). A PQ / HLG HEIF
+     comes back from `texture()` as SDR, sRGB-encoded with 203 cd/m² at white, once fire-decode's
+     step 6b lands (FD17, settled 10 November 2026); before it, the raw HDR signal;
    - **`texture()` with no fit and no GPU limit** (FD5). The upload-time mip skip stays, so a
      texture over the GPU limit still uploads from its first mip that fits, and the Dimension stat
      keeps the source size. The shells keep `fitted_within`.
