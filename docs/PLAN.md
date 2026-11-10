@@ -237,6 +237,22 @@ It depends on asset-rules `v0.2.0`, tagged 5 November 2026; `v0.2.1` since 6 Nov
 
    The gates are in the fire-decode plan's step 4.
 
+   **The API it adopts exists** (fire-decode step 3, 10 November 2026; that plan's §4):
+   - **the setup:** `DecodeOptions::texture()` (30000 px / 1 GiB, as stored, no fit). Float sources
+     come back float (`Output::Rgba8OrFloat`), everything else as `Rgba8Unorm`;
+   - **the stats:** what the file is comes from `DecodedImage::source`. The Format row is
+     `source.format` (`Format::name()`, or `source.name` for the detailed label), and `channels`
+     keeps the meaning `source_channels` has today;
+   - **the texture dialog and drag-and-drop** use `fire_decode::supported_extensions()`, which
+     follows the build's features;
+   - **errors:** decode panics come back as `DecodeError::Panicked`, which the viewer-only abort
+     hook can tell apart. The enum is `#[non_exhaustive]`, so the mapping to
+     `app-notifications.ftl` keeps a fallback arm;
+   - **the features to name:** `psd` and `heif` (and `mips` from step 7), not `icc`: `texture()`
+     converts no colour;
+   - **threads:** a worker pool of half the cores needs no thread share per decode. The crate's
+     process-wide budget divides the cores between them.
+
 ## Needs Windows
 
 - **The upgrade check:** Setup's new `[InstallDelete]` removes the old `review-cli.exe` from the
