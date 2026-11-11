@@ -9,9 +9,10 @@ its repositories.
   (below).
 - **B.1 is done**, and so are the **Windows** items: the step 0 baselines, the static CRT (FD20,
   recorded as D25), and the upgrade check, which includes a real upgrade over an installed 0.8.0.
-- **Still to do:** section 0 and B.2 on the Mac. **B.3 (fire-decode step 4) is done on the Mac on
-  the `fire-decode` branch** (10 November 2026); it merges with fire-decode's first tag, which needs
-  the Windows HEIF libraries, and its Windows half is under "Needs Windows".
+- **Still to do:** section 0 and B.2 on the Mac. **B.3 and B.4 (fire-decode steps 4 and 7) are
+  done on the Mac and on Windows** (10 and 11 November 2026) on the `fire-decode` branch, which
+  now takes fire-decode's first release, `v0.1.0`, and merges into `main` from there. Their
+  Windows halves are under "Needs Windows"; a few hands-on checks remain.
 - **A2, the rules catalog, is done** (5 November): below. It depends on asset-rules `v0.2.1`.
 
 The console tool was renamed from `review-cli` to `3d-review-cli` just before this work, and to
@@ -235,7 +236,7 @@ It depends on asset-rules `v0.2.0`, tagged 5 November 2026; `v0.2.1` since 6 Nov
 
    The static CRT it needs is already in place (D25). Phase 2 (fire-decode step 7) has one catch:
    `render/build.rs` compiles `rhi/mips.rs` into the UV-checker bake, so that file can't simply be
-   deleted.
+   deleted (B.4 below settles it).
 
    The gates are in the fire-decode plan's step 4.
 
@@ -256,10 +257,10 @@ It depends on asset-rules `v0.2.0`, tagged 5 November 2026; `v0.2.1` since 6 Nov
      process-wide budget divides the cores between them.
 
    **Done on the Mac, on the `fire-decode` branch** (10 November 2026), against fire-decode
-   `13454b7`. `Cargo.toml` names fire-decode's `main` branch, patched to the checkout beside this
-   one by an untracked `~/Dev/.cargo/config.toml`; the tag replaces the branch at merge. Builds use
-   `cargo +1.99.1` (the crate's floor; `rust-version` is now 1.99, and this Mac's `stable` is
-   1.98.1).
+   `13454b7`. `Cargo.toml` named fire-decode's `main` branch, patched to the checkout beside this
+   one by an untracked `~/Dev/.cargo/config.toml`; since 11 November it names fire-decode's first
+   release, the `v0.1.0` tag, and `Cargo.lock` records the tag. Builds need Rust 1.99, the crate's
+   floor (`rust-version` is now 1.99); this Mac's `stable` is 1.99.1.
    - **`crates/psd` is gone**, and with it the zune and `image` decode paths: `texture.rs` calls
      `fire_decode::decode` with `texture()`. The two had to go in one change, since both PSD
      crates declare `links = "fire_psd"`.
@@ -300,6 +301,33 @@ It depends on asset-rules `v0.2.0`, tagged 5 November 2026; `v0.2.1` since 6 Nov
    - an FBX with an embedded HEIC, and one with an embedded AVIF, draw their photo in Quick Look
      (thumbnail and preview, `scripts/quicklook-check.sh`) and in `review-snapshot`;
    - a 20000-px texture draws, uploaded from its first mip that fits Metal's 16384.
+
+4. **Step 7: mip chains from fire-decode, built on the decode workers. Done on the Mac, on the
+   `fire-decode` branch** (10 November 2026; `544c20b`, `b653de2`).
+   - **The builder** is fire-decode's `mips` feature (FD11). `Cargo.toml` names it beside `psd`
+     and `heif`. 8-bit chains are byte-identical to `rhi/mips.rs`'s in both modes.
+   - **Each chain is built once per decoded image and kind of upload** (`DecodedImage::mips`):
+     colour (sRGB slots and the UV view), data (data slots) or shown as stored (the Tex
+     viewport). Each upload cache takes the image's chain rather than building its own on the
+     render thread.
+     - A model's own textures build the chains their slots need on the decode workers.
+     - A reload builds again the chains its last decode had.
+     - Anything else is built at first use.
+     - The chains stay in memory with the image.
+   - **`rhi/mips.rs` stays for the UV-checker bake alone**, as `build/mips.rs`. Compiling
+     fire-decode into the build script would build it again for the host. `tests/bake_mips.rs`
+     holds the two filters to each other byte for byte, and the baked checkers are unchanged.
+   - **Gate mode measures a model's texture load:** the frames presented while it runs and the
+     frame that uploads it, with rows in `gate.sh` and `gate.ps1`.
+
+   **The macOS gate** (fire-decode's `docs/baselines.md`, "Step 7"), against `544c20b`, 15 runs
+   each:
+   - on an FBX naming 15 large textures (24 bindings), the frame that uploads them went from
+     347 ms to 90 ms;
+   - frames while they load are unchanged (median 8.4 ms);
+   - footprint +3.7%, the kept chains;
+   - the startup gate passed: startup -0.8%, frame +1.1%, footprint +0.2%;
+   - `review-snapshot` renders and the Quick Look thumbnail are byte-identical to before.
 
 ## Needs Windows
 
