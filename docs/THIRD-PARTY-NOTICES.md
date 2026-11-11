@@ -437,7 +437,7 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `profiling` | 1.0.18 | MIT | (no notice in crate; authors: Philip Degarmo <aclysma@gmail.com>) |
 | `psd-sdk-sys` | 0.0.0 | MIT | Copyright (c) 2026 Chandan Singh; compiles psd_sdk (see section 1) |
 | `pulldown-cmark` | 0.13.4 | MIT | Copyright 2015 Google Inc. All rights reserved. |
-| `pxfm` | 0.1.29 | BSD-3-Clause | Copyright (c) Radzivon Bartoshyk. All rights reserved. |
+| `pxfm` | 0.1.30 | BSD-3-Clause | Copyright (c) Radzivon Bartoshyk. All rights reserved. |
 | `qoi` | 0.4.1 | MIT | Copyright (c) 2022 Ivan Smirnov |
 | `quick-error` | 2.0.1 | MIT | Copyright (c) 2015 The quick-error Developers |
 | `quote` | 1.0.46 | MIT | (no notice in crate; authors: David Tolnay <dtolnay@gmail.com>) |
@@ -519,7 +519,7 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `zerovec-derive` | 0.11.3 | Unicode-3.0 | Copyright © 2020-2024 Unicode, Inc. |
 | `zmij` | 1.0.21 | MIT | (no notice in crate; authors: David Tolnay <dtolnay@gmail.com>) |
 | `zune-bmp` | 0.5.2 | MIT | Copyright (c) zune-image developers |
-| `zune-core` | 0.5.1 | MIT | Copyright (c) zune-image developers |
+| `zune-core` | 0.5.3 | MIT | Copyright (c) zune-image developers |
 | `zune-farbfeld` | 0.5.2 | MIT | Copyright (c) zune-image developers |
 | `zune-image` | 0.5.0 | MIT | Copyright (c) zune-image developers |
 | `zune-inflate` | 0.2.54 | MIT | (no notice in crate; the zune-image developers) |

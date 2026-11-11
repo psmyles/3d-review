@@ -11,8 +11,9 @@ its repositories.
   recorded as D25), and the upgrade check, which includes a real upgrade over an installed 0.8.0.
 - **Still to do:** section 0 and B.2 on the Mac. **B.3 and B.4 (fire-decode steps 4 and 7) are
   done on the Mac and on Windows** (10 and 11 November 2026) on the `fire-decode` branch, which
-  now takes fire-decode's first release, `v0.1.0`, and merges into `main` from there. Their
-  Windows halves are under "Needs Windows"; a few hands-on checks remain.
+  now takes fire-decode's `v0.1.1`, the release that sets every decoder's version, and merges
+  into `main` from there. Their Windows halves are under "Needs Windows"; a few hands-on checks
+  remain.
 - **A2, the rules catalog, is done** (5 November): below. It depends on asset-rules `v0.2.1`.
 
 The console tool was renamed from `review-cli` to `3d-review-cli` just before this work, and to
@@ -258,9 +259,11 @@ It depends on asset-rules `v0.2.0`, tagged 5 November 2026; `v0.2.1` since 6 Nov
 
    **Done on the Mac, on the `fire-decode` branch** (10 November 2026), against fire-decode
    `13454b7`. `Cargo.toml` named fire-decode's `main` branch, patched to the checkout beside this
-   one by an untracked `~/Dev/.cargo/config.toml`; since 11 November it names fire-decode's first
-   release, the `v0.1.0` tag, and `Cargo.lock` records the tag. Builds need Rust 1.99, the crate's
-   floor (`rust-version` is now 1.99); this Mac's `stable` is 1.99.1.
+   one by an untracked `~/Dev/.cargo/config.toml`; since 11 November it names a fire-decode release
+   tag, now `v0.1.1`, and `Cargo.lock` records the tag. fire-decode pins every decoder's version
+   exactly from `v0.1.1`, so the lockfile takes them from the tag (`pxfm` 0.1.30 and `zune-core`
+   0.5.3 moved). Builds need Rust 1.99, the crate's floor (`rust-version` is now 1.99); this Mac's
+   `stable` is 1.99.1.
    - **`crates/psd` is gone**, and with it the zune and `image` decode paths: `texture.rs` calls
      `fire_decode::decode` with `texture()`. The two had to go in one change, since both PSD
      crates declare `links = "fire_psd"`.

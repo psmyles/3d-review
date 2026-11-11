@@ -1159,28 +1159,49 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 [[package]]
 name = "fire-decode"
 version = "0.0.0"
-source = "git+https://github.com/psmyles/fire-decode?tag=v0.1.0#c68d0eba70c5ec8990698f81ebf35942915e74f7"
+source = "git+https://github.com/psmyles/fire-decode?tag=v0.1.1#be6de7e7844e605c65e4862891add748fe78d61b"
 dependencies = [
  "bcdec_rs",
  "bytemuck",
  "ddsfile",
  "exr",
+ "fax",
+ "fdeflate",
+ "gif",
  "heif-sys",
  "image",
  "image-webp",
+ "jxl-bitstream",
+ "jxl-coding",
+ "jxl-color",
+ "jxl-frame",
+ "jxl-grid",
+ "jxl-image",
+ "jxl-jbr",
+ "jxl-modular",
  "jxl-oxide",
+ "jxl-oxide-common",
+ "jxl-render",
+ "jxl-threadpool",
+ "jxl-vardct",
  "libwebp-sys",
  "miniz_oxide",
+ "moxcms",
+ "png",
  "psd-sdk-sys",
+ "pxfm",
  "qoi",
  "serde_json",
  "tiff",
+ "weezl",
  "zune-bmp",
  "zune-core",
  "zune-farbfeld",
  "zune-image",
+ "zune-inflate",
  "zune-jpeg",
  "zune-ppm",
+ "zune-qoi",
 ]
 
 [[package]]
@@ -1517,7 +1538,7 @@ dependencies = [
 [[package]]
 name = "heif-sys"
 version = "0.0.0"
-source = "git+https://github.com/psmyles/fire-decode?tag=v0.1.0#c68d0eba70c5ec8990698f81ebf35942915e74f7"
+source = "git+https://github.com/psmyles/fire-decode?tag=v0.1.1#be6de7e7844e605c65e4862891add748fe78d61b"
 dependencies = [
  "cc",
 ]
@@ -2980,7 +3001,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 [[package]]
 name = "psd-sdk-sys"
 version = "0.0.0"
-source = "git+https://github.com/psmyles/fire-decode?tag=v0.1.0#c68d0eba70c5ec8990698f81ebf35942915e74f7"
+source = "git+https://github.com/psmyles/fire-decode?tag=v0.1.1#be6de7e7844e605c65e4862891add748fe78d61b"
 dependencies = [
  "cc",
 ]
@@ -2998,9 +3019,9 @@ dependencies = [
 
 [[package]]
 name = "pxfm"
-version = "0.1.29"
+version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0c5ccf5294c6ccd63a74f1565028353830a9c2f5eb0c682c355c471726a6e3f"
+checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
 name = "qoi"
@@ -5100,9 +5121,9 @@ dependencies = [
 
 [[package]]
 name = "zune-core"
-version = "0.5.1"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb8a0807f7c01457d0379ba880ba6322660448ddebc890ce29bb64da71fb40f9"
+checksum = "d56377fd46368984a170bc5aac5567e52ca5da874caa60bea39fcbca78fb658b"
 dependencies = [
  "log",
 ]

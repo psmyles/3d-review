@@ -149,12 +149,14 @@ review-prof = { path = "crates/prof" }
 # own repository: every source format, PSD through its psd_sdk bridge and HEIC / HEIF / AVIF
 # through libheif, the two sanctioned FFI sites outside this workspace (invariant 9). A release
 # tag, which Cargo.lock records; moving to a new release is this tag and `cargo update -p
-# fire-decode`. Local work on both goes through an untracked
-# `[patch."https://github.com/psmyles/fire-decode"]` in a `.cargo/config.toml` in the folder
-# holding both checkouts; take it out before updating Cargo.lock, or the lock records the path.
+# fire-decode`. The release sets the decoders' versions too: fire-decode pins each one exactly, so
+# Cargo.lock takes them from the tag, and `image` and `miniz_oxide` here follow. Local work on
+# both goes through an untracked `[patch."https://github.com/psmyles/fire-decode"]` in a
+# `.cargo/config.toml` in the folder holding both checkouts; take it out before updating
+# Cargo.lock, or the lock records the path.
 # `texture()` converts no colour, so `icc` stays off; `mips` is the mip builder every texture
 # upload takes its chain from (FD11).
-fire-decode = { git = "https://github.com/psmyles/fire-decode", tag = "v0.1.0", features = ["psd", "heif", "mips"] }
+fire-decode = { git = "https://github.com/psmyles/fire-decode", tag = "v0.1.1", features = ["psd", "heif", "mips"] }
 rfd = "0.15"
 # Build-script only: the shader-bytecode manifest keys freshness on content, and
 # the packaging scripts on both OSes have to recompute the same digest from a
