@@ -320,9 +320,9 @@ It depends on asset-rules `v0.2.0`, tagged 5 November 2026; `v0.2.1` since 6 Nov
   - Asset Check: the rules repository's `ac_run_checker`, given a `review3d-cli` that panics (exit
     101), records `tool.failed` and opens the window.
   - Step 7: the upload frame 511 → 67 ms on a 15-texture model, renders and the UV checker
-    byte-identical to `544c20b`. **But private bytes +183 MB (+11.4%) against D2's 5%**: the mip
-    chains now kept with each image (a third of the decoded bytes). To decide: accept it in D2's
-    budget, or drop each chain once every cache showing it has uploaded.
+    byte-identical to `544c20b`. Private bytes rose 183 MB (+11.4%), over the gate's 5%: the mip
+    chains now kept with each image (a third of the decoded bytes). **Accepted** by the user on 11
+    November 2026, as the price of the shorter upload frame; the chains stay with their images.
 
 - **The upgrade check:** Setup's new `[InstallDelete]` removes the old `review-cli.exe` from the
   install folder, so verify it.
