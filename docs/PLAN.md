@@ -303,18 +303,26 @@ It depends on asset-rules `v0.2.0`, tagged 5 November 2026; `v0.2.1` since 6 Nov
 
 ## Needs Windows
 
-- **fire-decode step 4's Windows half** (this repo's B.3), on the `fire-decode` branch:
-  - `scripts/check.ps1` and the startup gate against the Windows step 0 baseline;
-  - sizes and import tables of `3d-review.exe`, `review3d-cli.exe` and `review_shell.dll` against
-    step 0: no `MSVCP140`, `VCRUNTIME140*` or `api-ms-win-crt-*` (fire-decode's HEIF libraries
-    are `/MT`);
-  - a HEIC and an AVIF texture in the viewer and in Explorer's preview pane and thumbnail (an FBX
-    embedding one, as on the Mac);
-  - shell panics still caught (the shells' guards are unchanged);
-  - **Asset Check reports a `review3d-cli` panic as the tool failing**: with `release` unwinding,
-    a panic now exits with code 101, where an abort gave `0xC0000409`. The rules repository's
-    hook (SandboxVR/exp-content-rules) must read any code but 0, 1 and 2 as a failure; it isn't
-    on the Mac to check.
+- **fire-decode steps 4 and 7, Windows halves: done 11 November 2026**, on the `fire-decode`
+  branch (`b653de2`) against `746f64b` and `544c20b`. The numbers are in fire-decode's
+  `docs/baselines.md`, "Windows".
+  - `scripts/check.ps1`: fmt, clippy, the bake's clippy and the shader bytecode pass; tests fail
+    only on the Mac's three (`a_classic_material_imports_as_a_dielectric`, and two
+    `every_fixture_the_suite_loads_exists` for models this machine lacks).
+  - Startup gate (`SM_Wall_Break_4x3m.fbx`: `Bot.fbx` is gone from this machine): step 4 against
+    step 0 -3.9%, step 7 against step 4 +1.1%. Passed.
+  - Sizes and import tables: no `MSVCP140`, `VCRUNTIME140*` or `api-ms-win-crt-*` in any of the
+    three, the OS DLLs unchanged. `3d-review.exe` +11.9 MB, `review_shell.dll` +8.1 MB.
+  - HEIC and AVIF textures (FBX planes embedding one) draw through `review-snapshot` and through
+    `review_shell.dll`'s thumbnail provider, driven directly. **Still hands-on:** the viewer
+    window, and Explorer's own thumbnail and preview pane.
+  - Shell panics: the guards are unchanged since step 0 and `release-shell` still unwinds.
+  - Asset Check: the rules repository's `ac_run_checker`, given a `review3d-cli` that panics (exit
+    101), records `tool.failed` and opens the window.
+  - Step 7: the upload frame 511 → 67 ms on a 15-texture model, renders and the UV checker
+    byte-identical to `544c20b`. **But private bytes +183 MB (+11.4%) against D2's 5%**: the mip
+    chains now kept with each image (a third of the decoded bytes). To decide: accept it in D2's
+    budget, or drop each chain once every cache showing it has uploaded.
 
 - **The upgrade check:** Setup's new `[InstallDelete]` removes the old `review-cli.exe` from the
   install folder, so verify it.
