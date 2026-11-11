@@ -360,19 +360,17 @@ did not match; the files need not exist. Their text is `asset-rules`', in Englis
 ### Building against unreleased asset-rules
 
 The workspace depends on `asset-rules` by tag. To build against a checkout beside
-this one, patch it from a `.cargo/config.toml` in the folder that holds both - not
-this repository's own, which is committed (it carries the static CRT, D25) - so
-the same file serves `fire-cli`'s checkout too:
+this one, patch it for that one command:
 
-```toml
-# <folder holding 3d-review-rs and asset-rules>/.cargo/config.toml
-[patch."https://github.com/psmyles/asset-rules"]
-asset-rules = { path = "asset-rules" }
+```sh
+cargo build --config 'patch."https://github.com/psmyles/asset-rules".asset-rules.path="../asset-rules"'
 ```
 
-Cargo merges it with the repository's own, and a path in it is relative to the
-folder that holds that `.cargo`. Delete it again before committing a
-`Cargo.lock`, which would otherwise record the local checkout.
+Nothing outside this repository is involved - no `.cargo/config.toml` above it -
+so no other build picks the patch up, and this repository's own config (committed:
+it carries the static CRT, D25) stays as it is. The path is relative to the folder
+cargo runs in. The build writes the local checkout into `Cargo.lock`, so
+`git checkout Cargo.lock` afterwards; never commit a lock it wrote.
 
 ## info
 

@@ -1364,8 +1364,8 @@ goes back to the DLL runtime unless it repeats the flag. Check an import table
 (`llvm-readobj --coff-imports`, or `dumpbin /imports`) rather than assuming: a
 binary that imports `MSVCP140.dll` starts only where the Visual C++
 redistributable is installed. Because the tracked config is now the repository's,
-a local `[patch]` for an unreleased `asset-rules` goes in a `.cargo/config.toml`
-one folder up, beside both checkouts (`docs/cli.md`).
+a local `[patch]` for an unreleased `asset-rules` goes on the command line, as
+`--config` for that one build (`docs/cli.md`), not in a config file.
 
 ---
 

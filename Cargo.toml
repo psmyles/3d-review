@@ -51,8 +51,8 @@ anyhow = "1"
 # Asset Check's shared core (AC9 in `asset-check-plan.md`): which rules apply to a
 # file, the results format, the git helpers and the cache, so `review3d-cli` and
 # `fire-cli` give the same file the same answer. By tag, never by branch. To build
-# against unreleased changes, a `.cargo/config.toml` in the folder above patches it
-# to a checkout beside this one (`docs/cli.md`).
+# against unreleased changes, patch it to a checkout beside this one for a single
+# command, with `--config` (`docs/cli.md`).
 asset-rules = { git = "https://github.com/psmyles/asset-rules", tag = "v0.2.1" }
 bytemuck = { version = "1", features = ["derive"] }
 cc = "1"
@@ -150,10 +150,12 @@ review-prof = { path = "crates/prof" }
 # through libheif, the two sanctioned FFI sites outside this workspace (invariant 9). A release
 # tag, which Cargo.lock records; moving to a new release is this tag and `cargo update -p
 # fire-decode`. The release sets the decoders' versions too: fire-decode pins each one exactly, so
-# Cargo.lock takes them from the tag, and `image` and `miniz_oxide` here follow. Local work on
-# both goes through an untracked `[patch."https://github.com/psmyles/fire-decode"]` in a
-# `.cargo/config.toml` in the folder holding both checkouts; take it out before updating
-# Cargo.lock, or the lock records the path.
+# Cargo.lock takes them from the tag, and `image` and `miniz_oxide` here follow. Nothing outside
+# this repository decides where it comes from: no `.cargo/config.toml` above it patches it. To
+# try an unreleased fire-decode, patch it for one command only, from a checkout beside this one:
+#   cargo build --config 'patch."https://github.com/psmyles/fire-decode".fire-decode.path="../fire-decode/crates/fire-decode"'
+# That writes the path into Cargo.lock: `git checkout Cargo.lock` afterwards, and never commit a
+# lock it wrote (a `--locked` build refuses one).
 # `texture()` converts no colour, so `icc` stays off; `mips` is the mip builder every texture
 # upload takes its chain from (FD11).
 fire-decode = { git = "https://github.com/psmyles/fire-decode", tag = "v0.1.1", features = ["psd", "heif", "mips"] }
