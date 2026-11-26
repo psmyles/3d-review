@@ -54,8 +54,9 @@ notices, see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
   **[cursor-icon](https://github.com/rust-windowing/cursor-icon)**.
 - **[sokol](https://github.com/floooh/sokol)** and
   **[sokol-rust](https://github.com/floooh/sokol-rust)** - Andre Weissflog (bindings by Erik
-  Wilhelm Gren). `sokol_gfx` draws over Direct3D 11 and Metal; `sokol-shdc` generates the
-  per-backend shaders and their reflection.
+  Wilhelm Gren). `sokol_gfx` draws over Direct3D 11, Metal and Vulkan; `sokol-shdc` generates the
+  per-backend shaders and their reflection, and compiles the Vulkan SPIR-V with
+  **[glslang](https://github.com/KhronosGroup/glslang)** (the Khronos Group).
 - **[egui](https://github.com/emilk/egui)** - Emil Ernerfeldt and contributors. The interface,
   with **egui-winit**, **egui_extras**, **epaint**, **emath** and **ecolor**. Text shaping and
   rendering:
@@ -140,6 +141,16 @@ Fixtures in `assets/test_models` that the test suites load; not shipped with 3D 
   COM bindings for the D3D11 device and DXGI swapchain.
 - **[objc2](https://github.com/madsmtm/objc2)** - Mads Marquart, Steven Sheldon and contributors.
   Objective-C bindings for the macOS `CAMetalLayer` and shell.
+- **[ash](https://github.com/ash-rs/ash)** - Maik Klein, Benjamin Saunders, Marijn Suijten and
+  contributors. Vulkan bindings for the Linux device and swapchain.
+- **[wayland-rs](https://github.com/Smithay/wayland-rs)**,
+  **[smithay-client-toolkit](https://github.com/Smithay/client-toolkit)** and
+  **[smithay-clipboard](https://github.com/Smithay/smithay-clipboard)** - Elinor Berger, Kirill
+  Chibisov and the Smithay contributors; **[x11rb](https://github.com/psychon/x11rb)** - Uli
+  Schlachter and contributors. The Wayland and X11 halves of winit and the clipboard on Linux.
+- **[zbus](https://github.com/dbus2/zbus)** and **[ashpd](https://github.com/bilelmoussaoui/ashpd)**
+  - Zeeshan Ali Khan, Bilal Elmoussaoui and contributors. The desktop portal behind the Linux file
+  dialogs.
 - **[muda](https://github.com/tauri-apps/muda)** - the Tauri programme. The macOS menu bar, with
   **[keyboard-types](https://github.com/pyfisch/keyboard-types)** by Pyfisch.
 - **[rfd](https://github.com/PolyMeilex/rfd)** - Bartłomiej Maryńczak. Open and save dialogs and

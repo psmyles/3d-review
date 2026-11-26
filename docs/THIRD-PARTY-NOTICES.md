@@ -139,11 +139,11 @@ patent licence for WebP; its terms are in the `PATENTS` file of the libwebp sour
 
 #### sokol - Zlib
 
-*`sokol_gfx.h`, the one drawing API over Direct3D 11 and Metal, compiled as C into the binary.
-Vendored at `vendor/sokol-rust/` (floooh/sokol-rust @ `b22a545`), which carries the sokol
+*`sokol_gfx.h`, the one drawing API over Direct3D 11, Metal and Vulkan, compiled as C into the
+binary. Vendored at `vendor/sokol-rust/` (floooh/sokol-rust @ `b22a545`), which carries the sokol
 headers and compiles them from its own `build.rs`; only what the renderer references is linked.
-The one local change is a `rustfmt.toml` line that switches formatting off - no source is
-altered.*
+The local changes are a `rustfmt.toml` line that switches formatting off and, in that `build.rs`,
+the Vulkan backend on Linux (`vendor/NOTICE.txt`) - no sokol source is altered.*
 Copyright (c) 2018 Andre Weissflog - <https://github.com/floooh/sokol>
 The `sokol-rust` bindings themselves are copyright (c) 2023 Erik Wilhelm Gren, under the same
 license - <https://github.com/floooh/sokol-rust>
@@ -263,17 +263,19 @@ licenses apply to those parts. Each ported function says so in a comment beside 
 
 ## 2. Rust crates
 
-241 crates are linked into the 3D Review binary (the union of both shipped targets). Where a crate
+348 crates are linked into the 3D Review binary (the union of the three shipped targets: Windows, macOS and Linux). Where a crate
 offers a choice of licenses, the column below records **the license 3D Review elects**, not the
 full SPDX expression - 3D Review elects MIT wherever MIT is offered, then the most permissive of
 what is left. A crate whose license is a conjunction (`AND`) lists every term. Full texts:
 
 | License | Text |
 |---|---|
-| MIT (204 crates, plus 5 where it is combined with another term) | [`licenses/MIT.txt`](../licenses/MIT.txt) |
+| MIT (301 crates, plus 5 where it is combined with another term) | [`licenses/MIT.txt`](../licenses/MIT.txt) |
 | Unicode-3.0 (18, plus 1 in addition to MIT) | [`licenses/Unicode-3.0.txt`](../licenses/Unicode-3.0.txt) |
-| Apache-2.0 (3, plus 1 in addition to MIT) | [`licenses/Apache-2.0.txt`](../licenses/Apache-2.0.txt) |
-| BSD-3-Clause (6, plus 1 in addition to MIT) | [`licenses/BSD-3-Clause.txt`](../licenses/BSD-3-Clause.txt); Tracy's own text is [`licenses/Tracy-BSD-3-Clause.txt`](../licenses/Tracy-BSD-3-Clause.txt) |
+| Apache-2.0 (7, plus 1 in addition to MIT) | [`licenses/Apache-2.0.txt`](../licenses/Apache-2.0.txt) |
+| BSD-3-Clause (8, plus 1 in addition to MIT) | [`licenses/BSD-3-Clause.txt`](../licenses/BSD-3-Clause.txt); Tracy's own text is [`licenses/Tracy-BSD-3-Clause.txt`](../licenses/Tracy-BSD-3-Clause.txt) |
+| BSD-2-Clause (1) | [`licenses/BSD-2-Clause.txt`](../licenses/BSD-2-Clause.txt) |
+| ISC (3) | [`licenses/ISC.txt`](../licenses/ISC.txt) |
 | BSL-1.0 (2) | [`licenses/BSL-1.0.txt`](../licenses/BSL-1.0.txt) |
 | Zlib (1) | [`licenses/Zlib.txt`](../licenses/Zlib.txt) |
 | MPL-2.0 (1) | [`licenses/MPL-2.0.txt`](../licenses/MPL-2.0.txt) - see the note below |
@@ -286,6 +288,8 @@ Rather than invent one, those rows name the authors the crate itself declares.
 
 | Crate | Version | License | Copyright |
 |---|---|---|---|
+| `ab_glyph` | 0.2.32 | Apache-2.0 | (no notice in crate; authors: Alex Butler <alexheretic@gmail.com>) |
+| `ab_glyph_rasterizer` | 0.1.10 | Apache-2.0 | (no notice in crate; authors: Alex Butler <alexheretic@gmail.com>) |
 | `accesskit` | 0.24.1 | MIT | (no notice in crate; authors: The AccessKit contributors) |
 | `adler2` | 2.0.1 | MIT | Copyright (C) Jonas Schievink <jonasschievink@gmail.com> |
 | `ahash` | 0.8.12 | MIT | Copyright (c) 2018 Tom Kaitchuck |
@@ -293,21 +297,44 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `alloc-stdlib` | 0.2.4 | BSD-3-Clause | (no notice in crate; authors: Daniel Reiter Horn <danielrh@dropbox.com>) |
 | `anyhow` | 1.0.103 | MIT | (no notice in crate; authors: David Tolnay <dtolnay@gmail.com>) |
 | `arboard` | 3.6.1 | MIT | Copyright (c) 2022 The Arboard contributors |
+| `arrayref` | 0.3.9 | BSD-2-Clause | Copyright (c) 2015 David Roundy <roundyd@physics.oregonstate.edu> |
 | `arrayvec` | 0.7.7 | MIT | Copyright (c) Ulrik Sverdrup "bluss" 2015-2023 |
+| `as-raw-xcb-connection` | 1.0.1 | MIT | Copyright 2019 as-raw-xcb-connection Contributers |
+| `ash` | 0.38.0+1.3.281 | MIT | Copyright (c) 2016 ASH |
+| `ashpd` | 0.11.1 | MIT | Copyright (c) 2020 Bilal Elmoussaoui |
+| `async-broadcast` | 0.7.2 | MIT | Copyright (c) 2020 Yoshua Wuyts |
+| `async-channel` | 2.5.0 | MIT | (no notice in crate; authors: Stjepan Glavina <stjepang@gmail.com>) |
+| `async-executor` | 1.14.0 | MIT | (no notice in crate; authors: Stjepan Glavina <stjepang@gmail.com>, John Nunley <dev@notgull.net>) |
+| `async-fs` | 2.2.0 | MIT | (no notice in crate; authors: Stjepan Glavina <stjepang@gmail.com>) |
+| `async-io` | 2.6.0 | MIT | (no notice in crate; authors: Stjepan Glavina <stjepang@gmail.com>) |
+| `async-lock` | 3.4.2 | MIT | (no notice in crate; authors: Stjepan Glavina <stjepang@gmail.com>) |
+| `async-net` | 2.0.0 | MIT | (no notice in crate; authors: Stjepan Glavina <stjepang@gmail.com>) |
+| `async-process` | 2.5.0 | MIT | (no notice in crate; authors: Stjepan Glavina <stjepang@gmail.com>) |
+| `async-recursion` | 1.1.1 | MIT | (no notice in crate; authors: Robert Usher <266585+dcchut@users.noreply.github.com>) |
+| `async-signal` | 0.2.14 | MIT | (no notice in crate; authors: John Nunley <dev@notgull.net>) |
+| `async-task` | 4.7.1 | MIT | (no notice in crate; authors: Stjepan Glavina <stjepang@gmail.com>) |
+| `async-trait` | 0.1.89 | MIT | (no notice in crate; authors: David Tolnay <dtolnay@gmail.com>) |
+| `atomic-waker` | 1.1.2 | MIT | Copyright (c) 2016 Alex Crichton |
 | `bcdec_rs` | 0.2.1 | MIT | (no notice in crate; authors: ScanMountGoat) |
 | `bit_field` | 0.10.3 | MIT | Copyright (c) 2016 Philipp Oppermann |
 | `bitflags` | 1.3.2 | MIT | Copyright (c) 2014 The Rust Project Developers |
 | `bitflags` | 2.13.0 | MIT | Copyright (c) 2014 The Rust Project Developers |
 | `block2` | 0.5.1 | MIT | (no notice in crate; authors: Steven Sheldon, Mads Marquart <mads@marquart.dk>) |
 | `block2` | 0.6.2 | MIT | (no notice in crate; authors: Mads Marquart <mads@marquart.dk>) |
+| `blocking` | 1.6.2 | MIT | (no notice in crate; authors: Stjepan Glavina <stjepang@gmail.com>) |
 | `brotli-decompressor` | 5.0.3 | MIT | Copyright (c) 2016 Dropbox, Inc. |
 | `bytemuck` | 1.25.0 | MIT | Copyright (c) 2019 Daniel "Lokathor" Gee. |
 | `bytemuck_derive` | 1.10.2 | MIT | Copyright (c) 2019 Daniel "Lokathor" Gee. |
 | `byteorder` | 1.5.0 | MIT | Copyright (c) 2015 Andrew Gallant |
 | `byteorder-lite` | 0.1.0 | MIT | Copyright (c) 2015 Andrew Gallant |
+| `calloop` | 0.13.0 | MIT | Copyright (c) 2018 Victor Berger |
+| `calloop` | 0.14.4 | MIT | Copyright (c) 2018 Victor Berger |
+| `calloop-wayland-source` | 0.3.0 | MIT | Copyright (c) 2023 Kirill Chibisov |
+| `calloop-wayland-source` | 0.4.1 | MIT | Copyright (c) 2023 Kirill Chibisov |
 | `cfg-if` | 1.0.4 | MIT | Copyright (c) 2014 Alex Crichton |
 | `clipboard-win` | 5.4.1 | BSL-1.0 | (no notice in crate; authors: Douman <douman@gmx.se>) |
 | `color` | 0.3.3 | MIT | (no copyright notice supplied by the crate) |
+| `concurrent-queue` | 2.5.0 | MIT | (no notice in crate; authors: Stjepan Glavina <stjepang@gmail.com>, Taiki Endo <te316e89@gmail.com>, John Nunley <dev@notgull.net>) |
 | `core-foundation` | 0.9.4 | MIT | Copyright (c) 2012-2013 Mozilla Foundation |
 | `core-foundation` | 0.10.1 | MIT | Copyright (c) 2012-2013 Mozilla Foundation |
 | `core-foundation-sys` | 0.8.7 | MIT | Copyright (c) 2012-2013 Mozilla Foundation |
@@ -325,6 +352,8 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `dispatch` | 0.2.0 | MIT | (no notice in crate; authors: Steven Sheldon) |
 | `dispatch2` | 0.3.1 | MIT | (no notice in crate; authors: Mads Marquart <mads@marquart.dk>, Mary <mary@mary.zone>) |
 | `displaydoc` | 0.2.6 | MIT | (no notice in crate; authors: Jane Lusby <jlusby@yaah.dev>) |
+| `dlib` | 0.5.3 | MIT | Copyright (c) 2015 Victor Berger |
+| `downcast-rs` | 1.2.1 | MIT | Copyright (c) 2020 Ashish Myles and contributors |
 | `dpi` | 0.1.2 | Apache-2.0 AND MIT | Apache-2.0 part: (no notice in crate; the winit contributors). MIT part, a port of libm: Copyright (c) 2018 Jorge Aparicio; Copyright © 2005-2020 Rich Felker, et al. (and the further holders listed in the crate's `LICENSE-LIBM-MIT`) |
 | `ecolor` | 0.36.1 | MIT | (no notice in crate; authors: Emil Ernerfeldt <emil.ernerfeldt@gmail.com>, Andreas Reich <reichandreas@gmx.de>) |
 | `egui` | 0.36.1 | MIT | (no notice in crate; authors: Emil Ernerfeldt <emil.ernerfeldt@gmail.com>) |
@@ -334,13 +363,21 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `egui_extras` | 0.36.1 | MIT | (no notice in crate; authors: Dominik Rössler <dominik@freshx.de>, Emil Ernerfeldt <emil.ernerfeldt@gmail.com>, René Rössler <rene@freshx.de>) |
 | `either` | 1.18.0 | MIT | Copyright (c) 2015 |
 | `emath` | 0.36.1 | MIT | (no notice in crate; authors: Emil Ernerfeldt <emil.ernerfeldt@gmail.com>) |
+| `endi` | 1.1.1 | MIT | (no notice in crate; authors: Zeeshan Ali Khan <zeenix@gmail.com>) |
 | `enum-map` | 2.7.3 | MIT | (no notice in crate; authors: Kamila Borowska <kamila@borowska.pw>) |
 | `enum-map-derive` | 0.17.0 | MIT | (no notice in crate; authors: Kamila Borowska <kamila@borowska.pw>) |
+| `enumflags2` | 0.7.12 | MIT | Copyright (c) 2017-2023 Maik Klein, Maja Kądziołka |
+| `enumflags2_derive` | 0.7.12 | MIT | Copyright (c) 2017 Maik Klein |
 | `epaint` | 0.36.1 | MIT | (no notice in crate; authors: Emil Ernerfeldt <emil.ernerfeldt@gmail.com>) |
 | `epaint_default_fonts` | 0.36.1 | MIT AND OFL-1.1 AND Ubuntu-font-1.0 | (no notice in crate; authors: Emil Ernerfeldt <emil.ernerfeldt@gmail.com>); bundles four fonts under their own licenses (see section 1) |
+| `equivalent` | 1.0.2 | MIT | Copyright (c) 2016--2023 |
+| `errno` | 0.3.14 | MIT | Copyright (c) 2014 Chris Wong |
 | `error-code` | 3.3.2 | BSL-1.0 | (no notice in crate; authors: Douman <douman@gmx.se>) |
 | `euclid` | 0.22.14 | MIT | Copyright (c) 2012-2013 Mozilla Foundation |
+| `event-listener` | 5.4.1 | MIT | (no notice in crate; authors: Stjepan Glavina <stjepang@gmail.com>, John Nunley <dev@notgull.net>) |
+| `event-listener-strategy` | 0.5.4 | MIT | (no notice in crate; authors: John Nunley <dev@notgull.net>) |
 | `exr` | 1.74.3 | BSD-3-Clause | Copyright (c) Contributors to the OpenEXR Project. All rights reserved. |
+| `fastrand` | 2.4.1 | MIT | (no notice in crate; authors: Stjepan Glavina <stjepang@gmail.com>) |
 | `fax` | 0.2.7 | MIT | Copyright © 2021 The pdf-rs contributers. |
 | `fdeflate` | 0.3.7 | MIT | (no notice in crate; authors: The image-rs Developers) |
 | `fearless_simd` | 0.4.1 | MIT | Copyright (c) 2018 Raph Levien |
@@ -356,12 +393,22 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `foreign-types-shared` | 0.3.1 | MIT | Copyright (c) 2017 The foreign-types Developers |
 | `form_urlencoded` | 1.2.2 | MIT | Copyright (c) 2013-2016 The rust-url developers |
 | `fsevent-sys` | 4.1.0 | MIT | Copyright (c) 2015 Pierre Baillet |
+| `futures-channel` | 0.3.32 | MIT | Copyright (c) 2016 Alex Crichton |
+| `futures-core` | 0.3.32 | MIT | Copyright (c) 2016 Alex Crichton |
+| `futures-io` | 0.3.32 | MIT | Copyright (c) 2016 Alex Crichton |
+| `futures-lite` | 2.6.1 | MIT | Copyright (c) 2016 Alex Crichton |
+| `futures-macro` | 0.3.32 | MIT | Copyright (c) 2016 Alex Crichton |
+| `futures-task` | 0.3.32 | MIT | Copyright (c) 2016 Alex Crichton |
+| `futures-util` | 0.3.32 | MIT | Copyright (c) 2016 Alex Crichton |
+| `gethostname` | 1.1.0 | Apache-2.0 | (no notice in crate; authors: Sebastian Wiesner <sebastian@swsnr.de>) |
+| `getrandom` | 0.3.4 | MIT | Copyright (c) 2018-2025 The rust-random Project Developers |
 | `glam` | 0.30.10 | MIT | (no notice in crate; authors: Cameron Hart <cameron.hart@gmail.com>) |
 | `guillotiere` | 0.7.0 | MIT | Copyright (c) 2019 Nicolas Silva |
 | `half` | 2.7.1 | MIT | (no notice in crate; authors: Kathryn Long <squeeself@gmail.com>) |
 | `harfrust` | 0.12.0 | MIT | Copyright (c) HarfBuzz developers; Copyright (c) 2020 Yevhenii Reizner |
 | `hashbrown` | 0.17.1 | MIT | Copyright (c) 2016 Amanieu d'Antras |
 | `heif-sys` | 0.0.0 | MIT | Copyright (c) 2026 Chandan Singh; links libheif, libde265 and dav1d (see section 1) |
+| `hex` | 0.4.3 | MIT | Copyright (c) 2013-2014 The Rust Project Developers. |
 | `icu_collections` | 2.2.0 | Unicode-3.0 | Copyright © 2020-2024 Unicode, Inc. |
 | `icu_locale_core` | 2.2.0 | Unicode-3.0 | Copyright © 2020-2024 Unicode, Inc. |
 | `icu_normalizer` | 2.2.0 | Unicode-3.0 | Copyright © 2020-2024 Unicode, Inc. |
@@ -373,6 +420,9 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `idna_adapter` | 1.2.2 | MIT | Copyright (c) The rust-url developers |
 | `image` | 0.25.10 | MIT | (no notice in crate; authors: The image-rs Developers) |
 | `image-webp` | 0.2.4 | MIT | (no notice in crate; the image-rs developers) |
+| `indexmap` | 2.14.0 | MIT | Copyright (c) 2016--2017 |
+| `inotify` | 0.11.2 | ISC | Copyright (c) Hanno Braun and contributors |
+| `inotify-sys` | 0.1.5 | ISC | Copyright (c) Hanno Braun and contributors |
 | `intl-memoizer` | 0.5.3 | MIT | Copyright 2017 Mozilla |
 | `intl_pluralrules` | 7.0.2 | MIT | (no notice in crate; authors: Kekoa Riggin <kekoariggin@gmail.com>, Zibi Braniecki <zbraniecki@mozilla.com>) |
 | `itertools` | 0.15.0 | MIT | Copyright (c) 2015 |
@@ -395,15 +445,20 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `kurbo` | 0.13.1 | MIT | Copyright (c) 2018 Raph Levien |
 | `lebe` | 0.5.3 | BSD-3-Clause | Copyright (c) 2022 Contributors to the lebe Project. All rights reserved. |
 | `libc` | 0.2.186 | MIT | Copyright (c) The Rust Project Developers |
+| `libloading` | 0.8.9 | ISC | Copyright © 2015, Simonas Kazlauskas |
 | `libwebp-sys` | 0.14.4 | MIT | (no notice in crate; authors: XianYou <xianyou.cyq@alibaba-inc.com>, Kornel Lesiński <kornel@geekhood.net>); compiles libwebp (see section 1) |
 | `linebender_resource_handle` | 0.1.1 | MIT | (no copyright notice supplied by the crate) |
+| `linux-raw-sys` | 0.4.15 | MIT | (no notice in crate; authors: Dan Gohman <dev@sunfishcode.online>) |
+| `linux-raw-sys` | 0.12.1 | MIT | (no notice in crate; authors: Dan Gohman <dev@sunfishcode.online>) |
 | `litemap` | 0.8.2 | Unicode-3.0 | Copyright © 2020-2024 Unicode, Inc. |
 | `lock_api` | 0.4.14 | MIT | Copyright (c) 2016 The Rust Project Developers |
 | `log` | 0.4.33 | MIT | Copyright (c) 2014 The Rust Project Developers |
 | `memchr` | 2.8.2 | MIT | Copyright (c) 2015 Andrew Gallant |
+| `memmap2` | 0.9.11 | MIT | Copyright (c) 2020 Yevhenii Reizner |
 | `mime` | 0.3.17 | MIT | Copyright (c) 2014 Sean McArthur |
 | `mime_guess2` | 2.3.1 | MIT | Copyright (c) 2015 Austin Bonander |
 | `miniz_oxide` | 0.8.9 | MIT | Copyright 2013-2014 RAD Game Tools and Valve Software; Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC; Copyright (c) 2017 Frommi; Copyright (c) 2017-2024 oyvindln |
+| `mio` | 1.2.1 | MIT | Copyright (c) 2014 Carl Lerche and other MIO contributors |
 | `moxcms` | 0.8.1 | BSD-3-Clause | Copyright (c) Radzivon Bartoshyk. All rights reserved. |
 | `muda` | 0.19.3 | MIT | Copyright (c) 2022-2022 Tauri Programme within The Commons Conservancy |
 | `multiversion` | 0.8.1 | MIT | Copyright 2019 Caleb Zulawski |
@@ -425,14 +480,22 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `objc2-quartz-core` | 0.2.2 | MIT | (no notice in crate; part of the objc2 project - Mads Marquart and contributors) |
 | `once_cell` | 1.21.4 | MIT | (no notice in crate; authors: Aleksey Kladov <aleksey.kladov@gmail.com>) |
 | `option-ext` | 0.2.0 | MPL-2.0 | (no notice in crate; authors: Simon Ochsenreither <simon@ochsenreither.de>) |
+| `ordered-stream` | 0.2.0 | MIT | (no notice in crate; authors: Daniel De Graaf <code@danieldg.net>, Zeeshan Ali Khan <zeeshanak@gnome.org>) |
+| `owned_ttf_parser` | 0.25.1 | Apache-2.0 | (no notice in crate; authors: Alex Butler <alexheretic@gmail.com>) |
+| `parking` | 2.2.1 | MIT | Copyright 2014-2020 The Rust Project Developers |
 | `parking_lot` | 0.12.5 | MIT | Copyright (c) 2016 The Rust Project Developers |
 | `parking_lot_core` | 0.9.12 | MIT | Copyright (c) 2016 The Rust Project Developers |
 | `peniko` | 0.6.1 | MIT | Copyright (c) 2018 Raph Levien |
 | `percent-encoding` | 2.3.2 | MIT | Copyright (c) 2013-2025 The rust-url developers |
 | `pin-project-lite` | 0.2.17 | MIT | (no copyright notice supplied by the crate) |
+| `piper` | 0.2.5 | MIT | (no notice in crate; authors: Stjepan Glavina <stjepang@gmail.com>, John Nunley <dev@notgull.net>) |
 | `png` | 0.18.1 | MIT | Copyright (c) 2015 nwin |
+| `polling` | 3.11.0 | MIT | (no notice in crate; authors: Stjepan Glavina <stjepang@gmail.com>, John Nunley <dev@notgull.net>) |
+| `pollster` | 0.4.0 | MIT | Copyright (c) 2020-2021 Joshua Barretto |
 | `polycool` | 0.4.0 | MIT | Copyright (c) 2018 Raph Levien |
 | `potential_utf` | 0.1.5 | Unicode-3.0 | Copyright © 2020-2024 Unicode, Inc. |
+| `ppv-lite86` | 0.2.21 | MIT | Copyright (c) 2019 The CryptoCorrosion Contributors |
+| `proc-macro-crate` | 3.5.0 | MIT | (no notice in crate; authors: Bastian Köcher <git@kchr.de>) |
 | `proc-macro2` | 1.0.106 | MIT | (no notice in crate; authors: David Tolnay <dtolnay@gmail.com>, Alex Crichton <alex@alexcrichton.com>) |
 | `profiling` | 1.0.18 | MIT | (no notice in crate; authors: Philip Degarmo <aclysma@gmail.com>) |
 | `psd-sdk-sys` | 0.0.0 | MIT | Copyright (c) 2026 Chandan Singh; compiles psd_sdk (see section 1) |
@@ -440,37 +503,59 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `pxfm` | 0.1.30 | BSD-3-Clause | Copyright (c) Radzivon Bartoshyk. All rights reserved. |
 | `qoi` | 0.4.1 | MIT | Copyright (c) 2022 Ivan Smirnov |
 | `quick-error` | 2.0.1 | MIT | Copyright (c) 2015 The quick-error Developers |
+| `quick-xml` | 0.39.4 | MIT | Copyright (c) 2016 Johann Tuffe |
 | `quote` | 1.0.46 | MIT | (no notice in crate; authors: David Tolnay <dtolnay@gmail.com>) |
+| `rand` | 0.9.4 | MIT | Copyright 2018 Developers of the Rand project |
+| `rand_chacha` | 0.9.0 | MIT | Copyright 2018 Developers of the Rand project |
+| `rand_core` | 0.9.5 | MIT | Copyright 2018 Developers of the Rand project |
 | `raw-window-handle` | 0.6.2 | MIT | Copyright (c) 2019 Osspial |
 | `rayon` | 1.12.0 | MIT | Copyright (c) 2010 The Rust Project Developers |
 | `rayon-core` | 1.13.0 | MIT | Copyright (c) 2010 The Rust Project Developers |
 | `read-fonts` | 0.41.0 | MIT | Copyright (c) 2019 Fontations Developers |
 | `rfd` | 0.15.4 | MIT | Copyright (c) 2022 Bartłomiej Maryńczak |
 | `rustc-hash` | 2.1.3 | MIT | (no notice in crate; authors: The Rust Project Developers) |
+| `rustix` | 0.38.44 | MIT | (no notice in crate; authors: Dan Gohman <dev@sunfishcode.online>, Jakub Konka <kubkon@jakubkonka.com>) |
+| `rustix` | 1.1.4 | MIT | (no notice in crate; authors: Dan Gohman <dev@sunfishcode.online>, Jakub Konka <kubkon@jakubkonka.com>) |
 | `same-file` | 1.0.6 | MIT | Copyright (c) 2017 Andrew Gallant |
+| `scoped-tls` | 1.0.1 | MIT | Copyright (c) 2014 Alex Crichton |
 | `scopeguard` | 1.2.0 | MIT | Copyright (c) 2016-2019 Ulrik Sverdrup "bluss" and scopeguard developers |
+| `sctk-adwaita` | 0.10.1 | MIT | Copyright (c) 2022 Bartłomiej Maryńczak |
 | `self_cell` | 1.3.0 | Apache-2.0 | (no notice in crate; authors: Lukas Bergdoll <lukas.bergdoll@gmail.com>) |
 | `serde` | 1.0.228 | MIT | (no notice in crate; authors: Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com>) |
 | `serde_core` | 1.0.228 | MIT | (no notice in crate; authors: Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com>) |
 | `serde_derive` | 1.0.228 | MIT | (no notice in crate; authors: Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com>) |
 | `serde_json` | 1.0.150 | MIT | (no notice in crate; authors: Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com>) |
+| `serde_repr` | 0.1.20 | MIT | (no notice in crate; authors: David Tolnay <dtolnay@gmail.com>) |
+| `signal-hook-registry` | 1.4.8 | MIT | Copyright (c) 2017 tokio-jsonrpc developers |
 | `simd-adler32` | 0.3.9 | MIT | Copyright (c) [2021] [Marvin Countryman] |
 | `skrifa` | 0.44.0 | MIT | Copyright (c) 2019 Fontations Developers |
+| `slab` | 0.4.12 | MIT | Copyright (c) 2019 Carl Lerche |
 | `smallvec` | 1.15.2 | MIT | Copyright (c) 2018 The Servo Project Developers |
+| `smithay-client-toolkit` | 0.19.2 | MIT | Copyright (c) 2018 Victor Berger |
+| `smithay-client-toolkit` | 0.20.0 | MIT | Copyright (c) 2018 Victor Berger |
+| `smithay-clipboard` | 0.7.3 | MIT | Copyright (c) 2018 Lucas Timmins & Victor Berger |
 | `smol_str` | 0.2.2 | MIT | (no notice in crate; authors: Aleksey Kladov <aleksey.kladov@gmail.com>) |
 | `stable_deref_trait` | 1.2.1 | MIT | Copyright (c) 2017 Robert Grosse |
+| `strict-num` | 0.1.1 | MIT | Copyright (c) 2022 Yevhenii Reizner |
 | `syn` | 2.0.118 | MIT | (no notice in crate; authors: David Tolnay <dtolnay@gmail.com>) |
 | `synstructure` | 0.13.2 | MIT | Copyright 2016 Nika Layzell |
 | `sys-locale` | 0.3.2 | MIT | Copyright (c) 2021 1Password |
 | `target-features` | 0.1.6 | MIT | Copyright 2022 Caleb Zulawski |
+| `thiserror` | 1.0.69 | MIT | (no notice in crate; authors: David Tolnay <dtolnay@gmail.com>) |
 | `thiserror` | 2.0.18 | MIT | (no notice in crate; authors: David Tolnay <dtolnay@gmail.com>) |
+| `thiserror-impl` | 1.0.69 | MIT | (no notice in crate; authors: David Tolnay <dtolnay@gmail.com>) |
 | `thiserror-impl` | 2.0.18 | MIT | (no notice in crate; authors: David Tolnay <dtolnay@gmail.com>) |
 | `tiff` | 0.11.3 | MIT | Copyright (c) 2018 PistonDevelopers |
+| `tiny-skia` | 0.11.4 | BSD-3-Clause | Copyright (c) 2011 Google Inc. All rights reserved. |
+| `tiny-skia-path` | 0.11.4 | BSD-3-Clause | Copyright (c) 2011 Google Inc. All rights reserved. |
 | `tinystr` | 0.8.3 | Unicode-3.0 | Copyright © 2020-2024 Unicode, Inc. |
+| `toml_edit` | 0.25.12+spec-1.1.0 | MIT | Copyright (c) Individual contributors |
 | `tracing` | 0.1.44 | MIT | Copyright (c) 2019 Tokio Contributors |
+| `tracing-attributes` | 0.1.31 | MIT | Copyright (c) 2019 Tokio Contributors |
 | `tracing-core` | 0.1.36 | MIT | Copyright (c) 2019 Tokio Contributors |
 | `tracy-client` | 0.19.0 | MIT | (no notice in crate; authors: Simonas Kazlauskas <tracy-client@kazlauskas.me>) |
 | `tracy-client-sys` | 0.30.0 | MIT AND BSD-3-Clause | (no notice in crate; authors: Simonas Kazlauskas <tracy-client-sys@kazlauskas.me>); bundles the Tracy client, Copyright (c) 2017-2026 Bartosz Taudul (see section 1) |
+| `ttf-parser` | 0.25.1 | MIT | Copyright (c) 2018 Yevhenii Reizner |
 | `type-map` | 0.5.1 | MIT | Copyright (c) 2022 Jacob Brown; Copyright (c) 2017-NOW Actix Team |
 | `unic-langid` | 0.9.6 | MIT | (no notice in crate; authors: Zibi Braniecki <gandalf@mozilla.com>) |
 | `unic-langid-impl` | 0.9.6 | MIT | (no notice in crate; authors: Zibi Braniecki <gandalf@mozilla.com>) |
@@ -479,11 +564,23 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `unicode-ident` | 1.0.24 | MIT AND Unicode-3.0 | (no notice in crate; authors: David Tolnay <dtolnay@gmail.com>) |
 | `unicode-segmentation` | 1.13.3 | MIT | Copyright (c) 2015 The Rust Project Developers |
 | `url` | 2.5.8 | MIT | Copyright (c) 2013-2025 The rust-url developers |
+| `urlencoding` | 2.1.3 | MIT | © 2016 Bertram Truong |
 | `utf8_iter` | 1.0.4 | MIT | Copyright Mozilla Foundation |
 | `uuid` | 1.23.4 | MIT | Copyright (c) 2014 The Rust Project Developers; Copyright (c) 2018 Ashley Mannix, Christopher Armstrong, Dylan DPC, Hunar Roop Kahlon |
 | `vello_common` | 0.1.0 | MIT | Copyright 2020 the Vello Authors |
 | `vello_cpu` | 0.1.0 | MIT | Copyright 2020 the Vello Authors |
 | `walkdir` | 2.5.0 | MIT | Copyright (c) 2015 Andrew Gallant |
+| `wayland-backend` | 0.3.15 | MIT | Copyright (c) 2015 Elinor Berger |
+| `wayland-client` | 0.31.14 | MIT | Copyright (c) 2015 Elinor Berger |
+| `wayland-csd-frame` | 0.3.0 | MIT | Copyright (c) 2023 Kirill Chibisov |
+| `wayland-cursor` | 0.31.14 | MIT | Copyright (c) 2015 Elinor Berger |
+| `wayland-protocols` | 0.32.13 | MIT | Copyright (c) 2015 Elinor Berger |
+| `wayland-protocols-experimental` | 20250721.0.1 | MIT | Copyright (c) 2015 Elinor Berger |
+| `wayland-protocols-misc` | 0.3.12 | MIT | Copyright (c) 2015 Elinor Berger |
+| `wayland-protocols-plasma` | 0.3.12 | MIT | Copyright (c) 2015 Elinor Berger |
+| `wayland-protocols-wlr` | 0.3.12 | MIT | Copyright (c) 2015 Elinor Berger |
+| `wayland-scanner` | 0.31.10 | MIT | Copyright (c) 2015 Elinor Berger |
+| `wayland-sys` | 0.31.11 | MIT | Copyright (c) 2015 Elinor Berger |
 | `web-time` | 1.1.0 | MIT | Copyright (c) 2023 dAxpeDDa |
 | `webbrowser` | 1.2.1 | MIT | Copyright (c) 2015-2022 Amod Malviya |
 | `weezl` | 0.1.12 | MIT | Copyright (c) HeroicKatora 2020 |
@@ -508,8 +605,17 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `windows_x86_64_msvc` | 0.53.1 | MIT | Copyright (c) Microsoft Corporation. |
 | `winit` | 0.30.13 | Apache-2.0 | (no notice in crate; authors: The winit contributors, Pierre Krieger <pierre.krieger1708@gmail.com>) |
 | `writeable` | 0.6.3 | Unicode-3.0 | Copyright © 2020-2024 Unicode, Inc. |
+| `x11-dl` | 2.21.0 | MIT | (no notice in crate; authors: daggerbot <daggerbot@gmail.com>, Erle Pereira <erle@erlepereira.com>, AltF02 <contact@altf2.dev>) |
+| `x11rb` | 0.13.2 | MIT | Copyright 2019 x11rb Contributers |
+| `x11rb-protocol` | 0.13.2 | MIT | Copyright 2019 x11rb Contributers |
+| `xcursor` | 0.3.10 | MIT | Copyright (c) 2020 Samuele Esposito |
+| `xkbcommon-dl` | 0.4.2 | MIT | Copyright (c) 2023 Kirill Chibisov |
+| `xkeysym` | 0.2.1 | MIT | Copyright (c) 2022-2023 John Nunley |
 | `yoke` | 0.8.3 | Unicode-3.0 | Copyright © 2020-2024 Unicode, Inc. |
 | `yoke-derive` | 0.8.2 | Unicode-3.0 | Copyright © 2020-2024 Unicode, Inc. |
+| `zbus` | 5.16.0 | MIT | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
+| `zbus_macros` | 5.16.0 | MIT | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
+| `zbus_names` | 4.3.2 | MIT | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
 | `zerocopy` | 0.8.52 | MIT | Copyright 2023 The Fuchsia Authors |
 | `zerocopy-derive` | 0.8.52 | MIT | Copyright 2023 The Fuchsia Authors |
 | `zerofrom` | 0.1.8 | Unicode-3.0 | Copyright © 2020-2024 Unicode, Inc. |
@@ -527,6 +633,9 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `zune-jpegxl` | 0.5.2 | MIT | Copyright (c) zune-image developers |
 | `zune-ppm` | 0.5.1 | MIT | Copyright (c) zune-image developers |
 | `zune-qoi` | 0.5.2 | MIT | Copyright (c) zune-image developers |
+| `zvariant` | 5.12.0 | MIT | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
+| `zvariant_derive` | 5.12.0 | MIT | Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors |
+| `zvariant_utils` | 3.4.0 | MIT | (no notice in crate; authors: Zeeshan Ali Khan <zeeshanak@gnome.org>, turbocooler <turbocooler@cocaine.ninja>) |
 
 ### Crates in `review3d-cli` only
 
@@ -583,9 +692,11 @@ machine-executable object code". They are listed here for completeness. Full tex
 ### Note on the Apache-2.0 crates
 
 `winit`, `self_cell` and `unicode-general-category` are Apache-2.0 only, and `dpi` is Apache-2.0
-together with MIT. Apache-2.0 section 4 asks that the license text accompany the binary (it does:
+together with MIT; so, on Linux alone, are `ab_glyph`, `ab_glyph_rasterizer` and
+`owned_ttf_parser` (the title bar winit draws on Wayland) and `gethostname` (X11). Apache-2.0
+section 4 asks that the license text accompany the binary (it does:
 [`licenses/Apache-2.0.txt`](../licenses/Apache-2.0.txt)) and that any `NOTICE` file the work
-carries be reproduced; none of these four crates ships one. The ported Khronos PBR Neutral
+carries be reproduced; none of these eight crates ships one. The ported Khronos PBR Neutral
 tone mapper in section 1 is under the same license and terms, and its repository ships no `NOTICE`
 either. `self_cell` is offered as
 `Apache-2.0 OR GPL-2.0-only`; 3D Review elects Apache-2.0, so no GPL term applies to it.
@@ -624,11 +735,15 @@ is affected. Full text: [`licenses/MPL-2.0.txt`](../licenses/MPL-2.0.txt).
   `kernel32`, `ole32`, `shell32`, `dbghelp` and friends from the Windows SDK. On macOS it links the
   `AppKit`, `Foundation`, `QuartzCore` and `Metal` frameworks. These are operating-system
   components licensed to the user by Microsoft and by Apple as part of the OS, not redistributed
-  by 3D Review.
+  by 3D Review. On Linux it links the Vulkan loader (`libvulkan`) and the C and C++ runtimes, and
+  loads the window system's own libraries (`libwayland-client`, `libxkbcommon`, Xlib and XCB) at
+  run time; all of them come with the distribution, not with 3D Review.
 * **Build-time tooling.** `cc` (compiles the vendored C/C++), `sha2` (the shader-bytecode
   manifest), `winresource` (the Windows version resource and icon), `sokol-shdc` (generates the
-  per-backend shader sources), `fxc.exe` and `xcrun metal` (compile them to bytecode offline) run
-  during the build and contribute no code to the binary. `intel_tex_2` and `ispc_rt` - the Intel
+  per-backend shader sources, and compiles Linux's SPIR-V with its built-in glslang), `fxc.exe` and
+  `xcrun metal` (compile them to bytecode offline) and `link-cplusplus` (links the C++ runtime into
+  `review-render`'s build script on Linux) run during the build and contribute no code to the
+  binary. `intel_tex_2` and `ispc_rt` - the Intel
   ISPC Texture Compressor's encoders - run in two places: `review-render`'s build script, whose BC7
   encode of the UV checker textures is embedded as data, and the offline IBL bake (`bake_ibl`,
   behind `review-render`'s `bake` feature), whose BC6H output is the `.bin` maps. None of their
@@ -651,9 +766,10 @@ registry. Re-derive it after a dependency change with:
 ```sh
 cargo tree -p review-app -e normal --target x86_64-pc-windows-msvc --prefix none --format "{p}"
 cargo tree -p review-app -e normal --target aarch64-apple-darwin   --prefix none --format "{p}"
+cargo tree -p review-app -e normal --target x86_64-unknown-linux-gnu --prefix none --format "{p}"
 ```
 
-Take the **union** of the two - both targets ship - and cross-reference
+Take the **union** of the three - every target ships - and cross-reference
 `cargo metadata --format-version 1` for each package's `license` field, then read the copyright
 line out of each package's own `LICENSE*` file in the local cargo registry
 (`~/.cargo/registry/src/*/<name>-<version>/`). The workspace's own crates (`review-app`,
@@ -662,7 +778,8 @@ line out of each package's own `LICENSE*` file in the local cargo registry
 dependency are excluded from the table: the first ten are 3D Review, and sokol is section 1. Note
 that the macOS target pulls in crates the Windows one does not (the `objc2` family, `muda`,
 `core-foundation`, `fsevent-sys`, ...) and vice versa (the `windows` family, `clipboard-win`,
-`winapi-util`), which is why both trees are needed.
+`winapi-util`), and Linux pulls in its own (`ash`, the Wayland and X11 stacks under winit,
+`zbus` and `ashpd` under `rfd`'s portal dialogs), which is why all three trees are needed.
 
 The "Crates in `review3d-cli` only" table is the same pair of queries with `-p review-cli`, less
 every crate the viewer's table already lists. `asset-rules` is a git dependency, so its license is
