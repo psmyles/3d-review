@@ -469,6 +469,36 @@ A glTF file's unit is always the metre and its up axis +Y: the format fixes both
 Its vertex count is the sum of its primitives' vertices, which is what an engine
 uploads, and the same as its GPU vertex count unless the file repeats a vertex.
 
+## render
+
+```text
+review3d-cli render parts/*.glb --frame each --views "iso;front" --look matte,uv-stretch --out sheets --report sheets/render.json
+```
+
+Pictures of models, drawn headlessly through the viewer's own renderer: one
+contact sheet per look, a row per model (labelled with its size in metres) and a
+column per view. It needs a GPU, or on Linux a software Vulkan driver such as
+Mesa's lavapipe; one call starts it once for every model given.
+
+The drawing is done by the render engine, `review3d-render`, installed beside
+`review3d-cli`; every other command works without it, and without a GPU. The
+arguments after `render` are the engine's (`review3d-cli render --help` lists
+them all): models (`.fbx`, `.glb`, `.gltf`, each optionally `@<preset.json>` or
+`@lods` to render an operation stack's output, and `#<level>` for one level);
+`--views` (named views or `yaw,pitch[,zoom]`); `--look` (`shaded`, `matte`,
+`normals`, `wire`, `shaded-wire`, `checker`, `texel-density`, `uv-stretch`);
+`--size`, `--background`, `--grid`, `--transparent`, `--singles` (each cell as
+its own image too); and:
+
+| Option | |
+|---|---|
+| `--frame each` | Frame each model on its own bounds, so a catalogue of parts of every size fills its cells. Without it every model is framed on all of them together, which keeps their sizes comparable; `--frame <n>` frames on model `n`. |
+| `--report <file>` | Write a JSON report: per model its file, triangles, GPU vertices and `bounds_m` (`min`, `max`, `size`, in metres and the file's own axes), the framing, and every image written. |
+| `--checker-square <m>`, `--uv-density <n>` | The `checker` look's squares at a size in metres, for a layout made at `n` UV units per metre; `--uv-density` also sets the `texel-density` look's target. |
+
+Exit status: 0 when every picture was written, 1 when one was not, 2 when the
+render engine is missing.
+
 ## The report
 
 ```json

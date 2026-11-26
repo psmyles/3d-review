@@ -33,7 +33,10 @@ OPTIONS
   --look <list>         ','-separated: shaded, matte, normals, wire, shaded-wire,
                         checker, texel-density, uv-stretch
                         (default shaded)
-  --frame <n>           frame every view on subject n's bounds instead of on all of them
+  --frame <n>|each      frame every view on subject n's bounds, or each subject on its
+                        own, instead of all of them together
+  --report <file>       write a JSON report: each subject's file, triangles and bounds
+                        in metres, and every image written
   --chrome <l,t,r,b>    pixels of each view the viewer's chrome covers on the left, top,
                         right and bottom (its panels and bars): frame into what they
                         leave, as the viewer does, and dim them so the sheet shows it
@@ -72,7 +75,10 @@ pub struct Args {
     pub size: (u32, u32),
     pub views: Vec<View>,
     pub looks: Vec<Look>,
-    pub frame_on: Option<usize>,
+    pub frame_on: FrameOn,
+    /// `--report`: a JSON account of the run - each subject's bounds and the
+    /// files written.
+    pub report: Option<PathBuf>,
     /// Pixels of each view covered on the left, top, right and bottom.
     pub chrome: [u32; 4],
     pub background: ViewportBackground,
@@ -93,6 +99,18 @@ pub struct Args {
     pub checker_square: Option<f32>,
     /// `--uv-density`: UV units per metre the layout is meant to have.
     pub uv_density: f32,
+}
+
+/// What each view is framed on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameOn {
+    /// Every subject together: their union, so sizes compare across rows.
+    All,
+    /// One subject's bounds, for every row.
+    Subject(usize),
+    /// Each subject its own bounds: a catalogue of parts, every one filling its
+    /// cells.
+    Each,
 }
 
 /// Which clip to pose the subjects on, and on which of its frames.
@@ -183,7 +201,8 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
         size: (800, 600),
         views: Vec::new(),
         looks: Vec::new(),
-        frame_on: None,
+        frame_on: FrameOn::All,
+        report: None,
         chrome: [0; 4],
         background: ViewportBackground::Grey25,
         grid: false,
@@ -226,12 +245,17 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
                 }
             }
             "--frame" => {
-                args.frame_on = Some(
-                    value("--frame")?
-                        .parse()
-                        .context("--frame takes an index")?,
-                )
+                let text = value("--frame")?;
+                args.frame_on = if text == "each" {
+                    FrameOn::Each
+                } else {
+                    FrameOn::Subject(
+                        text.parse()
+                            .context("--frame takes a subject's index, or each")?,
+                    )
+                };
             }
+            "--report" => args.report = Some(value("--report")?.into()),
             "--chrome" => args.chrome = parse_chrome(&value("--chrome")?)?,
             "--background" => args.background = parse_background(&value("--background")?)?,
             "--grid" => args.grid = true,

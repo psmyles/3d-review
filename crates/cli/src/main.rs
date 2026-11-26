@@ -46,6 +46,7 @@ mod info;
 mod inputs;
 mod load;
 mod optimize;
+mod render;
 mod report;
 mod results;
 mod rules;
@@ -68,6 +69,10 @@ pub(crate) const VERSION: &str = env!("REVIEW_VERSION");
 fn main() -> ExitCode {
     review_localization::init(sys_locale::get_locale().as_deref());
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
+    // `render` is the render engine's to parse (`render.rs`).
+    if arguments.first().is_some_and(|word| word == "render") {
+        return render::run(&arguments[1..]);
+    }
     let parsed = match args::parse(arguments.clone()) {
         Ok(parsed) => parsed,
         Err(error) => {

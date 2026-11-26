@@ -109,6 +109,8 @@ Source: "..\target\release\{#MyAppExe}"; DestDir: "{app}"; Flags: ignoreversion
 ; pipelines and Launcher. Beside the viewer, so anything that finds the install
 ; through its Uninstall key's InstallLocation finds this too.
 Source: "..\target\release\review3d-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
+; `review3d-cli render`'s engine, which review3d-cli looks for beside itself.
+Source: "..\target\release\review-snapshot.exe"; DestDir: "{app}"; DestName: "review3d-render.exe"; Flags: ignoreversion
 ; The manual's images are the one exception (invariant 12): embedding
 ; screenshots would put megabytes in a binary whose startup time is a feature.
 ; An install without them still shows every page — each image renders as its

@@ -18,12 +18,14 @@ cli-help-usage-main = review3d-cli <command> <models or folders>... [options]
 cli-help-usage-optimize = review3d-cli optimize <models or folders>... --out <folder> [options]
 cli-help-usage-audit = review3d-cli audit <models or folders>... | --staged [options]
 cli-help-usage-info = review3d-cli info <models or folders>... [options]
+cli-help-usage-render = review3d-cli render <model>... [options]
 cli-help-usage-rules-check = review3d-cli rules check <rules.json>
 cli-help-usage-rules-explain = review3d-cli rules explain <files>... --rules <rules.json>
 cli-help-usage-rules-catalog = review3d-cli rules catalog
 cli-help-command-optimize = Simplify models, make LODs and save them as FBX.
 cli-help-command-audit = Check models against an engine's rules, or against Asset Check's.
 cli-help-command-info = Show what a model holds: polygons, triangles, vertices and more.
+cli-help-command-render = Render pictures of models headlessly through the viewer's renderer: contact sheets of views and looks, each part framed on its own or all together. Its options are the render engine's: review3d-cli render --help.
 cli-help-command-rules = Check an Asset Check rules.json and its model rules files for mistakes, show which of its rules apply to a file and why, or print every rule review3d-cli checks (rules catalog) as JSON for Rule Editor.
 
 # What an option takes, shown after it: `--out <folder>`.
@@ -200,3 +202,5 @@ cli-info-up = Up: { $axis }
 cli-info-size = Size: { $x } x { $y } x { $z } m
 cli-info-failed = Couldn't read { $file }: { $problem }
 cli-info-done = Done: { $done } read, { $failed } didn't work.
+cli-render-no-engine = The render engine is missing: review3d-render should be beside review3d-cli. Reinstall, or build it (cargo build -p review-snapshot).
+cli-render-engine-failed = Couldn't start the render engine ({ $engine }): { $error }

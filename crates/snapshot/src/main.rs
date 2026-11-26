@@ -126,22 +126,37 @@ fn run() -> Result<()> {
             .and_then(|posed| posed.envelope)
             .or_else(|| subjects[index].bounds())
     };
-    let framing = match args.frame_on {
-        Some(index) if index < subjects.len() => bounds(index),
-        Some(index) => bail!(
+    let shared = match args.frame_on {
+        cli::FrameOn::Subject(index) if index < subjects.len() => bounds(index),
+        cli::FrameOn::Subject(index) => bail!(
             "--frame {index}: there are only {} subjects",
             subjects.len()
         ),
-        None => (0..subjects.len()).filter_map(bounds).reduce(union),
+        cli::FrameOn::All | cli::FrameOn::Each => {
+            (0..subjects.len()).filter_map(bounds).reduce(union)
+        }
     };
-    let Some(framing) = framing.filter(|bounds| !bounds.is_empty()) else {
+    let Some(shared) = shared.filter(|bounds| !bounds.is_empty()) else {
         bail!("nothing to frame: every subject is empty");
     };
-    println!(
-        "framing bounds: min {:.3?} max {:.3?} (focus x,y,z in a view is a fraction of these)",
-        framing.min.to_array(),
-        framing.max.to_array()
-    );
+    if args.frame_on == cli::FrameOn::Each {
+        println!("framing each subject on its own bounds");
+    } else {
+        println!(
+            "framing bounds: min {:.3?} max {:.3?} (focus x,y,z in a view is a fraction of these)",
+            shared.min.to_array(),
+            shared.max.to_array()
+        );
+    }
+    // The bounds each subject's cells are framed on.
+    let framing: Vec<Bounds> = (0..subjects.len())
+        .map(|index| match args.frame_on {
+            cli::FrameOn::Each => bounds(index)
+                .filter(|own| !own.is_empty())
+                .unwrap_or(shared),
+            _ => shared,
+        })
+        .collect();
 
     std::fs::create_dir_all(&args.out)?;
     let mut capture = Capture::new(
@@ -158,35 +173,51 @@ fn run() -> Result<()> {
         capture.checker_tiling = 1.0 / (review_render::CHECKER_SQUARES * square * args.uv_density);
     }
     let columns: Vec<String> = args.views.iter().map(|view| view.name.clone()).collect();
-    let cameras: Vec<_> = args
-        .views
-        .iter()
-        .map(|view| capture.camera(view, framing))
-        .collect();
+    let cameras_for = |capture: &Capture, index: usize| -> Vec<_> {
+        args.views
+            .iter()
+            .map(|view| capture.camera(view, framing[index]))
+            .collect()
+    };
+    let cameras = cameras_for(&capture, 0);
+    let mut written: Vec<std::path::PathBuf> = Vec::new();
 
     for &look in &args.looks {
         let mut rows = Vec::with_capacity(subjects.len());
         for (index, subject) in subjects.iter().enumerate() {
+            let cameras = cameras_for(&capture, index);
             let mut cells = Vec::with_capacity(cameras.len());
             for (view, &camera) in cameras.iter().enumerate() {
                 let image = capture.render(subject, posed[index].as_ref(), camera, look)?;
                 if args.singles {
-                    image.save(args.out.join(format!(
+                    let single = args.out.join(format!(
                         "{}_{}_s{index}_v{view}.png",
                         args.name,
                         look.name()
-                    )))?;
+                    ));
+                    image.save(&single)?;
+                    written.push(single);
                 }
                 cells.push(image);
             }
+            // The row says how big the part is: framed each on its own, the
+            // pictures no longer do.
+            let size = subject
+                .bounds()
+                .map(|bounds| {
+                    let size = bounds.size();
+                    format!("  {:.3} x {:.3} x {:.3} m", size.x, size.y, size.z)
+                })
+                .unwrap_or_default();
             rows.push(Row {
-                label: format!("[{index}] {}", subject.label),
+                label: format!("[{index}] {}{size}", subject.label),
                 cells,
             });
         }
         let path = args.out.join(format!("{}_{}.png", args.name, look.name()));
         sheet::compose(&columns, &rows).save(&path)?;
         println!("wrote {}", path.display());
+        written.push(path);
     }
 
     if args.compare && subjects.len() > 1 {
@@ -218,7 +249,61 @@ fn run() -> Result<()> {
         let path = args.out.join(format!("{}_compare.png", args.name));
         sheet::compose(&columns, &rows).save(&path)?;
         println!("wrote {}", path.display());
+        written.push(path);
     }
+
+    if let Some(report) = &args.report {
+        write_report(report, &args, &subjects, &written)?;
+        println!("wrote {}", report.display());
+    }
+    Ok(())
+}
+
+/// The run as JSON: each subject's file, label, counts and bounds in metres
+/// (in the file's own axes), and every image written.
+fn write_report(
+    path: &std::path::Path,
+    args: &cli::Args,
+    subjects: &[inputs::Subject],
+    written: &[std::path::PathBuf],
+) -> Result<()> {
+    let triple = |v: glam::Vec3| serde_json::json!([v.x, v.y, v.z]);
+    let entries: Vec<serde_json::Value> = subjects
+        .iter()
+        .enumerate()
+        .map(|(index, subject)| {
+            let (triangles, gpu_vertices) = subject.counts();
+            serde_json::json!({
+                "index": index,
+                "label": subject.label,
+                "triangles": triangles,
+                "gpu_vertices": gpu_vertices,
+                "bounds_m": subject.bounds().filter(|bounds| !bounds.is_empty()).map(|bounds| serde_json::json!({
+                    "min": triple(bounds.min),
+                    "max": triple(bounds.max),
+                    "size": triple(bounds.size()),
+                })),
+            })
+        })
+        .collect();
+    let report = serde_json::json!({
+        "schema": "3d-review.render-report",
+        "version": 1,
+        "framing": match args.frame_on {
+            cli::FrameOn::All => "all".to_owned(),
+            cli::FrameOn::Each => "each".to_owned(),
+            cli::FrameOn::Subject(index) => format!("subject {index}"),
+        },
+        "subjects": entries,
+        "outputs": written.iter().map(|path| path.display().to_string()).collect::<Vec<_>>(),
+    });
+    if let Some(folder) = path
+        .parent()
+        .filter(|folder| !folder.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(folder)?;
+    }
+    std::fs::write(path, serde_json::to_string_pretty(&report)?)?;
     Ok(())
 }
 

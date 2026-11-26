@@ -51,14 +51,17 @@ pub(crate) enum CommandName {
     Audit,
     Info,
     Rules,
+    /// The render engine's: listed in the help, run before parsing (`render.rs`).
+    Render,
 }
 
 impl CommandName {
-    const ALL: [CommandName; 4] = [
+    const ALL: [CommandName; 5] = [
         CommandName::Optimize,
         CommandName::Audit,
         CommandName::Info,
         CommandName::Rules,
+        CommandName::Render,
     ];
 
     /// The word that names it on a command line.
@@ -68,6 +71,7 @@ impl CommandName {
             CommandName::Audit => "audit",
             CommandName::Info => "info",
             CommandName::Rules => "rules",
+            CommandName::Render => "render",
         }
     }
 
@@ -77,6 +81,7 @@ impl CommandName {
             CommandName::Optimize => &[k::HELP_USAGE_OPTIMIZE],
             CommandName::Audit => &[k::HELP_USAGE_AUDIT],
             CommandName::Info => &[k::HELP_USAGE_INFO],
+            CommandName::Render => &[k::HELP_USAGE_RENDER],
             CommandName::Rules => &[
                 k::HELP_USAGE_RULES_CHECK,
                 k::HELP_USAGE_RULES_EXPLAIN,
@@ -91,6 +96,7 @@ impl CommandName {
             CommandName::Audit => k::HELP_COMMAND_AUDIT,
             CommandName::Info => k::HELP_COMMAND_INFO,
             CommandName::Rules => k::HELP_COMMAND_RULES,
+            CommandName::Render => k::HELP_COMMAND_RENDER,
         }
     }
 
@@ -711,6 +717,7 @@ fn parse_command(command: CommandName, args: Vec<OsString>) -> Result<Parsed, Us
         CommandName::Audit => Command::Audit(audit_args(&given).map_err(error)?),
         CommandName::Info => Command::Info,
         CommandName::Rules => unreachable!("handled above: it takes no models"),
+        CommandName::Render => unreachable!("run before parsing: main hands it to render.rs"),
     };
     Ok(Parsed::Run(Box::new(Run { common, command })))
 }

@@ -59,13 +59,15 @@ exe="$(meta exeName)"
 [[ -n "$version" && -n "$exe" ]] || die "could not read version / exeName from product.json"
 
 if [[ $do_build -eq 1 ]]; then
-    say "build $exe and review3d-cli $version"
-    cargo build --manifest-path "$repo/Cargo.toml" -p review-app -p review-cli --release
+    say "build $exe, review3d-cli and its render engine $version"
+    cargo build --manifest-path "$repo/Cargo.toml" -p review-app -p review-cli -p review-snapshot --release
 fi
 
 viewer="$repo/target/release/$exe"
 cli="$repo/target/release/review3d-cli"
-for bin in "$viewer" "$cli"; do
+# `review3d-cli render`'s engine (crates/snapshot), shipped under its product name.
+engine="$repo/target/release/review-snapshot"
+for bin in "$viewer" "$cli" "$engine"; do
     [[ -x "$bin" ]] || die "no release build at $bin — drop --no-build?"
     file -b "$bin" | grep -q 'ELF 64-bit.*x86-64' || die "$bin is not an x86_64 ELF"
 done
@@ -79,6 +81,7 @@ rm -rf "$stage"
 mkdir -p "$stage/$name/licenses"
 cp "$viewer" "$stage/$name/$exe"
 cp "$cli" "$stage/$name/review3d-cli"
+cp "$engine" "$stage/$name/review3d-render"
 # The manual's pictures, when it has any (its text is compiled into the viewer); the
 # Windows installer skips them the same way when there are none.
 if [[ -d "$repo/docs/book/src/en/images" ]]; then

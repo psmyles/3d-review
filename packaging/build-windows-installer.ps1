@@ -110,6 +110,10 @@ if (-not $SkipBuild) {
         # workspaces for scripts, pipelines and Launcher.
         & cargo build --release -p review-cli
         if ($LASTEXITCODE -ne 0) { throw "cargo build of review3d-cli failed (exit $LASTEXITCODE)." }
+        # `review3d-cli render`'s engine (crates\snapshot), installed beside it as
+        # review3d-render.exe: a separate binary so the rest of the CLI needs no GPU.
+        & cargo build --release -p review-snapshot
+        if ($LASTEXITCODE -ne 0) { throw "cargo build of the render engine failed (exit $LASTEXITCODE)." }
         # The Explorer thumbnail + preview extension, with its own profile: release,
         # but unwinding on panic, since it runs inside processes Explorer owns.
         & cargo build --profile release-shell -p review-shell-windows
@@ -152,6 +156,10 @@ if (-not (Test-Path $exePath)) {
 $cliPath = Join-Path $repoRoot 'target\release\review3d-cli.exe'
 if (-not (Test-Path $cliPath)) {
     throw "review3d-cli.exe not found at $cliPath. Run without -SkipBuild, or build first."
+}
+$enginePath = Join-Path $repoRoot 'target\release\review-snapshot.exe'
+if (-not (Test-Path $enginePath)) {
+    throw "review-snapshot.exe (the render engine) not found at $enginePath. Run without -SkipBuild, or build first."
 }
 $shellPath = Join-Path $repoRoot 'target\release-shell\review_shell.dll'
 if (-not (Test-Path $shellPath)) {

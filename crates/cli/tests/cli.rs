@@ -1097,3 +1097,21 @@ fn the_rules_commands_check_and_explain() {
     assert_eq!(catalog.bases, ["unity", "unreal", "generic"]);
     assert!(catalog.check(catalog.version.as_deref()).is_empty());
 }
+
+/// `render` runs the render engine beside the binary; without one it says so
+/// and stops with a usage error, rather than failing somewhere obscure.
+#[test]
+fn render_without_its_engine_says_so() {
+    let folder = Path::new(env!("CARGO_TARGET_TMPDIR")).join("cli-render-alone");
+    let _ = std::fs::remove_dir_all(&folder);
+    std::fs::create_dir_all(&folder).expect("a folder");
+    let alone = folder.join(format!("review3d-cli{}", std::env::consts::EXE_SUFFIX));
+    std::fs::copy(env!("CARGO_BIN_EXE_review3d-cli"), &alone).expect("copy the binary");
+    let output = Command::new(&alone)
+        .args(["render", "model.glb"])
+        .output()
+        .expect("the binary runs");
+    assert_eq!(output.status.code(), Some(2));
+    let text = String::from_utf8_lossy(&output.stderr);
+    assert!(text.contains("review3d-render"), "{text}");
+}

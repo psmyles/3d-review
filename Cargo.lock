@@ -3509,6 +3509,7 @@ dependencies = [
  "review-model",
  "review-optimize",
  "review-render",
+ "serde_json",
 ]
 
 [[package]]

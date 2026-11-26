@@ -13,6 +13,7 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 glam.workspace = true
+serde_json.workspace = true
 image.workspace = true
 # Warnings and errors to stderr (`main.rs`): sokol's validation, and Vulkan's.
 log.workspace = true
