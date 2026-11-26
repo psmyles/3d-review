@@ -1107,9 +1107,20 @@ fn render_without_its_engine_says_so() {
     std::fs::create_dir_all(&folder).expect("a folder");
     let alone = folder.join(format!("review3d-cli{}", std::env::consts::EXE_SUFFIX));
     std::fs::copy(env!("CARGO_BIN_EXE_review3d-cli"), &alone).expect("copy the binary");
-    let output = Command::new(&alone)
-        .args(["render", "model.glb"])
-        .output()
+    // On Linux a test thread that forks while the copy is still open for
+    // writing holds it open in its child until that child execs, and running
+    // the copy meanwhile fails with "text file busy". It passes; wait it out.
+    let output = (0..100)
+        .find_map(
+            |_| match Command::new(&alone).args(["render", "model.glb"]).output() {
+                Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    None
+                }
+                result => Some(result),
+            },
+        )
+        .expect("the copy stops being busy")
         .expect("the binary runs");
     assert_eq!(output.status.code(), Some(2));
     let text = String::from_utf8_lossy(&output.stderr);
