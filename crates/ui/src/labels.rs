@@ -17,8 +17,8 @@ use review_log::Level;
 use review_model::{NodeKind, SkinningMethod};
 use review_optimize::{
     AoQuality, AoTarget, ChartGrowth, ExportFileType, FbxFormat, Flattening, HierarchyMode,
-    LodPackaging, NormalMode, RemeshDensity, RemeshTopology, SeamSource, Shortfall,
-    ShrinkwrapMethod, SimplifyAlgorithm, TargetMode, UvLayout, VoxelTarget,
+    LodPackaging, NormalMode, NormalWeighting, RemeshDensity, RemeshTopology, SeamSource,
+    Shortfall, ShrinkwrapMethod, SimplifyAlgorithm, TargetMode, UvLayout, VoxelTarget,
 };
 use review_render::{
     AlphaMode, BufferView, ChannelSelect, CheckerTexture, EnvironmentMap, GtaoQuality,
@@ -315,6 +315,15 @@ pub(crate) fn hierarchy_mode(mode: HierarchyMode) -> Key {
     }
 }
 
+pub(crate) fn normal_weighting(weighting: NormalWeighting) -> Key {
+    match weighting {
+        NormalWeighting::AngleAndEdges => keys::ui_enums::NORMAL_WEIGHTING_ANGLE_AND_EDGES,
+        NormalWeighting::Area => keys::ui_enums::NORMAL_WEIGHTING_AREA,
+        NormalWeighting::Angle => keys::ui_enums::NORMAL_WEIGHTING_ANGLE,
+        NormalWeighting::AreaAndAngle => keys::ui_enums::NORMAL_WEIGHTING_AREA_AND_ANGLE,
+    }
+}
+
 pub(crate) fn uv_layout(layout: UvLayout) -> Key {
     match layout {
         UvLayout::Atlas => keys::ui_enums::UV_LAYOUT_ATLAS,
@@ -506,6 +515,9 @@ mod tests {
         }
         for value in UvLayout::ALL {
             assert_resolves(uv_layout(value));
+        }
+        for value in NormalWeighting::ALL {
+            assert_resolves(normal_weighting(value));
         }
         for value in ChartGrowth::ALL {
             assert_resolves(chart_growth(value));

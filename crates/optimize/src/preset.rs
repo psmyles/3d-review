@@ -317,6 +317,7 @@ mod tests {
         stack.push_op(OpKind::RecalculateNormals(NormalParams {
             crease_angle: 30.0,
             smoothing: 1.0,
+            ..Default::default()
         }));
         let reloaded = from_json(&to_json(&stack).expect("serializes")).expect("parses");
         assert_eq!(

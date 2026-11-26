@@ -12,9 +12,9 @@ use review_model::ModelData;
 use review_optimize::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, ChartGrowth, ExportFileType,
     ExportOptions, FbxFormat, Flattening, HierarchyMode, LodLevel, LodPackaging, LodParams,
-    NormalMode, NormalParams, OpKind, ReduceParams, RemeshDensity, RemeshParams, RemeshTopology,
-    SeamSource, ShrinkwrapMethod, ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags,
-    SimplifySettings, TargetMode, UnwrapParams, UvLayout, VoxelTarget, WeldParams,
+    NormalMode, NormalParams, NormalWeighting, OpKind, ReduceParams, RemeshDensity, RemeshParams,
+    RemeshTopology, SeamSource, ShrinkwrapMethod, ShrinkwrapParams, SimplifyAlgorithm,
+    SimplifyFlags, SimplifySettings, TargetMode, UnwrapParams, UvLayout, VoxelTarget, WeldParams,
 };
 use review_render::Selection;
 
@@ -218,6 +218,23 @@ fn recalculate_normals_params(ui: &mut egui::Ui, params: NormalParams) -> Option
 /// Recalculate Normals and by every rebuild told to generate its normals, so the
 /// same two numbers read the same wherever they appear.
 fn normal_params_rows(ui: &mut egui::Ui, params: &mut NormalParams) {
+    labeled_combo(
+        ui,
+        Tip::new(keys::ui_opt::NORMAL_WEIGHTING)
+            .describe(keys::ui_opt::NORMAL_WEIGHTING_DESCRIPTION)
+            .page(Page::OptNormals),
+        "opt_normal_weighting",
+        labels::normal_weighting(params.weighting),
+        |ui| {
+            for weighting in NormalWeighting::ALL {
+                ui.selectable_value(
+                    &mut params.weighting,
+                    weighting,
+                    labels::normal_weighting(weighting),
+                );
+            }
+        },
+    );
     labeled_slider_with_value(
         ui,
         Tip::new(keys::ui_opt::NORMAL_CREASE_ANGLE)
@@ -227,15 +244,18 @@ fn normal_params_rows(ui: &mut egui::Ui, params: &mut NormalParams) {
         NORMAL_CREASE_MIN..=NORMAL_CREASE_MAX,
         0,
     );
-    labeled_slider_with_value(
-        ui,
-        Tip::new(keys::ui_opt::NORMAL_SMOOTHING)
-            .describe(keys::ui_opt::NORMAL_SMOOTHING_DESCRIPTION)
-            .page(Page::OptNormals),
-        &mut params.smoothing,
-        NORMAL_SMOOTHING_MIN..=NORMAL_SMOOTHING_MAX,
-        1,
-    );
+    // Smoothing is meshoptimizer's, which only the default weighting uses.
+    if params.weighting == NormalWeighting::AngleAndEdges {
+        labeled_slider_with_value(
+            ui,
+            Tip::new(keys::ui_opt::NORMAL_SMOOTHING)
+                .describe(keys::ui_opt::NORMAL_SMOOTHING_DESCRIPTION)
+                .page(Page::OptNormals),
+            &mut params.smoothing,
+            NORMAL_SMOOTHING_MIN..=NORMAL_SMOOTHING_MAX,
+            1,
+        );
+    }
 }
 
 /// The "Normals" choice a rebuilding operation offers — projected off the

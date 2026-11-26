@@ -4,7 +4,33 @@
 
 use serde::{Deserialize, Serialize};
 
-/// How meshoptimizer generates normals from positions alone.
+/// How much each face around a point counts toward the point's normal.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NormalWeighting {
+    /// The corner's angle times the two edges' lengths there: meshoptimizer's
+    /// own, which also offers smoothing.
+    #[default]
+    AngleAndEdges,
+    /// The face's area: a large flat face keeps its own normal right up to its
+    /// edge, and the narrow fillet or chamfer beside it bends instead — what
+    /// hard-surface parts at low triangle counts need, so flats do not pinch.
+    Area,
+    /// The corner's angle, so how finely a face is cut does not matter.
+    Angle,
+    /// Both: the area times the angle.
+    AreaAndAngle,
+}
+
+impl NormalWeighting {
+    pub const ALL: [NormalWeighting; 4] = [
+        NormalWeighting::AngleAndEdges,
+        NormalWeighting::Area,
+        NormalWeighting::Angle,
+        NormalWeighting::AreaAndAngle,
+    ];
+}
+
+/// How normals are generated from positions alone.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NormalParams {
@@ -13,8 +39,10 @@ pub struct NormalParams {
     pub crease_angle: f32,
     /// Extra relaxation over neighbouring triangles, 0 for none. Useful on a
     /// surface faceted at a small scale — a voxel or distance-field surface —
-    /// where plain averaging still shows the steps.
+    /// where plain averaging still shows the steps. Applies to the
+    /// [`NormalWeighting::AngleAndEdges`] weighting.
     pub smoothing: f32,
+    pub weighting: NormalWeighting,
 }
 
 impl NormalParams {
@@ -32,6 +60,7 @@ impl Default for NormalParams {
             // The library's own default. Relaxing an authored model's normals
             // is rarely what a recalculation is for.
             smoothing: 0.0,
+            weighting: NormalWeighting::AngleAndEdges,
         }
     }
 }

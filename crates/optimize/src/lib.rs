@@ -80,9 +80,9 @@ pub use replace_file::{Staged, write_bytes_replacing, write_replacing};
 pub use stack::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportFileType, ExportOptions, FbxFormat,
     HierarchyMode, LodLevel, LodPackaging, LodParams, NodeOverride, NormalMode, NormalParams,
-    OpInstance, OpKind, OptStack, RebindReport, ReduceParams, RemeshDensity, RemeshParams,
-    RemeshTopology, ShrinkwrapMethod, ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags,
-    SimplifySettings, StackRepairs, TargetMode, VoxelTarget, WeldParams,
+    NormalWeighting, OpInstance, OpKind, OptStack, RebindReport, ReduceParams, RemeshDensity,
+    RemeshParams, RemeshTopology, ShrinkwrapMethod, ShrinkwrapParams, SimplifyAlgorithm,
+    SimplifyFlags, SimplifySettings, StackRepairs, TargetMode, VoxelTarget, WeldParams,
 };
 pub use stack::{ChartGrowth, Flattening, SeamSource, UnwrapParams, UvLayout};
 

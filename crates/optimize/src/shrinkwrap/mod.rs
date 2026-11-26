@@ -420,6 +420,7 @@ mod tests {
             normal_params: crate::stack::NormalParams {
                 crease_angle: 45.0,
                 smoothing: 0.0,
+                ..Default::default()
             },
             ..projected
         };

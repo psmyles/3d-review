@@ -17,10 +17,26 @@ from the shape itself.
   edge stays hard; gentler edges are smoothed over. The default, 60 degrees,
   keeps a box's corners crisp and a cylinder's sides round. 180 smooths
   everything; a small angle makes nearly every edge hard, for a faceted look.
-- **Smoothing** - relaxes the result over neighbouring faces. Zero, the
-  default, leaves it exactly as worked out. A little is useful on a surface
-  built from a grid, such as a [Shrinkwrap](shrinkwrap.md), where plain
-  averaging still shows the small steps.
+- **Weighting** - how much each face around a point counts toward the point's
+  normal:
+  - **Angle and edge lengths** (the default) - the face's corner angle at the
+    point, times the lengths of its two edges there.
+  - **Face area** - the face's size. A large flat face keeps its own normal right
+    up to its edge, and the narrow fillet or chamfer beside it does the bending
+    instead. This is what keeps flats flat on a hard-surface model at a low
+    triangle count, where a big face and a thin strip meet at every corner; it
+    is what a modelling program's "weighted normals by face area, keep sharp"
+    does.
+  - **Corner angle** - the face's corner angle alone, so how finely a face was
+    cut into triangles makes no difference.
+  - **Area and angle** - the two multiplied.
+- **Smoothing** (with Angle and edge lengths) - relaxes the result over
+  neighbouring faces. Zero, the default, leaves it exactly as worked out. A
+  little is useful on a surface built from a grid, such as a
+  [Shrinkwrap](shrinkwrap.md), where plain averaging still shows the small
+  steps.
+
+Every weighting keeps the edges sharper than the crease angle hard.
 
 It works on each object as a whole, so the border between two materials on one
 object is not made into a hard edge.

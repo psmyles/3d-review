@@ -24,7 +24,7 @@ use crate::Warnings;
 use crate::meshopt::{self, TANGENT_COMPONENTS};
 use crate::notice::OptWarning;
 use crate::process::{RunContext, is_excluded, resolve_op};
-use crate::stack::{NormalParams, OpInstance, OpKind, OptStack, WeldParams};
+use crate::stack::{NormalParams, NormalWeighting, OpInstance, OpKind, OptStack, WeldParams};
 use crate::submesh::{PolygonCarry, Submesh};
 
 /// Finish a level's pieces: smooth the normals a normal-blind weld left stale,
@@ -64,6 +64,9 @@ pub(crate) fn corner_normals(
     vertex_count: usize,
     params: &NormalParams,
 ) -> Result<Vec<Vec3>, OptError> {
+    if params.weighting != NormalWeighting::AngleAndEdges {
+        return Ok(weighted_corner_normals(indices, positions, params));
+    }
     let flat = meshopt::generate_normals(
         indices,
         positions,
@@ -77,6 +80,136 @@ pub(crate) fn corner_normals(
         .iter()
         .map(|n| Vec3::from_array(*n).normalize_or(Vec3::Z))
         .collect())
+}
+
+/// Per-corner normals weighted as `params` says, for the weightings
+/// meshoptimizer does not offer.
+///
+/// Corners are grouped by *position*, as meshoptimizer groups them: around each
+/// point, the faces joined through shared edges that meet at less than the
+/// crease angle form one fan and share one normal; a sharper edge keeps the fans
+/// either side of it apart (Blender's "Keep Sharp"). Each fan's normal is its
+/// faces' normals, weighted, summed and normalized.
+fn weighted_corner_normals(indices: &[u32], positions: &[f32], params: &NormalParams) -> Vec<Vec3> {
+    let triangles = indices.as_chunks::<3>().0;
+    let position = |index: u32| {
+        let at = index as usize * 3;
+        Vec3::new(positions[at], positions[at + 1], positions[at + 2])
+    };
+    // Each vertex's position, as an id shared by every vertex there.
+    let mut ids: HashMap<[u32; 3], u32> = HashMap::new();
+    let vertex_count = positions.len() / 3;
+    let point: Vec<u32> = (0..vertex_count as u32)
+        .map(|vertex| {
+            let next = ids.len() as u32;
+            *ids.entry(
+                position(vertex)
+                    .to_array()
+                    .map(|value| if value == 0.0 { 0 } else { value.to_bits() }),
+            )
+            .or_insert(next)
+        })
+        .collect();
+
+    let normal: Vec<Vec3> = triangles
+        .iter()
+        .map(|corners| {
+            let [a, b, c] = corners.map(position);
+            (b - a).cross(c - a)
+        })
+        .collect();
+    let unit: Vec<Vec3> = normal.iter().map(|n| n.normalize_or_zero()).collect();
+    let cosine = review_model::exact::cos(params.crease_angle.clamp(0.0, 180.0).to_radians());
+
+    // Faces sharing an edge (by points), for the fans.
+    let mut edge_faces: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+    for (face, corners) in triangles.iter().enumerate() {
+        for k in 0..3 {
+            let (a, b) = (
+                point[corners[k] as usize],
+                point[corners[(k + 1) % 3] as usize],
+            );
+            edge_faces
+                .entry((a.min(b), a.max(b)))
+                .or_default()
+                .push(face as u32);
+        }
+    }
+    // Per corner, a group: corners at one point whose faces are joined through
+    // smooth shared edges at that point are one group (union-find over corners).
+    let mut parent: Vec<u32> = (0..indices.len() as u32).collect();
+    fn root(parent: &mut [u32], mut at: u32) -> u32 {
+        while parent[at as usize] != at {
+            parent[at as usize] = parent[parent[at as usize] as usize];
+            at = parent[at as usize];
+        }
+        at
+    }
+    let corner_at = |face: usize, at: u32| -> Option<usize> {
+        (0..3)
+            .find(|&k| point[triangles[face][k] as usize] == at)
+            .map(|k| face * 3 + k)
+    };
+    for (face, corners) in triangles.iter().enumerate() {
+        for k in 0..3 {
+            let (a, b) = (
+                point[corners[k] as usize],
+                point[corners[(k + 1) % 3] as usize],
+            );
+            let Some(faces) = edge_faces.get(&(a.min(b), a.max(b))) else {
+                continue;
+            };
+            for &other in faces {
+                let other = other as usize;
+                if other <= face || unit[face].dot(unit[other]) < cosine {
+                    continue;
+                }
+                for at in [a, b] {
+                    if let (Some(mine), Some(theirs)) = (corner_at(face, at), corner_at(other, at))
+                    {
+                        let (x, y) = (
+                            root(&mut parent, mine as u32),
+                            root(&mut parent, theirs as u32),
+                        );
+                        if x != y {
+                            parent[x.max(y) as usize] = x.min(y);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut sum = vec![Vec3::ZERO; indices.len()];
+    for (face, corners) in triangles.iter().enumerate() {
+        let area = 0.5 * normal[face].length();
+        for k in 0..3 {
+            let [here, next, previous] =
+                [k, (k + 1) % 3, (k + 2) % 3].map(|at| position(corners[at]));
+            let angle = review_model::exact::acos(
+                (next - here)
+                    .normalize_or_zero()
+                    .dot((previous - here).normalize_or_zero())
+                    .clamp(-1.0, 1.0),
+            );
+            let weight = match params.weighting {
+                NormalWeighting::Area => area,
+                NormalWeighting::Angle => angle,
+                NormalWeighting::AreaAndAngle | NormalWeighting::AngleAndEdges => area * angle,
+            };
+            let group = root(&mut parent, (face * 3 + k) as u32) as usize;
+            sum[group] += unit[face] * weight;
+        }
+    }
+    (0..indices.len())
+        .map(|corner| {
+            let group = root(&mut parent, corner as u32) as usize;
+            sum[group]
+                .try_normalize()
+                .unwrap_or(unit[corner / 3])
+                .normalize_or(Vec3::Z)
+        })
+        .collect()
 }
 
 /// The Recalculate Normals operation: every eligible object's normals are
@@ -358,6 +491,72 @@ mod tests {
     use super::*;
     use crate::submesh::{NO_MATERIAL, PolygonCarry, VertexRows};
 
+    /// A flat square beside a narrow chamfer turned 20 degrees down from it,
+    /// sharing the square's right edge: positions, and its four triangles.
+    fn square_and_chamfer() -> (Vec<f32>, Vec<u32>) {
+        let (cos, sin) = (20f32.to_radians().cos(), 20f32.to_radians().sin());
+        let width = 0.05;
+        let points = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0 + width * cos, 0.0, -width * sin],
+            [1.0 + width * cos, 1.0, -width * sin],
+        ];
+        let positions = points.iter().flatten().copied().collect();
+        (positions, vec![0, 1, 2, 0, 2, 3, 1, 4, 5, 1, 5, 2])
+    }
+
+    fn turn_from_up(normal: Vec3) -> f32 {
+        normal.dot(Vec3::Z).clamp(-1.0, 1.0).acos().to_degrees()
+    }
+
+    #[test]
+    fn face_area_weighting_keeps_the_flat_face_flat_at_its_edge() {
+        let (positions, indices) = square_and_chamfer();
+        let normals = |weighting| {
+            let params = NormalParams {
+                crease_angle: 60.0,
+                weighting,
+                ..NormalParams::default()
+            };
+            weighted_corner_normals(&indices, &positions, &params)
+        };
+        // Corner 1 is the square's corner on the shared edge.
+        let area = turn_from_up(normals(NormalWeighting::Area)[1]);
+        let angle = turn_from_up(normals(NormalWeighting::Angle)[1]);
+        // The square outweighs the chamfer ten to one by area: it leans less
+        // than 2.5 degrees where an even split would lean 10.
+        assert!(
+            area < 2.5,
+            "the big face's normal wins by area: {area} degrees"
+        );
+        assert!(area < angle, "area {area} against angle {angle}");
+        // Smooth across: the chamfer's corner there shares the normal.
+        let shared = normals(NormalWeighting::Area);
+        assert_eq!(shared[1], shared[6]);
+    }
+
+    #[test]
+    fn an_edge_sharper_than_the_crease_stays_hard() {
+        let (positions, indices) = square_and_chamfer();
+        let params = NormalParams {
+            crease_angle: 10.0,
+            weighting: NormalWeighting::Area,
+            ..NormalParams::default()
+        };
+        let normals = weighted_corner_normals(&indices, &positions, &params);
+        assert!(
+            turn_from_up(normals[1]) < 1.0e-3,
+            "the square keeps its own"
+        );
+        assert!(
+            (turn_from_up(normals[6]) - 20.0).abs() < 1.0e-2,
+            "and the chamfer its own"
+        );
+    }
+
     fn piece(vertices: Vec<Vertex>, indices: Vec<u32>) -> Submesh {
         Submesh {
             node: 0,
@@ -626,6 +825,7 @@ mod tests {
             NormalParams {
                 crease_angle: 45.0,
                 smoothing: 0.0,
+                ..Default::default()
             },
             None,
         );
@@ -674,6 +874,7 @@ mod tests {
             NormalParams {
                 crease_angle: 120.0,
                 smoothing: 0.0,
+                ..Default::default()
             },
             None,
         );
@@ -694,6 +895,7 @@ mod tests {
             NormalParams {
                 crease_angle: 45.0,
                 smoothing: 0.0,
+                ..Default::default()
             },
             None,
         );
@@ -710,6 +912,7 @@ mod tests {
             NormalParams {
                 crease_angle: 120.0,
                 smoothing: 0.0,
+                ..Default::default()
             },
             None,
         );
@@ -740,6 +943,7 @@ mod tests {
             NormalParams {
                 crease_angle: 120.0,
                 smoothing: 0.0,
+                ..Default::default()
             },
             None,
         );
