@@ -52,6 +52,13 @@ against the original, tinted green or red. Every figure here is one where
   Higher means the drawing order jumps around.
 - **Error** - how far this level has drifted from the model it was made from,
   as measured by the simplifier.
+- **Target** - the triangles the level was asked for. A target is a ceiling,
+  not a promise: a level that stopped above it carries a note saying what
+  held it. **error limit** means the shape could only go further by moving
+  more than the [error limit](simplify.md#target) allows; raise the limit to
+  reach the target. **seams** means the model's own seams and open borders
+  allow no further simplifying at any limit; weld it first, or let the
+  simplifier collapse across seams.
 
 The card is there as soon as you open the workspace. A run with nothing
 switched on makes no new model, but it still measures the original, so you can

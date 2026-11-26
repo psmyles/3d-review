@@ -38,6 +38,7 @@ pub(crate) enum StatRow {
     Overdraw,
     Overfetch,
     Error,
+    Target,
 }
 
 impl StatRow {
@@ -63,6 +64,7 @@ impl StatRow {
             StatRow::Overdraw => "overdraw",
             StatRow::Overfetch => "overfetch",
             StatRow::Error => "error",
+            StatRow::Target => "target",
         }
     }
 
@@ -85,6 +87,7 @@ impl StatRow {
             StatRow::Overdraw => keys::ui_stats::OVERDRAW,
             StatRow::Overfetch => keys::ui_stats::OVERFETCH,
             StatRow::Error => keys::ui_stats::ERROR,
+            StatRow::Target => keys::ui_stats::TARGET,
         }
     }
 
@@ -107,6 +110,7 @@ impl StatRow {
             StatRow::Overdraw => keys::ui_stats::OVERDRAW_DESCRIPTION,
             StatRow::Overfetch => keys::ui_stats::OVERFETCH_DESCRIPTION,
             StatRow::Error => keys::ui_stats::ERROR_DESCRIPTION,
+            StatRow::Target => keys::ui_stats::TARGET_DESCRIPTION,
         }
     }
 
@@ -121,7 +125,8 @@ impl StatRow {
             | StatRow::Atvr
             | StatRow::Overdraw
             | StatRow::Overfetch
-            | StatRow::Error => Page::OptComparison,
+            | StatRow::Error
+            | StatRow::Target => Page::OptComparison,
             _ => Page::Stats,
         }
     }
@@ -632,6 +637,26 @@ pub(crate) fn processed_stats_grid(ui: &mut egui::Ui, state: &UiState) {
             ui,
             StatRow::Error,
             &format!("{:.4}", metrics.simplify_error),
+        );
+    }
+    // What the level's simplify was aimed at, and when it stopped above it, what
+    // held it: the error limit (raise it) or the mesh's own seams and borders (weld,
+    // or collapse across them). A target is a ceiling, so the note is the only
+    // thing that says a level missed one.
+    if let Some(aim) = metrics.aim.filter(|_| level.is_some()) {
+        let note = aim.stopped_by.map(|reason| {
+            (
+                review_localization::tr(crate::labels::shortfall(reason)).into_owned(),
+                color::STATS_DELTA_WORSE,
+            )
+        });
+        value_row(
+            ui,
+            StatRow::Target.id(),
+            Some(StatRow::Target),
+            &review_localization::tr(StatRow::Target.label()),
+            &aim.target.to_string(),
+            note,
         );
     }
 }

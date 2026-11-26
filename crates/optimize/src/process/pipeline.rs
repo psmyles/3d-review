@@ -117,6 +117,23 @@ pub(crate) struct LevelState {
     /// Whether any simplifier ran on this level (see
     /// [`AnalysisMetrics::simplified`](super::AnalysisMetrics::simplified)).
     pub(crate) simplified: bool,
+    /// What the level's last simplify aimed at and reached.
+    pub(crate) aim: Option<Aim>,
+}
+
+/// What one simplify pass over a mesh did: its worst error, and what it was aimed
+/// at against what it reached (`None` when it simplified no object).
+pub(crate) struct SimplifyRun {
+    pub(crate) error: f32,
+    pub(crate) aim: Option<Aim>,
+}
+
+impl SimplifyRun {
+    /// What an operation that simplified nothing did.
+    pub(crate) const NONE: SimplifyRun = SimplifyRun {
+        error: 0.0,
+        aim: None,
+    };
 }
 
 /// Simplify a fresh copy of the base submeshes down to one LOD level's target.
@@ -130,21 +147,21 @@ pub(crate) fn build_lod_level(
 ) -> LevelState {
     let mut submeshes = base.to_vec();
     let operation = OpKind::SimplifyLod(params.clone());
-    let simplify_error =
-        simplify_submeshes(&mut submeshes, stack, &operation, warnings, cancel, |_| {
-            ObjectSettings {
-                simplify: params.simplify,
-                target: *level,
-                // The chain has no per-object overrides: every object shares its
-                // levels' counts.
-                overridden: false,
-            }
-        });
+    let run = simplify_submeshes(&mut submeshes, stack, &operation, warnings, cancel, |_| {
+        ObjectSettings {
+            simplify: params.simplify,
+            target: *level,
+            // The chain has no per-object overrides: every object shares its
+            // levels' counts.
+            overridden: false,
+        }
+    });
 
     LevelState {
         submeshes,
-        simplify_error,
+        simplify_error: run.error,
         simplified: true,
+        aim: run.aim,
     }
 }
 
@@ -174,7 +191,7 @@ pub(crate) fn simplify_submeshes(
     warnings: &mut Warnings,
     cancel: Option<&CancelToken>,
     mut settings_for: impl FnMut(&Submesh) -> ObjectSettings,
-) -> f32 {
+) -> SimplifyRun {
     let mut worst_error = 0.0f32;
     let mut requested = 0usize;
     let mut produced = 0usize;
@@ -228,9 +245,13 @@ pub(crate) fn simplify_submeshes(
             (settings.target.target_triangles, triangles)
         });
 
+    let mut aim: Option<Aim> = None;
     for (node, object, before) in plan {
         if cancelled(cancel) {
-            return worst_error;
+            return SimplifyRun {
+                error: worst_error,
+                aim,
+            };
         }
         let mut pieces: Vec<&mut Submesh> = submeshes
             .iter_mut()
@@ -255,13 +276,41 @@ pub(crate) fn simplify_submeshes(
                 detail: error.to_string(),
             });
         }
-        let after: usize = submeshes
-            .iter()
-            .filter(|piece| piece.node == node)
-            .map(Submesh::triangle_count)
-            .sum();
+        let after: usize = pieces.iter().map(|piece| piece.triangle_count()).sum();
         requested += before.saturating_sub(triangles);
         produced += before.saturating_sub(after);
+
+        // Above its target by more than rounding: ask why, while the object is
+        // still small (see `ops::reachable_without_limit`). The sloppy simplifier
+        // ignores topology, so for it only the limit can be the reason.
+        let stopped_by = (after.saturating_sub(triangles) * 100 > triangles.max(1)).then(|| {
+            let further = settings.algorithm == SimplifyAlgorithm::Sloppy
+                || ops::reachable_without_limit(&pieces, &settings, triangles)
+                    .is_ok_and(|reach| reach < after);
+            if further {
+                Shortfall::ErrorLimit
+            } else {
+                Shortfall::Topology
+            }
+        });
+        let sum = aim.get_or_insert(Aim {
+            target: 0,
+            reached: 0,
+            error_limit: target.target_error,
+            stopped_by: None,
+        });
+        sum.target += triangles;
+        sum.reached += after;
+        // The limit is the actionable reason, so it wins over the mesh: raising it
+        // gets at least the objects it held back closer.
+        if let Some(reason) = stopped_by
+            && sum.stopped_by != Some(Shortfall::ErrorLimit)
+        {
+            if sum.stopped_by.is_none() || reason == Shortfall::ErrorLimit {
+                sum.error_limit = target.target_error;
+            }
+            sum.stopped_by = Some(reason);
+        }
     }
 
     // A topology-preserving collapse cannot cross an attribute discontinuity, and
@@ -275,7 +324,10 @@ pub(crate) fn simplify_submeshes(
         warnings.push(OptWarning::SimplifierStalledOnSeams);
     }
 
-    worst_error
+    SimplifyRun {
+        error: worst_error,
+        aim,
+    }
 }
 
 /// How many triangles one object is asked for.
@@ -311,7 +363,7 @@ fn object_target(before: usize, object: &ObjectSettings, pool: Option<(u32, usiz
 
 /// Apply one stack operation across every submesh, honouring per-node
 /// exclusions and parameter overrides. Returns the worst simplification error it
-/// caused, which is non-zero only for [`OpKind::Reduce`].
+/// caused and what it aimed at, which only [`OpKind::Reduce`] has.
 pub(crate) fn apply_op(
     submeshes: &mut Vec<Submesh>,
     op: &OpInstance,
@@ -320,14 +372,14 @@ pub(crate) fn apply_op(
     hidden_nodes: &[u32],
     warnings: &mut Warnings,
     run: &RunContext<'_>,
-) -> f32 {
+) -> SimplifyRun {
     // The LOD operation is the fan-out point the caller handles, and only the
     // first enabled one is: a second would have to fan out a chain that has
     // already fanned out. Neither reaches this function to run, so neither is
     // reported as running. (A preset carrying a second is repaired on load —
     // `preset::from_json` — and the chrome never adds one.)
     if !op.enabled || matches!(op.kind, OpKind::SimplifyLod(_)) {
-        return 0.0;
+        return SimplifyRun::NONE;
     }
 
     // Named once here, before the branches: every arm below is the same
@@ -367,7 +419,7 @@ pub(crate) fn apply_op(
     // shadow each other; `model` supplies the node names for that.
     if matches!(op.kind, OpKind::BakeAo(_)) {
         crate::ao::bake_submeshes(submeshes, op, stack, model, hidden_nodes, run.token());
-        return 0.0;
+        return SimplifyRun::NONE;
     }
 
     // Remesh does not edit pieces, it *replaces* them: a node's materials share
@@ -376,26 +428,26 @@ pub(crate) fn apply_op(
     // takes the `Vec` itself, which is why `apply_op` does.
     if matches!(op.kind, OpKind::Remesh(_)) {
         crate::remesh::remesh_submeshes(submeshes, op, stack, model, warnings, run);
-        return 0.0;
+        return SimplifyRun::NONE;
     }
 
     // Shrinkwrap replaces a node's pieces the same way, and for the same reason:
     // a wrap of one material's half of an object is not a shell of anything.
     if matches!(op.kind, OpKind::Shrinkwrap(_)) {
         crate::shrinkwrap::shrinkwrap_submeshes(submeshes, op, stack, model, warnings, run);
-        return 0.0;
+        return SimplifyRun::NONE;
     }
 
     // Normals are generated per object, not per piece: a node's material pieces
     // share one surface, and each alone would come out hard along the border.
     if matches!(op.kind, OpKind::RecalculateNormals(_)) {
         crate::shading::recalculate_normals_submeshes(submeshes, op, stack, model, warnings, run);
-        return 0.0;
+        return SimplifyRun::NONE;
     }
 
     for piece in submeshes.iter_mut() {
         if run.cancelled() {
-            return 0.0;
+            return SimplifyRun::NONE;
         }
         if is_excluded(stack, piece.node) {
             continue;
@@ -425,5 +477,5 @@ pub(crate) fn apply_op(
             });
         }
     }
-    0.0
+    SimplifyRun::NONE
 }

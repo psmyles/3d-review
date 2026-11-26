@@ -37,6 +37,49 @@ pub struct AnalysisMetrics {
     /// anything: a simplify that met its target without moving the surface
     /// legitimately reports `0.0`.
     pub simplified: bool,
+    /// What the level's last simplify was aimed at, and whether it got there:
+    /// `None` for a level no simplifier ran on.
+    pub aim: Option<Aim>,
+}
+
+/// What a simplify was aimed at and what it reached, over every object it
+/// simplified: the triangle target the user stated (a share or a count, worked
+/// out per object and summed) against the triangles it left. A target is a
+/// ceiling, so a level may stop above it; [`Self::stopped_by`] says why.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Aim {
+    /// The triangles asked for.
+    pub target: usize,
+    /// The triangles the simplify left, before any later operation.
+    pub reached: usize,
+    /// The error limit it ran under: the first stopped object's own, as an
+    /// override may give it one, else the operation's.
+    pub error_limit: f32,
+    /// Why it stopped above its target, or `None` when it got there (within 1%).
+    pub stopped_by: Option<Shortfall>,
+}
+
+/// Why a simplify stopped above its target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shortfall {
+    /// The error limit: the shape could have gone further, but only by moving the
+    /// surface more than the limit allows. Raising it reaches the target.
+    ErrorLimit,
+    /// The mesh itself: its seams, open borders and locked features allow no
+    /// further collapse at any limit. A weld that ignores normals or UVs, or
+    /// collapsing across seams, is what reaches further.
+    Topology,
+}
+
+impl Shortfall {
+    /// A stable English identifier for logs and reports; the chrome and the
+    /// console tool say it through the catalog (`review-labels`).
+    pub fn label(self) -> &'static str {
+        match self {
+            Shortfall::ErrorLimit => "error_limit",
+            Shortfall::Topology => "topology",
+        }
+    }
 }
 
 /// The size of a mesh as the GPU sees it: what an engine's vertex/index buffers
@@ -132,6 +175,7 @@ pub(crate) fn measure_submeshes(
     render_vertex_size: usize,
     simplify_error: f32,
     simplified: bool,
+    aim: Option<Aim>,
     warnings: &mut Warnings,
 ) -> AnalysisMetrics {
     let _z = crate::prof::zone!("Measure Level");
@@ -163,5 +207,6 @@ pub(crate) fn measure_submeshes(
         overfetch: counters.overfetch(),
         simplify_error,
         simplified,
+        aim,
     }
 }

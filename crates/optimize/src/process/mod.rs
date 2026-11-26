@@ -57,7 +57,7 @@ mod progress;
 // rest at crate visibility; an explicit import shadows a glob, so naming
 // these twice is not a conflict.
 pub use carry::ProcessedLod;
-pub use metrics::{AnalysisMetrics, MeshCounts};
+pub use metrics::{Aim, AnalysisMetrics, MeshCounts, Shortfall};
 pub use progress::{OptProgress, OptProgressSink, OptStage, RunContext};
 
 /// A mesh from part way through a run, for a caller that shows one.
@@ -263,6 +263,7 @@ pub fn process_progressive(
         input.render_vertex_size,
         0.0,
         false,
+        None,
         &mut warnings,
     );
 
@@ -298,11 +299,12 @@ pub fn process_progressive(
     };
 
     let mut base_error = 0.0f32;
+    let mut base_aim = None;
     for op in pre_ops {
         if watching.cancelled() {
             return Err(OptError::Cancelled);
         }
-        base_error = base_error.max(apply_op(
+        let ran = apply_op(
             &mut submeshes,
             op,
             input.stack,
@@ -310,7 +312,10 @@ pub fn process_progressive(
             input.hidden_nodes,
             &mut warnings,
             &watching,
-        ));
+        );
+        base_error = base_error.max(ran.error);
+        // A second Reduce re-aims level 0: the last one is what it is now.
+        base_aim = ran.aim.or(base_aim);
     }
 
     // Level 0 is the mesh as the pre-operations left it; every LOD level
@@ -322,6 +327,7 @@ pub fn process_progressive(
         submeshes: Vec::new(),
         simplify_error: base_error,
         simplified: runs_reduce(pre_ops),
+        aim: base_aim,
     }];
 
     if let Some(params) = lod_op {
@@ -360,7 +366,7 @@ pub fn process_progressive(
             if run.cancelled() {
                 return Err(OptError::Cancelled);
             }
-            let error = apply_op(
+            let ran = apply_op(
                 &mut level.submeshes,
                 op,
                 input.stack,
@@ -369,7 +375,10 @@ pub fn process_progressive(
                 &mut warnings,
                 &run,
             );
-            level.simplify_error = level.simplify_error.max(error);
+            level.simplify_error = level.simplify_error.max(ran.error);
+            // A Reduce below the chain simplifies every level again, toward its
+            // own target: that is the level's aim from then on.
+            level.aim = ran.aim.or(level.aim);
         }
         for piece in &mut level.submeshes {
             piece.compact_unreferenced();
@@ -479,6 +488,7 @@ pub fn process_progressive(
             input.render_vertex_size,
             level.simplify_error,
             level.simplified,
+            level.aim,
             &mut warnings,
         );
         lods.push(ProcessedLod {

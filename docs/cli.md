@@ -440,8 +440,15 @@ so a next step can pick them up).
 Each entry, when `done`: `outputs`; `source` (`triangles`, `vertices`, and the
 `acmr` / `atvr` / `overdraw` / `overfetch` figures of the model as it came, after
 the lossless indexing every engine does); `levels` (per LOD, level 0 first:
-`level`, `polygons`, `triangles`, `vertices`, the same four figures, and
-`simplify_error`, or `null` for a level that was not simplified). When the preset
+`level`, `polygons`, `triangles`, `vertices`, the same four figures,
+`simplify_error`, and for a simplified level `target_triangles` (what it was asked
+for), `error_limit` (the limit it ran under) and `stopped_by`, which is `null` when
+it reached its target and otherwise says what held it above it: `error_limit` (the
+shape could go further only past the limit) or `topology` (the model's seams and
+borders allow no further simplifying at any limit). The four are `null` for a level
+that was not simplified, and the level's line says the same in words:
+`LOD2: 224 triangles, 242 vertices (target 100, held back by the error limit 0.01)`.
+When the preset
 had per-object settings, `overrides` gives `rebound`, `by_position` and `dropped`.
 These are the figures the Opt workspace's stats cards show, against the same
 baseline.

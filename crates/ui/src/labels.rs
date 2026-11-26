@@ -17,7 +17,7 @@ use review_log::Level;
 use review_model::{NodeKind, SkinningMethod};
 use review_optimize::{
     AoQuality, AoTarget, FbxFormat, HierarchyMode, LodPackaging, NormalMode, RemeshDensity,
-    RemeshTopology, ShrinkwrapMethod, SimplifyAlgorithm, TargetMode, VoxelTarget,
+    RemeshTopology, Shortfall, ShrinkwrapMethod, SimplifyAlgorithm, TargetMode, VoxelTarget,
 };
 use review_render::{
     AlphaMode, BufferView, ChannelSelect, CheckerTexture, EnvironmentMap, GtaoQuality,
@@ -252,6 +252,14 @@ pub(crate) fn remesh_density(density: RemeshDensity) -> Key {
     match density {
         RemeshDensity::Ratio => keys::ui_enums::REMESH_DENSITY_RATIO,
         RemeshDensity::Absolute => keys::ui_enums::REMESH_DENSITY_ABSOLUTE,
+    }
+}
+
+/// What held a simplified level above its target, as the stats card's note says it.
+pub(crate) fn shortfall(reason: Shortfall) -> Key {
+    match reason {
+        Shortfall::ErrorLimit => keys::ui_stats::HELD_BY_LIMIT,
+        Shortfall::Topology => keys::ui_stats::HELD_BY_SEAMS,
     }
 }
 

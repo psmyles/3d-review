@@ -19,9 +19,9 @@ use review_labels::opt::{
 use review_localization::tr;
 use review_model::ENGINE_VERTEX_BYTES;
 use review_optimize::{
-    LodLevel, LodParams, OpKind, OptProgress, OptStack, OptStage, ProcessInput, ProcessedResult,
-    ReduceParams, SimplifySettings, TargetMode, export::planned_files, export_fbx, preset,
-    process_with_progress,
+    Aim, LodLevel, LodParams, OpKind, OptProgress, OptStack, OptStage, ProcessInput,
+    ProcessedResult, ReduceParams, Shortfall, SimplifySettings, TargetMode, export::planned_files,
+    export_fbx, preset, process_with_progress,
 };
 use serde_json::{Value, json};
 
@@ -536,14 +536,29 @@ fn record_levels(entry: &mut Entry, result: &ProcessedResult) {
     let mut levels = Vec::with_capacity(result.lods.len());
     for lod in &result.lods {
         let stats = lod.model.stats;
-        console::say(&format!(
-            "  {}",
-            k::optimize_level(
-                f64::from(lod.level as u32),
-                stats.triangle_count as f64,
-                stats.vertex_count as f64,
-            )
-        ));
+        let line = k::optimize_level(
+            f64::from(lod.level as u32),
+            stats.triangle_count as f64,
+            stats.vertex_count as f64,
+        );
+        // A target is a ceiling, so a level that stopped above it says so, and
+        // what held it. The limit as the shortest text of its `f32`, as it was
+        // given: widened to `f64` it would print `0.009999999776`.
+        let line = match lod.metrics.aim {
+            Some(Aim {
+                target,
+                error_limit,
+                stopped_by: Some(reason),
+                ..
+            }) => match reason {
+                Shortfall::ErrorLimit => {
+                    k::optimize_level_held_by_limit(error_limit.to_string(), line, target as f64)
+                }
+                Shortfall::Topology => k::optimize_level_held_by_seams(line, target as f64),
+            },
+            _ => line,
+        };
+        console::say(&format!("  {line}"));
         levels.push(json!({
             "level": lod.level,
             "polygons": stats.polygon_count,
@@ -558,6 +573,9 @@ fn record_levels(entry: &mut Entry, result: &ProcessedResult) {
             } else {
                 Value::Null
             },
+            "target_triangles": lod.metrics.aim.map(|aim| aim.target),
+            "error_limit": lod.metrics.aim.map(|aim| figure(aim.error_limit)),
+            "stopped_by": lod.metrics.aim.and_then(|aim| aim.stopped_by).map(Shortfall::label),
         }));
     }
     entry.set("levels", json!(levels));

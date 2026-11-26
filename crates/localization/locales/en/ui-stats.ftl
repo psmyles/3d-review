@@ -100,6 +100,15 @@ ui-stats-error = Error
     .description = How far this simplified level has drifted from the model it was made
         from, as measured by the simplifier. Normally it is a fraction of the model's
         overall size; with the absolute-error option on, it is in world units.
+ui-stats-target = Target
+    .description = The triangles this level was asked for. A target is a ceiling: when the
+        level stopped above it, the note says what held it. "error limit" means the shape
+        could go further only by moving more than the error limit allows - raise the limit
+        to reach it. "seams" means the model's own seams and open borders allow no further
+        simplifying at any limit - weld the model, or let the simplifier collapse across
+        seams.
+ui-stats-held-by-limit = error limit
+ui-stats-held-by-seams = seams
 
 # Card headings on the Opt side.
 ui-stats-source-nothing-applied = Source (nothing applied)

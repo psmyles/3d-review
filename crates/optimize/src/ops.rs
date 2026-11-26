@@ -286,6 +286,46 @@ pub fn simplify(
     Ok(outcome.error)
 }
 
+/// How far an object could go toward `target_triangles` with no error limit at
+/// all: the position-only simplify that decides how far a run goes (see
+/// `simplify_appearance`), under the same flags, with the limit lifted.
+///
+/// What tells a level that stopped above its target whether its error limit
+/// stopped it or the mesh's own seams and borders did. Asked of the object as the
+/// simplify left it, so it is small by the time anyone asks, and its pieces are
+/// joined as `simplify_together` joins them.
+pub fn reachable_without_limit(
+    pieces: &[&mut Submesh],
+    settings: &SimplifySettings,
+    target_triangles: usize,
+) -> Result<usize, OptError> {
+    let mut positions = Vec::new();
+    let mut indices = Vec::new();
+    let mut base = 0u32;
+    for piece in pieces {
+        for vertex in &piece.vertices {
+            positions.extend_from_slice(&vertex.position.to_array());
+        }
+        indices.extend(piece.indices.iter().map(|&index| index + base));
+        base += piece.vertices.len() as u32;
+    }
+    if indices.is_empty() {
+        return Ok(0);
+    }
+    // No limit: meshoptimizer asserts only that the limit is not negative, and
+    // squares it, so the largest float compares above every error there is.
+    let shape = meshopt::simplify(
+        &indices,
+        &positions,
+        base as usize,
+        &SimplifyAttributes::default(),
+        target_triangles.saturating_mul(3),
+        f32::MAX,
+        settings.flags.bits(),
+    )?;
+    Ok(shape.indices.len() / 3)
+}
+
 /// Simplify one *object*: every material piece of a node at once, toward one
 /// triangle target for all of them together.
 ///

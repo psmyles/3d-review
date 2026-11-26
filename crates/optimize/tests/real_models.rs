@@ -28,8 +28,8 @@ use review_model::{
 };
 use review_optimize::{
     AoQuality, AoTarget, BakeAoParams, LodLevel, LodParams, NormalParams, OpInstance, OpKind,
-    OptStack, OptWarning, ReduceParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings,
-    TargetMode, WeldParams,
+    OptStack, OptWarning, ReduceParams, Shortfall, SimplifyAlgorithm, SimplifyFlags,
+    SimplifySettings, TargetMode, WeldParams,
 };
 
 mod common;
@@ -844,6 +844,81 @@ fn a_lod_chain_given_in_counts_lands_on_its_counts() {
         (1900..=2000).contains(&counts[2]) && (475..=500).contains(&counts[3]),
         "the counted levels land just under their counts: {counts:?}"
     );
+}
+
+/// A level that reaches its target records what it was aimed at and what it left,
+/// and no reason; one the error limit holds back says so, so a run can print
+/// "224 triangles (target 100, stopped by the error limit 0.01)" rather than leave
+/// the shortfall to be noticed.
+#[test]
+fn a_level_says_what_it_aimed_at_and_why_it_stopped_short() {
+    let model = smooth_torus();
+    let mut stack = OptStack::default();
+    stack.push_op(OpKind::Weld(WeldParams::default()));
+    stack.push_op(OpKind::SimplifyLod(LodParams {
+        simplify: SimplifySettings {
+            algorithm: SimplifyAlgorithm::Standard,
+            ..SimplifySettings::default()
+        },
+        levels: vec![
+            count_target(1000),
+            LodLevel {
+                target_error: 0.0001,
+                ..count_target(200)
+            },
+        ],
+    }));
+    let result = run(&model, &stack);
+
+    assert_eq!(
+        result.lods[0].metrics.aim, None,
+        "level 0 was not simplified"
+    );
+    let met = result.lods[1]
+        .metrics
+        .aim
+        .expect("a simplified level has an aim");
+    assert_eq!(met.target, 1000);
+    assert!(met.reached <= 1000 && met.stopped_by.is_none(), "{met:?}");
+
+    let held = result.lods[2]
+        .metrics
+        .aim
+        .expect("a simplified level has an aim");
+    assert_eq!(held.target, 200);
+    assert!(
+        held.reached > 400,
+        "a tiny limit holds it well above 200: {held:?}"
+    );
+    assert_eq!(held.stopped_by, Some(Shortfall::ErrorLimit), "{held:?}");
+    assert_eq!(held.error_limit, 0.0001, "the limit it ran under is named");
+}
+
+/// A mesh whose every edge is an attribute seam (the flat-shaded monkey, not
+/// welded) cannot be simplified at any limit, and the level says the mesh held it,
+/// not the limit: raising the limit would not help, a weld would.
+#[test]
+fn a_level_held_by_its_own_seams_says_the_mesh_stopped_it() {
+    let Some(model) = fixture(FLAT_SHADED) else {
+        return;
+    };
+    let mut stack = OptStack::default();
+    stack.push_op(OpKind::Reduce(ReduceParams {
+        simplify: SimplifySettings {
+            algorithm: SimplifyAlgorithm::Standard,
+            ..SimplifySettings::default()
+        },
+        target: LodLevel {
+            target_ratio: 0.25,
+            target_error: 1.0,
+            ..LodLevel::default()
+        },
+    }));
+    let aim = run(&model, &stack).lods[0]
+        .metrics
+        .aim
+        .expect("the reduced level has an aim");
+    assert_eq!(aim.stopped_by, Some(Shortfall::Topology), "{aim:?}");
 }
 
 /// Sanity: every file the tests above load is where they expect it. Checking the
