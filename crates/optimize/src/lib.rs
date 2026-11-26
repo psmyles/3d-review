@@ -47,6 +47,7 @@ mod prof;
 pub mod probe;
 
 mod ao;
+mod hull;
 mod parallel;
 mod shading;
 mod transfer;
@@ -81,9 +82,9 @@ pub use quality::{LevelQuality, QualityLimits};
 pub use replace_file::{Staged, write_bytes_replacing, write_replacing};
 pub use stack::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, BakeSource, BakeWearParams,
-    ExportFileType, ExportOptions, FbxFormat, GlbTangents, HierarchyMode, LodLevel, LodPackaging,
-    LodParams, NodeOverride, NormalMode, NormalParams, NormalWeighting, OpInstance, OpKind,
-    OptStack, RebindReport, ReduceParams, RemeshDensity, RemeshParams, RemeshTopology,
+    ExportFileType, ExportOptions, FbxFormat, GlbTangents, HierarchyMode, HullParams, LodLevel,
+    LodPackaging, LodParams, NodeOverride, NormalMode, NormalParams, NormalWeighting, OpInstance,
+    OpKind, OptStack, RebindReport, ReduceParams, RemeshDensity, RemeshParams, RemeshTopology,
     ShrinkwrapMethod, ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings,
     StackRepairs, TargetMode, VoxelTarget, WeldParams,
 };

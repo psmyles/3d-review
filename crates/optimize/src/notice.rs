@@ -57,6 +57,14 @@ pub enum OptWarning {
     UnwrapSeamAttributeMissing { object: String, attribute: String },
     /// Shrinkwrap skipped a skinned or blend-shaped object.
     ShrinkwrapKeptDeforming { object: String },
+    /// Convex Hull skipped a skinned or morphing object.
+    HullKeptDeforming { object: String },
+    /// Convex Hull found an object with no volume to hold: flat, or a line.
+    HullFlat { object: String },
+    /// Convex Hull could not carry an object's attributes onto its hull.
+    HullFailed { object: String, detail: String },
+    /// Convex Hull's object names hold a pattern that does not parse.
+    HullBadPattern,
     /// Shrinkwrap skipped an object too small to wrap.
     ShrinkwrapTooFewTriangles { object: String, triangles: usize },
     /// The distance-field wrap produced nothing: the object is thinner than a voxel.
@@ -189,6 +197,21 @@ impl fmt::Display for OptWarning {
                 f,
                 "Shrinkwrap: '{object}' came back empty at voxel resolution {resolution}. \
                  Raise the resolution, or switch to the distance-field method."
+            ),
+            Self::HullKeptDeforming { object } => write!(
+                f,
+                "Convex Hull: '{object}' is skinned or has blend shapes, so it was left as it is."
+            ),
+            Self::HullFlat { object } => write!(
+                f,
+                "Convex Hull: '{object}' is flat, so it has no hull and was left as it is."
+            ),
+            Self::HullFailed { object, detail } => {
+                write!(f, "Convex Hull: '{object}' was left as it is - {detail}")
+            }
+            Self::HullBadPattern => f.write_str(
+                "Convex Hull: a pattern in its object names does not parse, so nothing was \
+                 replaced.",
             ),
             Self::ShrinkwrapVoxelFailed { object, detail } => write!(
                 f,

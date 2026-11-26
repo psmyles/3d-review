@@ -11,11 +11,11 @@ use review_labels::opt::{op_description, op_kind};
 use review_model::ModelData;
 use review_optimize::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, BakeSource, BakeWearParams, ChartGrowth,
-    ExportFileType, ExportOptions, FbxFormat, Flattening, GlbTangents, HierarchyMode, LodLevel,
-    LodPackaging, LodParams, NormalMode, NormalParams, NormalWeighting, OpKind, ReduceParams,
-    RemeshDensity, RemeshParams, RemeshTopology, SeamSource, ShrinkwrapMethod, ShrinkwrapParams,
-    SimplifyAlgorithm, SimplifyFlags, SimplifySettings, TargetMode, UnwrapParams, UvLayout,
-    VoxelTarget, WeldParams,
+    ExportFileType, ExportOptions, FbxFormat, Flattening, GlbTangents, HierarchyMode, HullParams,
+    LodLevel, LodPackaging, LodParams, NormalMode, NormalParams, NormalWeighting, OpKind,
+    ReduceParams, RemeshDensity, RemeshParams, RemeshTopology, SeamSource, ShrinkwrapMethod,
+    ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings, TargetMode, UnwrapParams,
+    UvLayout, VoxelTarget, WeldParams,
 };
 use review_render::Selection;
 
@@ -102,6 +102,7 @@ fn operation_body(ui: &mut egui::Ui, state: &mut UiState, id: u64, model: &Model
         OpKind::Reduce(params) => reduce_params(ui, params).map(OpKind::Reduce),
         OpKind::Remesh(params) => remesh_params(ui, params).map(OpKind::Remesh),
         OpKind::Shrinkwrap(params) => shrinkwrap_params(ui, params).map(OpKind::Shrinkwrap),
+        OpKind::ConvexHull(params) => hull_params(ui, &params).map(OpKind::ConvexHull),
         OpKind::RecalculateNormals(params) => {
             recalculate_normals_params(ui, params).map(OpKind::RecalculateNormals)
         }
@@ -831,6 +832,55 @@ fn bake_source_row(ui: &mut egui::Ui, id: &str, source: &mut BakeSource, page: P
             }
         },
     );
+}
+
+fn hull_params(ui: &mut egui::Ui, params: &HullParams) -> Option<HullParams> {
+    use super::aud_inspector::{committed_text_edit, parse_patterns};
+    let mut edited = params.clone();
+    panel_grid(ui, "opt_hull", |ui| {
+        crate::widgets::grid_label_tip(
+            ui,
+            Tip::new(keys::ui_opt::HULL_OBJECTS)
+                .describe(keys::ui_opt::HULL_OBJECTS_DESCRIPTION)
+                .page(Page::OptHull),
+        );
+        crate::widgets::grid_control(ui, |ui| {
+            let mut valid = true;
+            let (response, finished) = committed_text_edit(
+                ui,
+                egui::Id::new("opt_hull_objects"),
+                &edited.objects.join(", "),
+                |text| {
+                    valid = review_model::glob::GlobSet::new(&parse_patterns(text)).is_ok();
+                    egui::TextEdit::singleline(text)
+                        .hint_text(keys::ui_audit::PATTERN_HINT)
+                        .desired_width(f32::INFINITY)
+                        .text_color(if valid {
+                            color::TEXT_BODY
+                        } else {
+                            color::SEVERITY_ERROR
+                        })
+                },
+            );
+            if !valid {
+                let _ = response.on_hover_text(keys::ui_audit::PATTERN_INVALID);
+            }
+            if let Some(text) = finished {
+                edited.objects = parse_patterns(&text);
+            }
+        });
+        ui.end_row();
+        labeled_slider_with_value(
+            ui,
+            Tip::new(keys::ui_opt::HULL_MAX_VERTICES)
+                .describe(keys::ui_opt::HULL_MAX_VERTICES_DESCRIPTION)
+                .page(Page::OptHull),
+            &mut edited.max_vertices,
+            review_optimize::stack::HULL_VERTICES_MIN..=review_optimize::stack::HULL_VERTICES_MAX,
+            0,
+        );
+    });
+    (edited != *params).then_some(edited)
 }
 
 fn bake_wear_params(ui: &mut egui::Ui, params: BakeWearParams) -> Option<BakeWearParams> {

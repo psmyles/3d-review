@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 mod ao;
 mod export;
+mod hull;
 pub mod limits;
 mod normals;
 mod params;
@@ -27,6 +28,7 @@ mod unwrap;
 
 pub use ao::*;
 pub use export::*;
+pub use hull::*;
 pub use normals::*;
 pub use params::*;
 pub use remesh::*;
@@ -485,6 +487,9 @@ pub enum OpKind {
     /// Replace each object with one closed shell that hugs it, fusing
     /// interpenetrating parts into a single watertight surface.
     Shrinkwrap(ShrinkwrapParams),
+    /// Replace each selected object (by name) with its convex hull, limited
+    /// to a number of vertices: a convex collision mesh.
+    ConvexHull(HullParams),
     /// Regenerate the normals from the geometry, with a crease angle deciding
     /// which edges stay hard.
     RecalculateNormals(NormalParams),
@@ -733,6 +738,12 @@ impl OpKind {
                     OVERDRAW_THRESHOLD_MIN,
                 );
             }
+            OpKind::ConvexHull(params) => {
+                params.max_vertices = params
+                    .max_vertices
+                    .clamp(HULL_VERTICES_MIN, HULL_VERTICES_MAX);
+                params.objects.retain(|pattern| !pattern.trim().is_empty());
+            }
             OpKind::FilterTriangles | OpKind::VertexCache | OpKind::VertexFetch => {}
         }
     }
@@ -740,11 +751,12 @@ impl OpKind {
     /// Every operation the "Add" menu offers, in menu order — cleanup first
     /// (what you almost always want before anything else), then the LOD
     /// generator, then the GPU reorder passes that belong at the end.
-    pub const ALL: [fn() -> OpKind; 14] = [
+    pub const ALL: [fn() -> OpKind; 15] = [
         || OpKind::Weld(WeldParams::default()),
         || OpKind::FilterTriangles,
         || OpKind::PruneComponents { error: 0.01 },
         || OpKind::Shrinkwrap(ShrinkwrapParams::default()),
+        || OpKind::ConvexHull(HullParams::default()),
         || OpKind::Reduce(ReduceParams::default()),
         || OpKind::Remesh(RemeshParams::default()),
         || OpKind::RecalculateNormals(NormalParams::default()),
@@ -766,6 +778,7 @@ impl OpKind {
             OpKind::Reduce(_) => "Reduce",
             OpKind::Remesh(_) => "Remesh",
             OpKind::Shrinkwrap(_) => "Shrinkwrap",
+            OpKind::ConvexHull(_) => "Convex Hull",
             OpKind::RecalculateNormals(_) => "Recalculate Normals",
             OpKind::SimplifyLod(_) => "Generate LODs",
             OpKind::Unwrap(_) => "Unwrap UVs",
@@ -788,6 +801,7 @@ impl OpKind {
             | OpKind::Reduce(_)
             | OpKind::Remesh(_)
             | OpKind::Shrinkwrap(_)
+            | OpKind::ConvexHull(_)
             | OpKind::SimplifyLod(_) => true,
             OpKind::BakeAo(_)
             | OpKind::BakeWear(_)
@@ -938,9 +952,9 @@ mod tests {
     }
 
     #[test]
-    fn the_add_menu_offers_fourteen_distinct_operations() {
+    fn the_add_menu_offers_fifteen_distinct_operations() {
         let labels: Vec<&str> = OpKind::ALL.iter().map(|build| build().label()).collect();
-        assert_eq!(labels.len(), 14);
+        assert_eq!(labels.len(), 15);
         for (index, label) in labels.iter().enumerate() {
             assert!(
                 !labels[index + 1..].contains(label),

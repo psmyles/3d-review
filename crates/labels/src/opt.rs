@@ -28,6 +28,7 @@ pub fn op_kind(kind: &OpKind) -> Key {
         OpKind::Reduce(_) => k::OP_REDUCE,
         OpKind::Remesh(_) => k::OP_REMESH,
         OpKind::Shrinkwrap(_) => k::OP_SHRINKWRAP,
+        OpKind::ConvexHull(_) => k::OP_CONVEX_HULL,
         OpKind::RecalculateNormals(_) => k::OP_RECALCULATE_NORMALS,
         OpKind::SimplifyLod(_) => k::OP_SIMPLIFY_LOD,
         OpKind::Unwrap(_) => k::OP_UNWRAP,
@@ -55,6 +56,7 @@ pub fn op_description(kind: &OpKind) -> Key {
         OpKind::Reduce(_) => k::OP_REDUCE_DESCRIPTION,
         OpKind::Remesh(_) => k::OP_REMESH_DESCRIPTION,
         OpKind::Shrinkwrap(_) => k::OP_SHRINKWRAP_DESCRIPTION,
+        OpKind::ConvexHull(_) => k::OP_CONVEX_HULL_DESCRIPTION,
         OpKind::RecalculateNormals(_) => k::OP_RECALCULATE_NORMALS_DESCRIPTION,
         OpKind::SimplifyLod(_) => k::OP_SIMPLIFY_LOD_DESCRIPTION,
         OpKind::Unwrap(_) => k::OP_UNWRAP_DESCRIPTION,
@@ -131,6 +133,12 @@ pub fn explain_opt_warning(warning: &OptWarning) -> String {
         OptWarning::ShrinkwrapEmptyVoxels { object, resolution } => {
             k::warning_shrinkwrap_empty_voxels(object.clone(), f64::from(*resolution))
         }
+        OptWarning::HullKeptDeforming { object } => k::warning_hull_kept_deforming(object.clone()),
+        OptWarning::HullFlat { object } => k::warning_hull_flat(object.clone()),
+        OptWarning::HullFailed { object, detail } => {
+            k::warning_hull_failed(detail.clone(), object.clone())
+        }
+        OptWarning::HullBadPattern => tr(k::WARNING_HULL_BAD_PATTERN).into_owned(),
         OptWarning::ShrinkwrapVoxelFailed { object, detail } => {
             k::warning_shrinkwrap_voxel_failed(object.clone(), detail.clone())
         }

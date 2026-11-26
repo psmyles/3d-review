@@ -16,6 +16,7 @@ mod demo;
 pub mod exact;
 pub mod extras;
 mod geometry;
+pub mod glob;
 pub mod hierarchy;
 pub mod measure;
 mod morph;

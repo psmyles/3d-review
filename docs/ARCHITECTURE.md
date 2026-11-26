@@ -810,7 +810,12 @@ collapse each to one vertex, clean up, pair triangles into quads, and project th
 source's attributes back on (`remesh/solve.rs` is the per-object order; see
 [Settled decisions](#settled-decisions) and [GOTCHAS](GOTCHAS.md#remesh)).
 `shrinkwrap/` rebuilds a closed shell around an object, from a distance field or
-voxels. Both run one object per core through `parallel.rs`, which also holds
+voxels. `hull.rs` replaces the objects its name patterns select with their
+convex hull, grown Quickhull's way one furthest point at a time and stopped at a
+vertex limit (an inner hull, as a physics engine's own limit makes one); it
+projects the attributes back through the same path as Shrinkwrap, and selects
+objects with `review_model::glob`, the matcher the audit's naming rules and the
+viewer's collider names use too. Remesh and Shrinkwrap run one object per core through `parallel.rs`, which also holds
 `sweep` / `sweep_reduce`: the parallel pass the stages *inside* one object are
 built from, over a **fixed** 65536-element chunk so a reduction folds per chunk
 and merges in chunk order. That constant, not the thread count, is what the

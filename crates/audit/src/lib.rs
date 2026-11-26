@@ -17,7 +17,8 @@
 mod checks;
 mod context;
 pub mod finding;
-pub mod glob;
+/// The name patterns, shared with the viewer and the optimizer.
+pub use review_model::glob;
 pub mod profile;
 pub mod report;
 pub mod rule;

@@ -1358,7 +1358,7 @@ since = "0.9.3"
 title = "Collider vertex limit"
 what = "Collision meshes with more vertices than the limit."
 why = "A physics engine builds a convex hull from every vertex of a hull collider and limits how many it takes; past the limit it simplifies the shape itself, or refuses it."
-how = "Simplify the collider below the limit in the modelling program."
+how = "Make the collider again from fewer points: the Opt workspace's Convex Hull operation builds one within a vertex limit."
 
 [rule.default]
 enabled = false

@@ -42,6 +42,13 @@ labels-opt-op-shrinkwrap = Shrinkwrap
         sheets such as leaves. What comes out is dense and
         irregular, so a Remesh below it is what makes it even. Materials, texture layout
         and colors are copied across. Works on still objects only.
+labels-opt-op-convex-hull = Convex Hull
+    .description = Replaces each object whose name matches the object names (to start
+        with the usual collision mesh names, *_hull and UCX_*) with its convex hull: the
+        smallest shape with no dents that holds all of it, as a physics engine wants a
+        collision mesh. A hull with more vertices than the limit is built from the points
+        that stick out furthest. Materials, texture layout and colors are copied across.
+        Works on still objects only.
 labels-opt-op-recalculate-normals = Recalculate Normals
     .description = Works out fresh shading directions from the shape itself. Edges sharper
         than the crease angle stay hard and the rest are smoothed, and the hard and soft
@@ -139,6 +146,13 @@ labels-opt-warning-shrinkwrap-voxel-failed =
     Shrinkwrap: '{ $object }' could not be voxel remeshed ({ $detail }), so it was left as it
     is.
 labels-opt-warning-shrinkwrap-failed = Shrinkwrap: '{ $object }' was left as it is - { $detail }
+labels-opt-warning-hull-kept-deforming =
+    Convex Hull: '{ $object }' is skinned or has blend shapes, so it was left as it is.
+labels-opt-warning-hull-flat =
+    Convex Hull: '{ $object }' is flat, so it has no hull and was left as it is.
+labels-opt-warning-hull-failed = Convex Hull: '{ $object }' was left as it is - { $detail }
+labels-opt-warning-hull-bad-pattern =
+    Convex Hull: a pattern in its object names does not parse, so nothing was replaced.
 labels-opt-warning-shrinkwrap-resolution-lowered =
     Shrinkwrap: '{ $object }' would need more memory than a wrap is worth at resolution
     { $requested }, so it ran at { $resolution } instead.

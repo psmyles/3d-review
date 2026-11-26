@@ -1,6 +1,10 @@
-//! The glob patterns naming rules are written in: `*` (any run of characters),
+//! The glob patterns names are matched against: `*` (any run of characters),
 //! `?` (any one character) and `[...]` classes (`[abc]`, `[a-z]`, `[!0-9]`).
 //! Matching is case-sensitive, because engine naming conventions are.
+//!
+//! The audit's naming rules are written in them, the viewer picks out collision
+//! meshes with them, and the optimizer selects the objects an operation applies
+//! to by them — one matcher, so a pattern means the same thing everywhere.
 
 /// A parsed glob pattern.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,13 +24,24 @@ enum Token {
 }
 
 /// Why a pattern could not be parsed.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GlobError {
-    #[error("unclosed '[' in pattern \"{0}\"")]
     UnclosedClass(String),
-    #[error("empty pattern")]
     Empty,
 }
+
+impl std::fmt::Display for GlobError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GlobError::UnclosedClass(pattern) => {
+                write!(f, "unclosed '[' in pattern \"{pattern}\"")
+            }
+            GlobError::Empty => f.write_str("empty pattern"),
+        }
+    }
+}
+
+impl std::error::Error for GlobError {}
 
 impl Glob {
     pub fn new(pattern: &str) -> Result<Self, GlobError> {

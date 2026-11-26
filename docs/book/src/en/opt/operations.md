@@ -18,6 +18,9 @@ with and without it.
   skin that hugs it, fusing a pile of overlapping parts into one solid and
   sealing holes. Usually first in the list, with a Remesh below it to make the
   skin it produces even. Still objects only.
+- **Convex Hull** - [replaces](hull.md) the objects whose names say they are
+  collision meshes (`*_hull` and `UCX_*` to start with) with their convex hull,
+  within a vertex limit, as a physics engine wants one. Still objects only.
 - **Reduce** - [simplifies](simplify.md) the model **in place**. Every
   operation below it works on the simplified model, LOD levels start from it,
   and the export saves it in place of the original.

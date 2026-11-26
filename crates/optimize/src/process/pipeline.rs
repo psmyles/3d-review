@@ -551,6 +551,12 @@ pub(crate) fn apply_op(
         return SimplifyRun::NONE;
     }
 
+    // A hull is of a whole object, whatever materials it is in.
+    if matches!(op.kind, OpKind::ConvexHull(_)) {
+        crate::hull::hull_submeshes(submeshes, op, stack, model, warnings, run);
+        return SimplifyRun::NONE;
+    }
+
     // Normals are generated per object, not per piece: a node's material pieces
     // share one surface, and each alone would come out hard along the border.
     if matches!(op.kind, OpKind::RecalculateNormals(_)) {
@@ -589,6 +595,7 @@ pub(crate) fn apply_op(
             | OpKind::BakeWear(_)
             | OpKind::Remesh(_)
             | OpKind::Shrinkwrap(_)
+            | OpKind::ConvexHull(_)
             | OpKind::RecalculateNormals(_)
             | OpKind::Unwrap(_) => Ok(()),
         };

@@ -47,6 +47,7 @@
   - [Simplification settings](opt/simplify.md)
   - [Remeshing a model](opt/remesh.md)
   - [Wrapping a model in one skin](opt/shrinkwrap.md)
+  - [Convex hulls for collision](opt/hull.md)
   - [Normals and tangents](opt/normals.md)
   - [Unwrapping UVs](opt/unwrap.md)
   - [Baking ambient occlusion](opt/ao.md)
