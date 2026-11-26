@@ -31,6 +31,12 @@ pub const LOD_ERROR_MAX: f32 = 1.0;
 /// to: a million-triangle scan can be asked for 1500.
 pub const LOD_TRIANGLES_MIN: u32 = 1;
 pub const LOD_TRIANGLES_MAX: u32 = 100_000_000;
+/// The quality limits (`QualityLimits`): the most an object's volume may change, as
+/// a share of it, and the farthest its surface may move, as a share of its size.
+pub const VOLUME_CHANGE_MIN: f32 = 0.001;
+pub const VOLUME_CHANGE_MAX: f32 = 1.0;
+pub const DISTANCE_LIMIT_MIN: f32 = 0.0001;
+pub const DISTANCE_LIMIT_MAX: f32 = 0.5;
 
 /// The most levels a LOD chain may hold. Past this the chain stops being a
 /// pipeline decision and starts being an experiment; the cost is one full

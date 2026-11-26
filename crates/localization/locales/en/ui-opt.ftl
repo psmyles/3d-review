@@ -53,6 +53,21 @@ ui-opt-target-mode = Target
         exactly its own count.
 ui-opt-triangles = Triangles
     .description = What share of the triangles to keep.
+ui-opt-quality-limits = Quality limits
+ui-opt-limit-volume = Limit volume change
+    .description = Stop simplifying any object before its volume changes by more than a
+        set share of what it had in the model as it came. A level then keeps more
+        triangles than its target, and its Target figure says the volume limit held it.
+        Read only for an object that encloses a volume.
+ui-opt-max-volume-change = Volume change (%)
+    .description = The most an object's volume may change, as a percentage of what it had.
+ui-opt-limit-distance = Limit distance
+    .description = Stop simplifying any object before its surface moves farther than a set
+        share of its size from the model as it came. A level then keeps more triangles
+        than its target, and its Target figure says the distance limit held it.
+ui-opt-max-distance = Distance (%)
+    .description = The farthest the surface may move anywhere, as a percentage of the
+        object's size (the longest side of its bounding box).
 ui-opt-triangle-count = Triangle count
     .description = How many triangles to keep, for every object together. It is a ceiling:
         the error limit can stop the simplifier short of it, and no object gains

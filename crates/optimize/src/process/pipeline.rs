@@ -12,6 +12,7 @@ use crate::Warnings;
 use crate::cancel::{CancelToken, cancelled};
 use crate::notice::OptWarning;
 use crate::ops;
+use crate::quality::{self, Broken, Surface};
 use crate::stack::{
     LodLevel, LodParams, OpInstance, OpKind, OptStack, SimplifyAlgorithm, SimplifySettings,
     TargetMode,
@@ -139,6 +140,7 @@ impl SimplifyRun {
 /// Simplify a fresh copy of the base submeshes down to one LOD level's target.
 pub(crate) fn build_lod_level(
     base: &[Submesh],
+    source: &ModelData,
     params: &LodParams,
     level: &crate::stack::LodLevel,
     stack: &OptStack,
@@ -147,15 +149,23 @@ pub(crate) fn build_lod_level(
 ) -> LevelState {
     let mut submeshes = base.to_vec();
     let operation = OpKind::SimplifyLod(params.clone());
-    let run = simplify_submeshes(&mut submeshes, stack, &operation, warnings, cancel, |_| {
-        ObjectSettings {
-            simplify: params.simplify,
-            target: *level,
-            // The chain has no per-object overrides: every object shares its
-            // levels' counts.
-            overridden: false,
-        }
-    });
+    let run = simplify_submeshes(
+        &mut submeshes,
+        source,
+        stack,
+        &operation,
+        warnings,
+        cancel,
+        |_| {
+            ObjectSettings {
+                simplify: params.simplify,
+                target: *level,
+                // The chain has no per-object overrides: every object shares its
+                // levels' counts.
+                overridden: false,
+            }
+        },
+    );
 
     LevelState {
         submeshes,
@@ -186,6 +196,7 @@ pub(crate) struct ObjectSettings {
 /// LOD chain has no equivalent of.
 pub(crate) fn simplify_submeshes(
     submeshes: &mut [Submesh],
+    source: &ModelData,
     stack: &OptStack,
     operation: &OpKind,
     warnings: &mut Warnings,
@@ -261,12 +272,52 @@ pub(crate) fn simplify_submeshes(
         seam_bound |= settings.algorithm != SimplifyAlgorithm::Sloppy && !settings.flags.permissive;
         let triangles = object_target(before, &object, pool);
 
-        let outcome = ops::simplify_object(
-            &mut pieces,
-            &settings,
-            triangles,
-            target.target_error.max(0.0),
-        );
+        let error_limit = target.target_error.max(0.0);
+        // The object as it came, kept only when a quality limit is set: what each
+        // candidate is measured against, and started from.
+        let original: Option<Vec<Submesh>> = settings
+            .limits
+            .any()
+            .then(|| pieces.iter().map(|piece| (**piece).clone()).collect());
+        let mut outcome = ops::simplify_object(&mut pieces, &settings, triangles, error_limit);
+        let mut held: Option<Broken> = None;
+        if let Some(original) = &original {
+            // Measured against the object as the run found it, so the limit means
+            // what the report's figures do: no object strays further than this
+            // from the source, whatever a Reduce above the chain already cost.
+            let reference = Surface::of_node(source, node);
+            let breaks = |pieces: &[&mut Submesh]| {
+                settings.limits.broken_by(&quality::compare(
+                    &reference,
+                    &Surface::of_pieces(pieces.iter().map(|piece| &**piece)),
+                    quality::LIMIT_SAMPLES,
+                ))
+            };
+            held = breaks(&pieces);
+            if held.is_some() {
+                // The fewest triangles between the target and all of them that
+                // keep to the limits, found by halving: fewer triangles never
+                // change an object less, near enough to search on. Each candidate
+                // starts again from the object as it came.
+                let (mut low, mut high) = (triangles, before);
+                while high - low > (before / 256).max(1) {
+                    let middle = low + (high - low) / 2;
+                    let mut attempt = restore(submeshes, node, original);
+                    ops::simplify_object(&mut attempt, &settings, middle, error_limit);
+                    if breaks(&attempt).is_none() {
+                        high = middle;
+                    } else {
+                        low = middle;
+                    }
+                }
+                pieces = restore(submeshes, node, original);
+                outcome = if high < before {
+                    ops::simplify_object(&mut pieces, &settings, high, error_limit)
+                } else {
+                    ops::ObjectSimplified::default()
+                };
+            }
+        }
         worst_error = worst_error.max(outcome.error);
         // Each failure left only its own piece as it was; the rest of the
         // object is simplified.
@@ -283,33 +334,41 @@ pub(crate) fn simplify_submeshes(
         // Above its target by more than rounding: ask why, while the object is
         // still small (see `ops::reachable_without_limit`). The sloppy simplifier
         // ignores topology, so for it only the limit can be the reason.
-        let stopped_by = (after.saturating_sub(triangles) * 100 > triangles.max(1)).then(|| {
-            let further = settings.algorithm == SimplifyAlgorithm::Sloppy
-                || ops::reachable_without_limit(&pieces, &settings, triangles)
-                    .is_ok_and(|reach| reach < after);
-            if further {
-                Shortfall::ErrorLimit
-            } else {
-                Shortfall::Topology
-            }
-        });
+        // A quality limit that held the object back is the reason, whatever else.
+        let stopped_by = match held {
+            Some(Broken::Volume) => Some(Shortfall::VolumeLimit),
+            Some(Broken::Distance) => Some(Shortfall::DistanceLimit),
+            None => (after.saturating_sub(triangles) * 100 > triangles.max(1)).then(|| {
+                let further = settings.algorithm == SimplifyAlgorithm::Sloppy
+                    || ops::reachable_without_limit(&pieces, &settings, triangles)
+                        .is_ok_and(|reach| reach < after);
+                if further {
+                    Shortfall::ErrorLimit
+                } else {
+                    Shortfall::Topology
+                }
+            }),
+        };
         let sum = aim.get_or_insert(Aim {
             target: 0,
             reached: 0,
             error_limit: target.target_error,
+            limits: settings.limits,
             stopped_by: None,
         });
         sum.target += triangles;
         sum.reached += after;
-        // The limit is the actionable reason, so it wins over the mesh: raising it
-        // gets at least the objects it held back closer.
+        // What the level names is the most actionable reason any object had: a
+        // limit the user set, then the error limit, then the mesh itself. The
+        // limits named are the object's that had it, as an override can differ.
         if let Some(reason) = stopped_by
-            && sum.stopped_by != Some(Shortfall::ErrorLimit)
+            && sum
+                .stopped_by
+                .is_none_or(|already| already.rank() < reason.rank())
         {
-            if sum.stopped_by.is_none() || reason == Shortfall::ErrorLimit {
-                sum.error_limit = target.target_error;
-            }
             sum.stopped_by = Some(reason);
+            sum.error_limit = target.target_error;
+            sum.limits = settings.limits;
         }
     }
 
@@ -328,6 +387,23 @@ pub(crate) fn simplify_submeshes(
         error: worst_error,
         aim,
     }
+}
+
+/// An object's pieces, with their contents put back as they were in `original`:
+/// the starting point of each candidate a quality limit's search tries.
+fn restore<'s>(
+    submeshes: &'s mut [Submesh],
+    node: u32,
+    original: &[Submesh],
+) -> Vec<&'s mut Submesh> {
+    let mut pieces: Vec<&mut Submesh> = submeshes
+        .iter_mut()
+        .filter(|piece| piece.node == node)
+        .collect();
+    for (piece, kept) in pieces.iter_mut().zip(original) {
+        (**piece).clone_from(kept);
+    }
+    pieces
 }
 
 /// How many triangles one object is asked for.
@@ -394,21 +470,29 @@ pub(crate) fn apply_op(
     // two: what it leaves behind is what every later operation sees, what each LOD
     // level starts from, and what the export writes in the source mesh's place.
     if let OpKind::Reduce(params) = &op.kind {
-        return simplify_submeshes(submeshes, stack, &op.kind, warnings, run.token(), |piece| {
-            let resolved = resolve_op(stack, op, piece.node);
-            let (params, overridden) = match resolved {
-                OpKind::Reduce(own) => (own, !std::ptr::eq(resolved, &op.kind)),
-                // An override can only ever hold the same kind as the operation
-                // it overrides; fall back to the global settings if one somehow
-                // doesn't.
-                _ => (params, false),
-            };
-            ObjectSettings {
-                simplify: params.simplify,
-                target: params.target,
-                overridden,
-            }
-        });
+        return simplify_submeshes(
+            submeshes,
+            model,
+            stack,
+            &op.kind,
+            warnings,
+            run.token(),
+            |piece| {
+                let resolved = resolve_op(stack, op, piece.node);
+                let (params, overridden) = match resolved {
+                    OpKind::Reduce(own) => (own, !std::ptr::eq(resolved, &op.kind)),
+                    // An override can only ever hold the same kind as the operation
+                    // it overrides; fall back to the global settings if one somehow
+                    // doesn't.
+                    _ => (params, false),
+                };
+                ObjectSettings {
+                    simplify: params.simplify,
+                    target: params.target,
+                    overridden,
+                }
+            },
+        );
     }
 
     // The AO bake needs the whole scene as occluders — excluded pieces still

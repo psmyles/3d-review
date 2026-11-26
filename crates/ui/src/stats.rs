@@ -39,6 +39,9 @@ pub(crate) enum StatRow {
     Overfetch,
     Error,
     Target,
+    Volume,
+    Distance,
+    NormalTurn,
 }
 
 impl StatRow {
@@ -65,6 +68,9 @@ impl StatRow {
             StatRow::Overfetch => "overfetch",
             StatRow::Error => "error",
             StatRow::Target => "target",
+            StatRow::Volume => "volume",
+            StatRow::Distance => "distance",
+            StatRow::NormalTurn => "normal_turn",
         }
     }
 
@@ -88,6 +94,9 @@ impl StatRow {
             StatRow::Overfetch => keys::ui_stats::OVERFETCH,
             StatRow::Error => keys::ui_stats::ERROR,
             StatRow::Target => keys::ui_stats::TARGET,
+            StatRow::Volume => keys::ui_stats::VOLUME,
+            StatRow::Distance => keys::ui_stats::DISTANCE,
+            StatRow::NormalTurn => keys::ui_stats::NORMAL_TURN,
         }
     }
 
@@ -111,6 +120,9 @@ impl StatRow {
             StatRow::Overfetch => keys::ui_stats::OVERFETCH_DESCRIPTION,
             StatRow::Error => keys::ui_stats::ERROR_DESCRIPTION,
             StatRow::Target => keys::ui_stats::TARGET_DESCRIPTION,
+            StatRow::Volume => keys::ui_stats::VOLUME_DESCRIPTION,
+            StatRow::Distance => keys::ui_stats::DISTANCE_DESCRIPTION,
+            StatRow::NormalTurn => keys::ui_stats::NORMAL_TURN_DESCRIPTION,
         }
     }
 
@@ -126,7 +138,10 @@ impl StatRow {
             | StatRow::Overdraw
             | StatRow::Overfetch
             | StatRow::Error
-            | StatRow::Target => Page::OptComparison,
+            | StatRow::Target
+            | StatRow::Volume
+            | StatRow::Distance
+            | StatRow::NormalTurn => Page::OptComparison,
             _ => Page::Stats,
         }
     }
@@ -657,6 +672,25 @@ pub(crate) fn processed_stats_grid(ui: &mut egui::Ui, state: &UiState) {
             &review_localization::tr(StatRow::Target.label()),
             &aim.target.to_string(),
             note,
+        );
+    }
+    // How far the level is from the source: what a triangle count cannot say. The
+    // volume only for a model that encloses one; the distance the largest, as a
+    // share of the model's size; the normals' turn the one 95% of the surface stays
+    // within, in degrees.
+    if let Some(quality) = metrics.quality.filter(|_| level.is_some()) {
+        if let Some(change) = quality.volume_change {
+            stat_row(ui, StatRow::Volume, &format!("{:+.1}%", change * 100.0));
+        }
+        stat_row(
+            ui,
+            StatRow::Distance,
+            &format!("{:.2}%", quality.distance_max * 100.0),
+        );
+        stat_row(
+            ui,
+            StatRow::NormalTurn,
+            &format!("{:.1}", quality.normal_deviation_p95),
         );
     }
 }

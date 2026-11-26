@@ -58,6 +58,7 @@ pub mod notice;
 pub mod ops;
 pub mod preset;
 pub mod process;
+pub mod quality;
 pub mod remesh;
 pub mod replace_file;
 pub mod shrinkwrap;
@@ -72,6 +73,7 @@ pub use process::{
     OptStage, ProcessInput, ProcessedLod, ProcessedResult, Shortfall, process, process_cancellable,
     process_progressive, process_with_progress,
 };
+pub use quality::{LevelQuality, QualityLimits};
 pub use replace_file::{Staged, write_bytes_replacing, write_replacing};
 pub use stack::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode,

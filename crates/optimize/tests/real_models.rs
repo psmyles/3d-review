@@ -28,7 +28,7 @@ use review_model::{
 };
 use review_optimize::{
     AoQuality, AoTarget, BakeAoParams, LodLevel, LodParams, NormalParams, OpInstance, OpKind,
-    OptStack, OptWarning, ReduceParams, Shortfall, SimplifyAlgorithm, SimplifyFlags,
+    OptStack, OptWarning, QualityLimits, ReduceParams, Shortfall, SimplifyAlgorithm, SimplifyFlags,
     SimplifySettings, TargetMode, WeldParams,
 };
 
@@ -919,6 +919,47 @@ fn a_level_held_by_its_own_seams_says_the_mesh_stopped_it() {
         .aim
         .expect("the reduced level has an aim");
     assert_eq!(aim.stopped_by, Some(Shortfall::Topology), "{aim:?}");
+}
+
+/// A quality limit stops a level above its target rather than let an object
+/// change more than it allows, and the level says the limit held it: the plan's
+/// "budgets as ceilings". Measured against the source, as the report's figures are.
+#[test]
+fn a_volume_limit_holds_a_level_above_its_target() {
+    let model = smooth_torus();
+    let reduce = |limits: QualityLimits| {
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::Weld(WeldParams::default()));
+        let mut params = reduce_to(200);
+        params.simplify.limits = limits;
+        stack.push_op(OpKind::Reduce(params));
+        run(&model, &stack).lods[0].metrics
+    };
+    let free = reduce(QualityLimits::default());
+    let lost = free
+        .quality
+        .and_then(|quality| quality.volume_change)
+        .expect("a torus encloses a volume");
+    assert!(
+        lost < -0.01,
+        "200 triangles cost the torus over 1% of its volume: {lost}"
+    );
+
+    let held = reduce(QualityLimits {
+        max_volume_change: Some(0.01),
+        ..QualityLimits::default()
+    });
+    let aim = held.aim.expect("an aim");
+    assert_eq!(aim.stopped_by, Some(Shortfall::VolumeLimit), "{aim:?}");
+    assert!(aim.reached > 200, "held above its target: {aim:?}");
+    let change = held
+        .quality
+        .and_then(|quality| quality.volume_change)
+        .expect("a volume");
+    assert!(
+        change.abs() <= 0.012,
+        "kept within the limit, as the report measures: {change}"
+    );
 }
 
 /// Sanity: every file the tests above load is where they expect it. Checking the

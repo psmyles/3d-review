@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::meshopt::options::simplify as simplify_options;
+use crate::quality::QualityLimits;
 
 use super::*;
 
@@ -127,6 +128,9 @@ pub struct SimplifySettings {
     pub algorithm: SimplifyAlgorithm,
     pub attribute_weights: AttributeWeights,
     pub flags: SimplifyFlags,
+    /// Limits on how much an object may change, whatever its target: off unless
+    /// set (see [`QualityLimits`]).
+    pub limits: QualityLimits,
 }
 
 /// LOD chain settings.

@@ -19,8 +19,9 @@ use std::path::PathBuf;
 use review_audit::{Engine, Severity};
 use review_localization::{Key, tr};
 use review_optimize::stack::limits::{
-    LOD_ERROR_MAX, LOD_ERROR_MIN, LOD_RATIO_MAX, LOD_RATIO_MIN, LOD_TRIANGLES_MAX,
-    LOD_TRIANGLES_MIN, MAX_LOD_LEVELS,
+    DISTANCE_LIMIT_MAX, DISTANCE_LIMIT_MIN, LOD_ERROR_MAX, LOD_ERROR_MIN, LOD_RATIO_MAX,
+    LOD_RATIO_MIN, LOD_TRIANGLES_MAX, LOD_TRIANGLES_MIN, MAX_LOD_LEVELS, VOLUME_CHANGE_MAX,
+    VOLUME_CHANGE_MIN,
 };
 use review_optimize::{FbxFormat, HierarchyMode, LodPackaging, SimplifyAlgorithm, SimplifyFlags};
 
@@ -145,6 +146,10 @@ pub(crate) struct OptimizeArgs {
     /// `--simplify-flags`: the whole set of simplifier flags, in place of the
     /// preset's.
     pub(crate) simplify_flags: Option<SimplifyFlags>,
+    /// `--max-volume-change`: the limit, or `Some(None)` to switch the preset's off.
+    pub(crate) max_volume_change: Option<Option<f32>>,
+    /// `--max-distance`: the same, for the distance limit.
+    pub(crate) max_distance: Option<Option<f32>>,
     pub(crate) packaging: Option<LodPackaging>,
     pub(crate) hierarchy: Option<HierarchyMode>,
     pub(crate) format: Option<FbxFormat>,
@@ -254,6 +259,8 @@ const REDUCE: &str = "--reduce";
 const TARGET_ERROR: &str = "--target-error";
 const SIMPLIFIER: &str = "--simplifier";
 const SIMPLIFY_FLAGS: &str = "--simplify-flags";
+const MAX_VOLUME_CHANGE: &str = "--max-volume-change";
+const MAX_DISTANCE: &str = "--max-distance";
 const PACKAGING: &str = "--packaging";
 const HIERARCHY: &str = "--hierarchy";
 const FORMAT: &str = "--format";
@@ -362,6 +369,18 @@ const SPECS: &[Spec] = &[
         name: SIMPLIFY_FLAGS,
         takes: Takes::Value(k::HELP_VALUE_FLAGS),
         help: k::HELP_OPTION_SIMPLIFY_FLAGS,
+        on: OPTIMIZE,
+    },
+    Spec {
+        name: MAX_VOLUME_CHANGE,
+        takes: Takes::Value(k::HELP_VALUE_SHARE),
+        help: k::HELP_OPTION_MAX_VOLUME_CHANGE,
+        on: OPTIMIZE,
+    },
+    Spec {
+        name: MAX_DISTANCE,
+        takes: Takes::Value(k::HELP_VALUE_SHARE),
+        help: k::HELP_OPTION_MAX_DISTANCE,
         on: OPTIMIZE,
     },
     Spec {
@@ -754,6 +773,21 @@ fn optimize_args(given: &Given) -> Result<OptimizeArgs, String> {
         .trimmed(SIMPLIFY_FLAGS)
         .map(|value| flag_list(SIMPLIFY_FLAGS, &value))
         .transpose()?;
+    let max_volume_change = given
+        .trimmed(MAX_VOLUME_CHANGE)
+        .map(|value| {
+            quality_limit(
+                MAX_VOLUME_CHANGE,
+                &value,
+                VOLUME_CHANGE_MIN,
+                VOLUME_CHANGE_MAX,
+            )
+        })
+        .transpose()?;
+    let max_distance = given
+        .trimmed(MAX_DISTANCE)
+        .map(|value| quality_limit(MAX_DISTANCE, &value, DISTANCE_LIMIT_MIN, DISTANCE_LIMIT_MAX))
+        .transpose()?;
     let preset = given.path(PRESET);
     let makes_lods = matches!(lods, Some(Lods::Levels(_)));
     if preset.is_none() && !makes_lods && reduce.is_none() {
@@ -767,6 +801,8 @@ fn optimize_args(given: &Given) -> Result<OptimizeArgs, String> {
         target_error,
         simplifier,
         simplify_flags,
+        max_volume_change,
+        max_distance,
         packaging: choice(given, PACKAGING, PACKAGING_CHOICES)?.map(|word| match word {
             "file-per-lod" => LodPackaging::FilePerLod,
             _ => LodPackaging::SingleFileSuffixed,
@@ -888,6 +924,34 @@ fn error_limit(name: &str, value: &str) -> Result<f32, String> {
         .ok()
         .filter(|limit| (LOD_ERROR_MIN..=LOD_ERROR_MAX).contains(limit))
         .ok_or_else(|| k::usage_bad_error(name.to_owned(), value.to_owned()))
+}
+
+/// A quality limit: a share (`0.05`) or a percentage (`5%`) within `min..=max`, or
+/// `none` to switch a preset's limit off.
+fn quality_limit(name: &str, value: &str, min: f32, max: f32) -> Result<Option<f32>, String> {
+    let text = value.trim();
+    if text.eq_ignore_ascii_case(NO_FLAGS) {
+        return Ok(None);
+    }
+    // The bounds as the shortest text of their `f32`: widened to `f64` for the
+    // message, 0.1 would print as `0.10000000149011612`.
+    let bad = || {
+        k::usage_bad_limit(
+            (max * 100.0).to_string(),
+            (min * 100.0).to_string(),
+            name.to_owned(),
+            value.to_owned(),
+        )
+    };
+    let parsed = match text.strip_suffix('%') {
+        Some(percent) => percent.trim().parse::<f32>().map(|percent| percent / 100.0),
+        None => text.parse::<f32>(),
+    }
+    .map_err(|_| bad())?;
+    if !(min..=max).contains(&parsed) {
+        return Err(bad());
+    }
+    Ok(Some(parsed))
 }
 
 /// `regularize,lock-border`, or `none`: the whole set, so a flag the preset has on
@@ -1112,6 +1176,23 @@ mod tests {
                 .contains("lock-border|error-absolute"),
             "a wrong flag is answered with the flags there are"
         );
+    }
+
+    /// A quality limit is a percentage or a share, and `none` switches a preset's
+    /// off; outside its range it is refused with the range.
+    #[test]
+    fn quality_limits_are_read() {
+        let Command::Optimize(args) =
+            run("optimize a.fbx --out o --reduce 0.5 --max-volume-change 5% --max-distance none")
+                .command
+        else {
+            panic!("not optimize");
+        };
+        assert_eq!(args.max_volume_change, Some(Some(0.05)));
+        assert_eq!(args.max_distance, Some(None));
+        let error = usage_error("optimize a.fbx --out o --reduce 0.5 --max-volume-change 300%");
+        assert!(error.contains("between 0.1% and 100%"), "{error}");
+        assert!(!usage_error("optimize a.fbx --out o --reduce 0.5 --max-distance 0").is_empty());
     }
 
     #[test]

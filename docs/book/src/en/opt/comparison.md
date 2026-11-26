@@ -54,11 +54,19 @@ against the original, tinted green or red. Every figure here is one where
   as measured by the simplifier.
 - **Target** - the triangles the level was asked for. A target is a ceiling,
   not a promise: a level that stopped above it carries a note saying what
-  held it. **error limit** means the shape could only go further by moving
-  more than the [error limit](simplify.md#target) allows; raise the limit to
-  reach the target. **seams** means the model's own seams and open borders
-  allow no further simplifying at any limit; weld it first, or let the
-  simplifier collapse across seams.
+  held it. **error** means the shape could only go further by moving more
+  than the [error limit](simplify.md#target) allows; raise the limit to reach
+  the target. **seams** means the model's own seams and open borders allow no
+  further simplifying at any limit; weld it first, or let the simplifier
+  collapse across seams. **volume** and **surface** mean one of the
+  [quality limits](simplify.md#quality-limits) you set held it.
+- **Volume** - how much the volume the level encloses has changed from the
+  model as it came, as a percentage. Only for a model that encloses one.
+- **Distance** - the farthest the level's surface lies from the model as it
+  came, as a percentage of the model's size, measured both ways at thousands
+  of points.
+- **Normal turn** - how far the shading directions have turned, in degrees:
+  95% of the surface has turned less than this.
 
 The card is there as soon as you open the workspace. A run with nothing
 switched on makes no new model, but it still measures the original, so you can

@@ -131,6 +131,8 @@ workspace's Export does.
 | `--target-error <limit>` | The error limit of the Reduce and of every LOD level, `0` to `1`: how far the surface may move, as a share of the model's size (`0.01` by default), or in its own units with the `error-absolute` flag. A level stops short of its target rather than go past it, so `1` lets every level reach its target whatever it costs the shape. |
 | `--simplifier preserve-attributes\|standard\|sloppy` | The simplifier the Reduce and the LOD chain use. `preserve-attributes`, the default, weighs shading and texture layout beside the shape; `sloppy` is fastest and closes holes. |
 | `--simplify-flags <flags>\|none` | The simplifier's flags, as the whole set: any of `lock-border`, `error-absolute`, `prune`, `regularize`, `regularize-light`, `collapse-across-seams`, `preserve-folds`, `clamp-attribute-error`, separated by commas. Replaces the preset's flags, so a flag it has on and the list leaves out goes off; `none` turns them all off. |
+| `--max-volume-change <share>\|none` | The most any object's volume may change from the model as it came, as a share or a percentage (`0.05`, `5%`). A level stops above its target rather than pass it. `none` switches off a preset's limit. Off unless set. |
+| `--max-distance <share>\|none` | The farthest any object's surface may move from the model as it came, as a share of the object's size (`0.01`, `1%`). The same way. |
 | `--packaging single-file\|file-per-lod` | `single-file` writes one FBX holding `Name_LOD0`...`Name_LODn`. `file-per-lod` writes `name_LOD0.fbx`, `name_LOD1.fbx`... A run with no chain writes `name.fbx` either way. |
 | `--hierarchy rebuild\|flat` | `rebuild` keeps the model's hierarchy; `flat` writes every mesh at the top level, in world space. |
 | `--format binary\|ascii` | The FBX encoding. |
@@ -444,9 +446,15 @@ the lossless indexing every engine does); `levels` (per LOD, level 0 first:
 `simplify_error`, and for a simplified level `target_triangles` (what it was asked
 for), `error_limit` (the limit it ran under) and `stopped_by`, which is `null` when
 it reached its target and otherwise says what held it above it: `error_limit` (the
-shape could go further only past the limit) or `topology` (the model's seams and
-borders allow no further simplifying at any limit). The four are `null` for a level
-that was not simplified, and the level's line says the same in words:
+shape could go further only past the limit), `topology` (the model's seams and
+borders allow no further simplifying at any limit), `volume_limit` or
+`distance_limit` (`--max-volume-change` or `--max-distance`). Then how far the level
+is from the model as it came: `volume_change` (a share, `-0.05` for 5% lost; `null`
+for a model that encloses no volume), `distance_mean` and `distance_max` (shares of
+the model's size, sampled both ways) and `normal_deviation_mean` and
+`normal_deviation_p95` (the shading normals' turn, in degrees). All of these are
+`null` for a level that was not simplified, and the level's line says why it
+stopped short in words:
 `LOD2: 224 triangles, 242 vertices (target 100, held back by the error limit 0.01)`.
 When the preset
 had per-object settings, `overrides` gives `rebound`, `by_position` and `dropped`.

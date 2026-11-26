@@ -137,6 +137,18 @@ fn every_stats_row_label_fits_the_card() {
         if not_a_row_name {
             continue;
         }
+        // A level's Target note ("error", "seams", ...) sits where a change figure
+        // ("+12%") does, so it has one value column, not the name column.
+        if id.contains("-held-by-") {
+            let width = measure(&ctx, &text, stats.clone());
+            if width > size::STATS_VALUE_COLUMN {
+                overflowing.push(format!(
+                    "{id}: {width:.0}pt > {:.0}pt (a value column) - {text:?}",
+                    size::STATS_VALUE_COLUMN
+                ));
+            }
+            continue;
+        }
         let width = measure(&ctx, &text, stats.clone());
         if width > available {
             overflowing.push(format!("{id}: {width:.0}pt > {available:.0}pt — {text:?}"));

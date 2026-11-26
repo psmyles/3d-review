@@ -519,6 +519,23 @@ impl OpKind {
             );
         }
         fn simplify(settings: &mut SimplifySettings) {
+            // A limit that is not a number is no limit; any other is brought into
+            // the Inspector's range.
+            let limit = |value: &mut Option<f32>, min: f32, max: f32| {
+                *value = value
+                    .filter(|limit| limit.is_finite())
+                    .map(|limit| limit.clamp(min, max));
+            };
+            limit(
+                &mut settings.limits.max_volume_change,
+                VOLUME_CHANGE_MIN,
+                VOLUME_CHANGE_MAX,
+            );
+            limit(
+                &mut settings.limits.max_distance,
+                DISTANCE_LIMIT_MIN,
+                DISTANCE_LIMIT_MAX,
+            );
             let default = AttributeWeights::default();
             let weights = &mut settings.attribute_weights;
             fit(

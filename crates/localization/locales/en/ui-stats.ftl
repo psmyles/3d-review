@@ -102,13 +102,28 @@ ui-stats-error = Error
         overall size; with the absolute-error option on, it is in world units.
 ui-stats-target = Target
     .description = The triangles this level was asked for. A target is a ceiling: when the
-        level stopped above it, the note says what held it. "error limit" means the shape
-        could go further only by moving more than the error limit allows - raise the limit
-        to reach it. "seams" means the model's own seams and open borders allow no further
+        level stopped above it, the note says what held it. "error" means the shape could
+        go further only by moving more than the error limit allows - raise the limit to
+        reach it. "seams" means the model's own seams and open borders allow no further
         simplifying at any limit - weld the model, or let the simplifier collapse across
-        seams.
-ui-stats-held-by-limit = error limit
+        seams. "volume" and "surface" mean fewer triangles would have changed the volume,
+        or moved the surface, by more than the quality limit you set allows.
+ui-stats-volume = Volume
+    .description = How much the volume this level encloses has changed from the model as
+        it came, as a percentage. A level that has lost a lot of volume has caved in
+        somewhere. Shown only for a model that encloses a volume.
+ui-stats-distance = Distance
+    .description = The farthest this level's surface lies from the model as it came,
+        measured both ways at thousands of points, as a percentage of the model's size
+        (the longest side of its bounding box).
+ui-stats-normal-turn = Normal turn
+    .description = How far the shading directions have turned from the model as it came,
+        in degrees: 95% of the surface has turned less than this. A large figure is
+        shading that will look different, even where the shape holds.
+ui-stats-held-by-limit = error
 ui-stats-held-by-seams = seams
+ui-stats-held-by-volume = volume
+ui-stats-held-by-distance = surface
 
 # Card headings on the Opt side.
 ui-stats-source-nothing-applied = Source (nothing applied)

@@ -103,6 +103,12 @@ fn work(common: &Common, args: &OptimizeArgs, bar: &Bar, report: &mut Report) {
     report.total("outputs", json!(outputs));
 }
 
+/// A share as the percentage a person reads (`0.05` as `5%`), at the precision it
+/// was given: widened to `f64` an `f32` would print `5.000000074505806%`.
+fn percent(share: Option<f32>) -> String {
+    share.map_or_else(String::new, |share| format!("{}%", share * 100.0))
+}
+
 /// The stack every model runs: the preset, if any, with the command line's
 /// options laid over it.
 fn build_stack(args: &OptimizeArgs) -> Result<OptStack, String> {
@@ -153,6 +159,12 @@ fn build_stack(args: &OptimizeArgs) -> Result<OptStack, String> {
         }
         if let Some(flags) = args.simplify_flags {
             simplify.flags = flags;
+        }
+        if let Some(limit) = args.max_volume_change {
+            simplify.limits.max_volume_change = limit;
+        }
+        if let Some(limit) = args.max_distance {
+            simplify.limits.max_distance = limit;
         }
         if let Some(limit) = args.target_error {
             for target in targets {
@@ -548,6 +560,7 @@ fn record_levels(entry: &mut Entry, result: &ProcessedResult) {
             Some(Aim {
                 target,
                 error_limit,
+                limits,
                 stopped_by: Some(reason),
                 ..
             }) => match reason {
@@ -555,6 +568,16 @@ fn record_levels(entry: &mut Entry, result: &ProcessedResult) {
                     k::optimize_level_held_by_limit(error_limit.to_string(), line, target as f64)
                 }
                 Shortfall::Topology => k::optimize_level_held_by_seams(line, target as f64),
+                Shortfall::VolumeLimit => k::optimize_level_held_by_volume(
+                    percent(limits.max_volume_change),
+                    line,
+                    target as f64,
+                ),
+                Shortfall::DistanceLimit => k::optimize_level_held_by_distance(
+                    percent(limits.max_distance),
+                    line,
+                    target as f64,
+                ),
             },
             _ => line,
         };
@@ -576,6 +599,11 @@ fn record_levels(entry: &mut Entry, result: &ProcessedResult) {
             "target_triangles": lod.metrics.aim.map(|aim| aim.target),
             "error_limit": lod.metrics.aim.map(|aim| figure(aim.error_limit)),
             "stopped_by": lod.metrics.aim.and_then(|aim| aim.stopped_by).map(Shortfall::label),
+            "volume_change": lod.metrics.quality.and_then(|quality| quality.volume_change).map(figure),
+            "distance_mean": lod.metrics.quality.map(|quality| figure(quality.distance_mean)),
+            "distance_max": lod.metrics.quality.map(|quality| figure(quality.distance_max)),
+            "normal_deviation_mean": lod.metrics.quality.map(|quality| figure(quality.normal_deviation_mean)),
+            "normal_deviation_p95": lod.metrics.quality.map(|quality| figure(quality.normal_deviation_p95)),
         }));
     }
     entry.set("levels", json!(levels));
@@ -596,6 +624,8 @@ mod tests {
             target_error: None,
             simplifier: None,
             simplify_flags: None,
+            max_volume_change: None,
+            max_distance: None,
             packaging: None,
             hierarchy: None,
             format: None,

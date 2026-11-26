@@ -260,6 +260,8 @@ pub(crate) fn shortfall(reason: Shortfall) -> Key {
     match reason {
         Shortfall::ErrorLimit => keys::ui_stats::HELD_BY_LIMIT,
         Shortfall::Topology => keys::ui_stats::HELD_BY_SEAMS,
+        Shortfall::VolumeLimit => keys::ui_stats::HELD_BY_VOLUME,
+        Shortfall::DistanceLimit => keys::ui_stats::HELD_BY_DISTANCE,
     }
 }
 

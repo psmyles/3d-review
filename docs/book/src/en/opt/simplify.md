@@ -62,6 +62,24 @@ against it, so **Preserve Attributes** reaches the same triangle count as
 **Standard** would. The error each level shows on the stats card is measured
 the same way.
 
+## Quality limits
+
+A triangle target says nothing about what the triangles cost the shape. Two
+limits, both off until you switch them on, stop a level early instead of letting
+it change too much:
+
+- **Limit volume change** - no object's volume may change by more than this
+  percentage of what it had. A part that caves in as it loses triangles stops
+  before it does. Read only for an object that encloses a volume.
+- **Limit distance** - no object's surface may move farther than this
+  percentage of its size (the longest side of its bounding box), anywhere.
+
+Both are measured against the model as it came, before any operation, and per
+object, as the target is. A level they hold back keeps more triangles than its
+target, and its **Target** figure on the stats card says which limit held it.
+Each extra try costs a simplify, so a limited level takes several times as long
+to make.
+
 ## Flags
 
 Lock the border (never move points on an open edge), measure the error as a

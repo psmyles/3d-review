@@ -258,6 +258,10 @@ pub fn process_progressive(
     // submeshes in place below). See the field docs on [`ProcessedResult`] for
     // why the raw corner-split buffer would be the wrong thing to quote against.
     let source = MeshCounts::of_submeshes(&submeshes);
+    // What every simplified level's quality is measured against: the source as it
+    // came, built only for a stack that simplifies anything at all.
+    let simplifies = lod_op.is_some() || runs_reduce(pre_ops) || runs_reduce(post_ops);
+    let source_surface = simplifies.then(|| crate::quality::Surface::of_pieces(&submeshes));
     let source_metrics = measure_submeshes(
         &submeshes,
         input.render_vertex_size,
@@ -347,6 +351,7 @@ pub fn process_progressive(
             }
             let mut state = build_lod_level(
                 &submeshes,
+                input.model,
                 params,
                 level,
                 input.stack,
@@ -491,6 +496,19 @@ pub fn process_progressive(
             level.aim,
             &mut warnings,
         );
+        let metrics = AnalysisMetrics {
+            quality: source_surface
+                .as_ref()
+                .filter(|_| metrics.simplified)
+                .map(|source| {
+                    crate::quality::compare(
+                        source,
+                        &crate::quality::Surface::of_pieces(&level.submeshes),
+                        crate::quality::REPORT_SAMPLES,
+                    )
+                }),
+            ..metrics
+        };
         lods.push(ProcessedLod {
             level: index,
             model,

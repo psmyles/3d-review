@@ -259,6 +259,38 @@ mod tests {
         assert_eq!(reloaded.ops, loaded.ops);
     }
 
+    /// The quality limits sit with the simplifier's other settings, off when a
+    /// preset leaves them out; one past its range is brought into it, and one that
+    /// is not a number is no limit.
+    #[test]
+    fn quality_limits_round_trip_and_are_clamped() {
+        let json = r#"{
+            "version": 1,
+            "stack": { "ops": [{ "id": 1, "enabled": true, "kind": {
+                "Reduce": { "limits": { "max_volume_change": 5.0, "max_distance": 0.02 } }
+            } }, { "id": 2, "enabled": true, "kind": { "SimplifyLod": {} } }] }
+        }"#;
+        let loaded = from_json(json).expect("parses");
+        let OpKind::Reduce(params) = &loaded.ops[0].kind else {
+            panic!("a Reduce");
+        };
+        assert_eq!(
+            params.simplify.limits.max_volume_change,
+            Some(1.0),
+            "clamped"
+        );
+        assert_eq!(params.simplify.limits.max_distance, Some(0.02));
+        let OpKind::SimplifyLod(lods) = &loaded.ops[1].kind else {
+            panic!("a chain");
+        };
+        assert!(
+            !lods.simplify.limits.any(),
+            "off when the preset leaves them out"
+        );
+        let reloaded = from_json(&to_json(&loaded).expect("serializes")).expect("parses");
+        assert_eq!(reloaded.ops, loaded.ops);
+    }
+
     /// A Remesh or Shrinkwrap saved before rebuilt surfaces could generate
     /// their normals keeps projecting them, so it reproduces what it always did.
     #[test]

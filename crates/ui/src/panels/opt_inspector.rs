@@ -25,16 +25,17 @@ use crate::state::{
     UiState,
     range::{
         AO_BAKE_DISTANCE_MAX, AO_BAKE_DISTANCE_MIN, AO_BAKE_INTENSITY_MAX, AO_BAKE_INTENSITY_MIN,
-        ATTRIBUTE_WEIGHT_MAX, ATTRIBUTE_WEIGHT_MIN, LOD_ERROR_MAX, LOD_ERROR_MIN, LOD_RATIO_MAX,
-        LOD_RATIO_MIN, LOD_TRIANGLES_MAX, LOD_TRIANGLES_MIN, MAX_LOD_LEVELS, NORMAL_CREASE_MAX,
-        NORMAL_CREASE_MIN, NORMAL_SMOOTHING_MAX, NORMAL_SMOOTHING_MIN, OVERDRAW_THRESHOLD_MAX,
-        OVERDRAW_THRESHOLD_MIN, PRUNE_THRESHOLD_MAX, PRUNE_THRESHOLD_MIN, REMESH_ADAPTIVE_MAX,
-        REMESH_ADAPTIVE_MIN, REMESH_CREASE_MAX, REMESH_CREASE_MIN, REMESH_FACES_MAX,
-        REMESH_FACES_MIN, REMESH_RATIO_MAX, REMESH_RATIO_MIN, REMESH_SMOOTH_MAX,
-        SHRINKWRAP_OFFSET_MAX, SHRINKWRAP_OFFSET_MIN, SHRINKWRAP_RESOLUTION_MAX,
-        SHRINKWRAP_RESOLUTION_MIN, SHRINKWRAP_TARGET_RATIO_MAX, SHRINKWRAP_TARGET_RATIO_MIN,
-        SHRINKWRAP_TARGET_TRIANGLES_MAX, SHRINKWRAP_TARGET_TRIANGLES_MIN,
-        SHRINKWRAP_VOXEL_RESOLUTION_MAX, SHRINKWRAP_VOXEL_RESOLUTION_MIN, WELD_TOLERANCE_MAX,
+        ATTRIBUTE_WEIGHT_MAX, ATTRIBUTE_WEIGHT_MIN, DISTANCE_LIMIT_MAX, DISTANCE_LIMIT_MIN,
+        LOD_ERROR_MAX, LOD_ERROR_MIN, LOD_RATIO_MAX, LOD_RATIO_MIN, LOD_TRIANGLES_MAX,
+        LOD_TRIANGLES_MIN, MAX_LOD_LEVELS, NORMAL_CREASE_MAX, NORMAL_CREASE_MIN,
+        NORMAL_SMOOTHING_MAX, NORMAL_SMOOTHING_MIN, OVERDRAW_THRESHOLD_MAX, OVERDRAW_THRESHOLD_MIN,
+        PRUNE_THRESHOLD_MAX, PRUNE_THRESHOLD_MIN, REMESH_ADAPTIVE_MAX, REMESH_ADAPTIVE_MIN,
+        REMESH_CREASE_MAX, REMESH_CREASE_MIN, REMESH_FACES_MAX, REMESH_FACES_MIN, REMESH_RATIO_MAX,
+        REMESH_RATIO_MIN, REMESH_SMOOTH_MAX, SHRINKWRAP_OFFSET_MAX, SHRINKWRAP_OFFSET_MIN,
+        SHRINKWRAP_RESOLUTION_MAX, SHRINKWRAP_RESOLUTION_MIN, SHRINKWRAP_TARGET_RATIO_MAX,
+        SHRINKWRAP_TARGET_RATIO_MIN, SHRINKWRAP_TARGET_TRIANGLES_MAX,
+        SHRINKWRAP_TARGET_TRIANGLES_MIN, SHRINKWRAP_VOXEL_RESOLUTION_MAX,
+        SHRINKWRAP_VOXEL_RESOLUTION_MIN, VOLUME_CHANGE_MAX, VOLUME_CHANGE_MIN, WELD_TOLERANCE_MAX,
         WELD_TOLERANCE_MIN,
     },
 };
@@ -702,6 +703,74 @@ fn simplify_settings(ui: &mut egui::Ui, id: &str, edited: &mut SimplifySettings)
                     .on_hover_text(keys::ui_opt::CLAMP_ATTRIBUTE_ERROR_DESCRIPTION);
             }
         });
+    }
+
+    // Limits on how much an object may change, whatever its target: off unless
+    // switched on, for every algorithm.
+    ui.add_space(size::PANEL_ROW_GAP);
+    ui.collapsing(keys::ui_opt::QUALITY_LIMITS, |ui| {
+        panel_grid(ui, &format!("{id}_limits"), |ui| {
+            quality_limit(
+                ui,
+                Tip::new(keys::ui_opt::LIMIT_VOLUME)
+                    .describe(keys::ui_opt::LIMIT_VOLUME_DESCRIPTION)
+                    .page(Page::OptSimplify),
+                Tip::new(keys::ui_opt::MAX_VOLUME_CHANGE)
+                    .describe(keys::ui_opt::MAX_VOLUME_CHANGE_DESCRIPTION)
+                    .page(Page::OptSimplify),
+                &mut edited.limits.max_volume_change,
+                VOLUME_CHANGE_MIN..=VOLUME_CHANGE_MAX,
+                0.05,
+            );
+            quality_limit(
+                ui,
+                Tip::new(keys::ui_opt::LIMIT_DISTANCE)
+                    .describe(keys::ui_opt::LIMIT_DISTANCE_DESCRIPTION)
+                    .page(Page::OptSimplify),
+                Tip::new(keys::ui_opt::MAX_DISTANCE)
+                    .describe(keys::ui_opt::MAX_DISTANCE_DESCRIPTION)
+                    .page(Page::OptSimplify),
+                &mut edited.limits.max_distance,
+                DISTANCE_LIMIT_MIN..=DISTANCE_LIMIT_MAX,
+                0.01,
+            );
+        });
+    });
+}
+
+/// One quality limit as the Inspector edits it: a checkbox that switches it on at
+/// `default`, and while it is on, its percentage on a log rail — a limit can be a
+/// hundredth of a percent or a half.
+///
+/// The share is written back only when the slider moved: turning it into a
+/// percentage and back every frame would nudge the `f32`, and the stack would
+/// count as edited — and re-run — on every frame.
+fn quality_limit(
+    ui: &mut egui::Ui,
+    switch: Tip,
+    amount: Tip,
+    limit: &mut Option<f32>,
+    range: std::ops::RangeInclusive<f32>,
+    default: f32,
+) {
+    let mut on = limit.is_some();
+    labeled_checkbox(ui, switch, &mut on);
+    match (on, *limit) {
+        (false, Some(_)) => *limit = None,
+        (true, None) => *limit = Some(default),
+        _ => {}
+    }
+    if let Some(share) = limit {
+        let mut percent = *share * 100.0;
+        if labeled_log_slider_with_value(
+            ui,
+            amount,
+            &mut percent,
+            range.start() * 100.0..=range.end() * 100.0,
+            2,
+        ) {
+            *share = percent / 100.0;
+        }
     }
 }
 
