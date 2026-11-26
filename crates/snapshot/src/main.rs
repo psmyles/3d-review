@@ -181,6 +181,7 @@ fn run() -> Result<()> {
         args.curve_style,
     )?;
     capture.uv_density = args.uv_density;
+    capture.index = args.index;
     if let Some(square) = args.checker_square {
         capture.checker_tiling = 1.0 / (review_render::CHECKER_SQUARES * square * args.uv_density);
     }

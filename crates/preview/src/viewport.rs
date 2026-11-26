@@ -304,6 +304,7 @@ impl Viewport {
             selection: SelectionView::default(),
             hidden_meshes: &[],
             wire_meshes: &[],
+            palette: &[],
             selected_bones: &[],
             selected_nodes: &[],
             hover: None,

@@ -109,7 +109,28 @@ ui-panels-curve-dot-size = Dot Size
 
 ui-panels-color-mode = Color Mode
     .description = Show the stored colors, show the alpha (see-through) value as shades of
-        grey, or show the colors with alpha making parts see-through.
+        grey, show the colors with alpha making parts see-through, or read one channel as
+        an index into a palette and show the palette's colors, as a game that colors its
+        models from a palette would.
+ui-panels-index-channel = Index channel
+    .description = The channel that holds the palette index, as index / 255: a value of
+        3/255 is entry 3. A value that is no whole index, or an index past the end of
+        the palette, shows magenta.
+ui-panels-index-channel-red = Red
+ui-panels-index-channel-green = Green
+ui-panels-index-channel-blue = Blue
+ui-panels-index-channel-alpha = Alpha
+ui-panels-index-srgb = Painted in sRGB
+    .description = Tick this when the index was painted as an sRGB color and stored
+        linear, as Blender's byte color attributes export it: index 1 then arrives as
+        about 0.0003 rather than 1/255, and is read back through the sRGB curve.
+ui-panels-palette = Palette
+    .description = The colors the indices look up. A JSON file lists them (as "#rrggbb"
+        strings or [r, g, b] numbers), or a PNG strip has one pixel per entry. Without
+        one, a built-in palette tells neighbouring indices apart.
+ui-panels-palette-built-in = Built-in
+ui-panels-palette-load = Load...
+ui-panels-palette-clear = Use built-in
 
 ## Camera
 

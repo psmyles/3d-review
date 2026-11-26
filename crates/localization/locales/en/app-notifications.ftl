@@ -102,6 +102,14 @@ app-notifications-optimization-warnings = { $count } optimization warnings
 app-notifications-couldnt-save = Couldn't save { $file }
 app-notifications-couldnt-read = Couldn't read { $file }
 app-notifications-preset-loaded = Loaded { $file }
+app-notifications-palette-loaded = Loaded the palette { $file }: { $count } colors
+app-notifications-palette-not-read = Couldn't read the palette { $file }: { $why }
+app-notifications-palette-why-file = the file could not be opened.
+app-notifications-palette-why-json = it is not JSON holding a list of colors.
+app-notifications-palette-why-entry = entry { $entry } (counting from 0) is not a color.
+app-notifications-palette-why-empty = it holds no colors.
+app-notifications-palette-why-too-many = it holds { $count } colors, and an index can name only 256.
+app-notifications-palette-why-image = it is not an image this viewer can read.
 
 ## Updates
 

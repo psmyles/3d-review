@@ -300,10 +300,23 @@ impl Default for UvCheckerPanelState {
 
 /// Editable state backing the Vertex Color options panel. The toggle itself
 /// lives in [`SceneDebugOptions::vertex_colors`] (like the UV checker); this
-/// holds only the channel-display mode, synced via [`SceneDebugOptions`].
+/// holds the channel-display mode and, for the palette-index mode, which channel
+/// holds the index and the palette it indexes, synced via [`SceneDebugOptions`]
+/// (the palette rides the frame).
 #[derive(Debug, Clone, Default)]
 pub struct VertexColorPanelState {
     pub mode: VertexColorMode,
+    /// The channel read as a palette index: 0 red, 1 green, 2 blue, 3 alpha.
+    pub index_channel: u8,
+    /// The index was painted as an sRGB colour and stored linear.
+    pub index_srgb: bool,
+    /// The palette loaded from a file, as gamma rgb; empty for the built-in one.
+    pub palette: Vec<[f32; 3]>,
+    /// The file it came from, for the panel to name.
+    pub palette_file: Option<std::path::PathBuf>,
+    /// Set by the panel's Load button for `app` to ask for a palette file;
+    /// `app` clears it as it asks.
+    pub palette_requested: bool,
 }
 
 /// Editable state backing the Camera options panel: the 3D cameras' field of

@@ -65,6 +65,7 @@ enum_codec!(vertex_color_id, vertex_color_from, VertexColorMode {
     VertexColorMode::Rgb => "rgb",
     VertexColorMode::Alpha => "alpha",
     VertexColorMode::RgbAlpha => "rgb_alpha",
+    VertexColorMode::Indexed => "indexed",
 });
 
 enum_codec!(material_mode_id, material_mode_from, MaterialMode {
@@ -395,6 +396,38 @@ const ENTRIES: &[Entry] = &[
         save: |s| vertex_color_id(s.vertex_colors.mode),
         load: |s, v| set(&mut s.vertex_colors.mode, vertex_color_from(v)),
     },
+    Entry {
+        key: "vertex_colors.index_channel",
+        save: |s| s.vertex_colors.index_channel.to_string(),
+        load: |s, v| {
+            let channel: u8 = v.parse().ok().filter(|channel| *channel < 4)?;
+            s.vertex_colors.index_channel = channel;
+            Some(())
+        },
+    },
+    Entry {
+        key: "vertex_colors.index_srgb",
+        save: |s| s.vertex_colors.index_srgb.to_string(),
+        load: |s, v| {
+            s.vertex_colors.index_srgb = v.parse().ok()?;
+            Some(())
+        },
+    },
+    Entry {
+        // The file, not its colours: `app` reads it again at launch.
+        key: "vertex_colors.palette_file",
+        save: |s| {
+            s.vertex_colors
+                .palette_file
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default()
+        },
+        load: |s, v| {
+            s.vertex_colors.palette_file = (!v.is_empty()).then(|| v.into());
+            Some(())
+        },
+    },
     // Camera
     Entry {
         key: "camera.orbit_speed",
@@ -604,6 +637,9 @@ mod tests {
         state.curves.opacity = 0.4;
         state.curves.dot_size = 7.5;
         state.vertex_colors.mode = VertexColorMode::RgbAlpha;
+        state.vertex_colors.index_channel = 2;
+        state.vertex_colors.index_srgb = true;
+        state.vertex_colors.palette_file = Some("/palettes/game.json".into());
         state.camera.orbit_speed = 0.5;
         state.camera.zoom_speed = 2.25;
         state.camera.fly_speed = 7.5;

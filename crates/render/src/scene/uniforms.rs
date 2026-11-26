@@ -33,7 +33,8 @@ pub(super) fn flat_display(frame: &SceneFrame<'_>) -> bool {
         && (matches!(
             frame.debug.active_material,
             ActiveMaterial::Buffers | ActiveMaterial::SkinWeights
-        ) || frame.debug.heat_map.is_active())
+        ) || frame.debug.heat_map.is_active()
+            || frame.debug.indexed_colors())
 }
 
 /// Build the composite pass's [`PostUniforms`] from the live settings. With

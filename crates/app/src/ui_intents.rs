@@ -38,6 +38,7 @@ impl App {
         if let Some(intent) = output.menu {
             self.apply_menu_intent(intent);
         }
+        self.ask_for_palette_if_requested();
 
         if self.renderer.is_none() {
             return;

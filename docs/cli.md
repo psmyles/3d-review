@@ -486,7 +486,8 @@ arguments after `render` are the engine's (`review3d-cli render --help` lists
 them all): models (`.fbx`, `.glb`, `.gltf`, each optionally `@<preset.json>` or
 `@lods` to render an operation stack's output, and `#<level>` for one level);
 `--views` (named views or `yaw,pitch[,zoom]`); `--look` (`shaded`, `matte`,
-`normals`, `wire`, `shaded-wire`, `checker`, `texel-density`, `uv-stretch`);
+`normals`, `wire`, `shaded-wire`, `checker`, `texel-density`, `uv-stretch`,
+`palette`);
 `--size`, `--background`, `--grid`, `--transparent`, `--singles` (each cell as
 its own image too); and:
 
@@ -495,6 +496,7 @@ its own image too); and:
 | `--frame each` | Frame each model on its own bounds, so a catalogue of parts of every size fills its cells. Without it every model is framed on all of them together, which keeps their sizes comparable; `--frame <n>` frames on model `n`. |
 | `--report <file>` | Write a JSON report: per model its file, triangles, GPU vertices and `bounds_m` (`min`, `max`, `size`, in metres and the file's own axes), the framing, and every image written. |
 | `--checker-square <m>`, `--uv-density <n>` | The `checker` look's squares at a size in metres, for a layout made at `n` UV units per metre; `--uv-density` also sets the `texel-density` look's target. |
+| `--index <r\|g\|b\|a>[:srgb]` | The vertex color channel the `palette` look reads as a palette index (index / 255; red to start with), shown in the viewer's built-in palette with magenta where a value is no index. `:srgb` when the index was painted as an sRGB color and stored linear. |
 | `--colliders <names>` | Draw the parts whose names match these comma-separated patterns (`*` and `?`) as their edges, faint where the model hides them, as the viewer draws collision meshes: `--colliders "*_hull,*_box,UCX_*"`. |
 
 Exit status: 0 when every picture was written, 1 when one was not, 2 when the

@@ -45,7 +45,10 @@ pub use camera::{
 };
 pub use config::*;
 pub use egui_sokol::EguiRenderer;
-pub use geometry::{BONE_PICK_TOLERANCE_POINTS, pick_bone_shape, posed_joint_positions};
+pub use geometry::{
+    BONE_PICK_TOLERANCE_POINTS, NOT_AN_INDEX, default_palette_color, palette_index,
+    pick_bone_shape, posed_joint_positions,
+};
 #[cfg(feature = "bake")]
 pub use ibl::bake_ibl_assets;
 pub use material::{
@@ -253,6 +256,10 @@ pub struct SceneFrame<'a> {
     /// `hidden_meshes` too, which is what keeps their surfaces out; one hidden
     /// outright is in `hidden_meshes` alone. The viewer's collision meshes.
     pub wire_meshes: &'a [u32],
+    /// The palette [`VertexColorMode::Indexed`] looks indices up in, as gamma
+    /// rgb, entry 0 first; empty for the built-in one
+    /// ([`default_palette_color`]).
+    pub palette: &'a [[f32; 3]],
     /// Bone nodes selected in the Outliner (sorted, deduplicated node indices).
     /// Drives the skeleton overlay's persistent highlight and the skin-weight heat
     /// map; empty when no bone is selected.

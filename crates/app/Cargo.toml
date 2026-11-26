@@ -99,15 +99,16 @@ workspace = true
 workspace = true
 
 
+# A palette file for the Vertex Color panel's palette-index mode can be JSON.
+[dependencies.serde_json]
+workspace = true
+
+
 [dependencies.tracy-client]
 workspace = true
 
 
 [dependencies.winit]
-workspace = true
-
-
-[dev-dependencies.serde_json]
 workspace = true
 
 

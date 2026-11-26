@@ -900,6 +900,10 @@ pub(crate) fn sync_debug_state(state: &mut UiState) {
     state.debug.uv_checker_tiling = state.uv_checker.tiling();
     state.debug.uv_channel = state.uv_checker.uv_channel;
     state.debug.vertex_color_mode = state.vertex_colors.mode;
+    state.debug.indexed_color = review_render::IndexedColor {
+        channel: state.vertex_colors.index_channel.min(3),
+        srgb: state.vertex_colors.index_srgb,
+    };
     state.debug.face_normal_length = state.face_normals.length;
     state.debug.vertex_normal_length = state.vertex_normals.length;
     state.debug.face_normal_color = theme::color32_to_rgba(state.face_normals.color);

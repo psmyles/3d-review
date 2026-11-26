@@ -10,9 +10,9 @@ use review_model::{Bounds, ModelData};
 
 use crate::geometry::{
     BoneTint, audit_lines, bounding_box_lines, face_normal_lines, group_triangles, heat_vertices,
-    model_pivot, node_edge_lines, pivot_half_extent, pivot_lines, skeleton_fill_triangles,
-    skeleton_lines, skin_weight_vertices, trajectory_geometry, trajectory_node_colors,
-    uv_seam_lines, vertex_normal_lines, wireframe_edge_indices,
+    indexed_color_vertices, model_pivot, node_edge_lines, pivot_half_extent, pivot_lines,
+    skeleton_fill_triangles, skeleton_lines, skin_weight_vertices, trajectory_geometry,
+    trajectory_node_colors, uv_seam_lines, vertex_normal_lines, wireframe_edge_indices,
 };
 use crate::rhi::{GpuResult, StorageBuffer, VertexBuffer};
 use crate::selection::{Selection, selection_bounds};
@@ -381,6 +381,42 @@ impl SceneGpu {
         views.weights_buf = optional_vertex_buffer(&vertices)?;
         views.weights_baked = None;
         views.heat_baked = Some(key);
+        Ok(())
+    }
+
+    /// Build (or free) the indexed-colour view in the skin-weight map's buffer
+    /// slot, when no heat map or weight map holds it: rebuilt when the model, the
+    /// channel or the palette change, freed when switched off (invariant 3).
+    /// Call after [`Self::sync_heat_map`].
+    pub(super) fn sync_indexed_colors(
+        &mut self,
+        model: &ModelData,
+        model_revision: u64,
+        debug: SceneDebugOptions,
+        palette: &[[f32; 3]],
+    ) -> GpuResult<()> {
+        let views = &mut self.active.views;
+        let held_elsewhere = views.heat_baked.is_some() || views.weights_baked.is_some();
+        if !debug.indexed_colors() || held_elsewhere {
+            if views.indexed_baked.take().is_some() && !held_elsewhere {
+                views.weights_buf = None;
+            }
+            return Ok(());
+        }
+        if views
+            .indexed_baked
+            .as_ref()
+            .is_some_and(|(revision, view, baked)| {
+                *revision == model_revision && *view == debug.indexed_color && baked == palette
+            })
+        {
+            return Ok(());
+        }
+        let vertices =
+            indexed_color_vertices(model, self.active.lanes(), debug.indexed_color, palette);
+        let views = &mut self.active.views;
+        views.weights_buf = optional_vertex_buffer(&vertices)?;
+        views.indexed_baked = Some((model_revision, debug.indexed_color, palette.to_vec()));
         Ok(())
     }
 

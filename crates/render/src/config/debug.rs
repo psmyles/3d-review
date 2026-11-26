@@ -43,6 +43,8 @@ pub struct SceneDebugOptions {
     /// Which vertex-color channels the view shows when `active_material` is
     /// [`ActiveMaterial::VertexColors`].
     pub vertex_color_mode: VertexColorMode,
+    /// Which channel [`VertexColorMode::Indexed`] reads, and how.
+    pub indexed_color: IndexedColor,
     /// Checker repeats across the 0..1 UV range. Not a whole number when the
     /// checker is sized in metres (one repeat holds [`CHECKER_SQUARES`] squares).
     pub uv_checker_tiling: f32,
@@ -148,6 +150,25 @@ pub struct SceneDebugOptions {
     pub overdraw_ramp: OverdrawRamp,
 }
 
+/// The vertex colour channel [`VertexColorMode::Indexed`] reads as a palette
+/// index, and whether the index was painted as an sRGB colour and stored linear
+/// (as Blender's byte colour attributes export it).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IndexedColor {
+    /// 0 red, 1 green, 2 blue, 3 alpha.
+    pub channel: u8,
+    pub srgb: bool,
+}
+
+impl SceneDebugOptions {
+    /// Whether the faces show palette colours: the vertex colours view, reading
+    /// a channel as an index.
+    pub fn indexed_colors(&self) -> bool {
+        self.active_material == ActiveMaterial::VertexColors
+            && self.vertex_color_mode == VertexColorMode::Indexed
+    }
+}
+
 /// A per-face diagnostic colour map: each face coloured by how far a measured
 /// figure sits from its target, on a three-stop ramp (low, on target, high).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -250,6 +271,7 @@ impl Default for SceneDebugOptions {
             material_mode: MaterialMode::Source,
             uv_checker_texture: CheckerTexture::Greyscale,
             vertex_color_mode: VertexColorMode::Rgb,
+            indexed_color: IndexedColor::default(),
             uv_checker_tiling: 4.0,
             uv_channel: 0,
             show_grid: true,

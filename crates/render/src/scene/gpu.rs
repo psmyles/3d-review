@@ -530,6 +530,12 @@ impl SceneGpu {
             scene.selected_bones,
         )?;
         self.sync_heat_map(scene.model, scene.model_revision, scene.debug)?;
+        self.sync_indexed_colors(
+            scene.model,
+            scene.model_revision,
+            scene.debug,
+            scene.palette,
+        )?;
         self.sync_overdraw(scene)?;
         self.sync_audit_overlay(scene.model, scene.audit.as_ref())?;
         self.sync_wire_meshes(scene.model, scene.wire_meshes, scene.debug.wire_mesh_color)?;

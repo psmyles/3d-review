@@ -43,6 +43,12 @@ pub enum VertexColorMode {
     Alpha,
     /// Show RGB as color and alpha as surface opacity.
     RgbAlpha,
+    /// Read one channel as an index into a palette (index ÷ 255, as a game that
+    /// colours a mesh from its palette stores it) and show that entry's colour.
+    /// Which channel, and how it was encoded, is [`IndexedColor`].
+    ///
+    /// [`IndexedColor`]: crate::IndexedColor
+    Indexed,
 }
 
 impl VertexColorMode {
@@ -52,6 +58,7 @@ impl VertexColorMode {
             VertexColorMode::Rgb => "RGB channel",
             VertexColorMode::Alpha => "Alpha channel",
             VertexColorMode::RgbAlpha => "RGB+A channel",
+            VertexColorMode::Indexed => "Palette index",
         }
     }
 }

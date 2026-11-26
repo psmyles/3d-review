@@ -31,8 +31,12 @@ OPTIONS
   --uv-density <n>      UV units per metre the layout is meant to have (default 1):
                         sizes --checker-square, and centres the texel-density look
   --look <list>         ','-separated: shaded, matte, normals, wire, shaded-wire,
-                        checker, texel-density, uv-stretch
+                        checker, texel-density, uv-stretch, palette
                         (default shaded)
+  --index <r|g|b|a>[:srgb]
+                        the vertex colour channel the palette look reads as an index
+                        (index / 255; default r), and :srgb when it was painted as an
+                        sRGB colour and stored linear
   --frame <n>|each      frame every view on subject n's bounds, or each subject on its
                         own, instead of all of them together
   --report <file>       write a JSON report: each subject's file, triangles and bounds
@@ -100,6 +104,8 @@ pub struct Args {
     pub select: Vec<String>,
     /// `--colliders`: name patterns of the parts drawn as their edges.
     pub colliders: Vec<String>,
+    /// `--index`: the channel the palette look reads, and how it was stored.
+    pub index: review_render::IndexedColor,
     /// `--checker-square`: the checker's square side in metres, at `uv_density`.
     pub checker_square: Option<f32>,
     /// `--uv-density`: UV units per metre the layout is meant to have.
@@ -181,6 +187,9 @@ pub enum Look {
     TexelDensity,
     /// Each face coloured by how much its UVs stretch it.
     UvStretch,
+    /// A vertex colour channel read as a palette index (`--index`), each corner
+    /// in the built-in palette's entry for it, magenta where it is no index.
+    Palette,
 }
 
 impl Look {
@@ -194,6 +203,7 @@ impl Look {
             Look::Checker => "checker",
             Look::TexelDensity => "texel-density",
             Look::UvStretch => "uv-stretch",
+            Look::Palette => "palette",
         }
     }
 }
@@ -223,6 +233,7 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
         skeleton: false,
         select: Vec::new(),
         colliders: Vec::new(),
+        index: review_render::IndexedColor::default(),
         checker_square: None,
         uv_density: 1.0,
     };
@@ -292,6 +303,24 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
                     bail!("--uv-density must be above 0");
                 }
                 args.uv_density = density;
+            }
+            "--index" => {
+                let text = value("--index")?;
+                let (channel, srgb) = match text.split_once(':') {
+                    Some((channel, "srgb")) => (channel.to_owned(), true),
+                    Some(_) => bail!("--index takes r, g, b or a, then optionally :srgb"),
+                    None => (text, false),
+                };
+                args.index = review_render::IndexedColor {
+                    channel: match channel.as_str() {
+                        "r" => 0,
+                        "g" => 1,
+                        "b" => 2,
+                        "a" => 3,
+                        _ => bail!("--index takes r, g, b or a"),
+                    },
+                    srgb,
+                };
             }
             "--colliders" => args.colliders.extend(
                 value("--colliders")?
@@ -424,6 +453,7 @@ fn parse_look(text: &str) -> Result<Look> {
         "checker" => Look::Checker,
         "texel-density" => Look::TexelDensity,
         "uv-stretch" => Look::UvStretch,
+        "palette" => Look::Palette,
         _ => bail!("unknown look {text}"),
     })
 }

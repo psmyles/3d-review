@@ -246,6 +246,9 @@ pub(super) struct DerivedViews {
     /// and the map it was built for. At most one of this and `weights_baked` is
     /// set.
     pub(super) heat_baked: Option<(u64, crate::HeatMap, [[f32; 3]; 3])>,
+    /// The indexed-colour view, sharing `weights_buf`'s slot too: the model
+    /// revision, the channel, and the palette it was built for.
+    pub(super) indexed_baked: Option<(u64, crate::IndexedColor, Vec<[f32; 3]>)>,
     /// The skeleton overlay's solid octahedron fills and their outlines; both
     /// `None` while the toggle is off. Drawn always-on-top (X-ray).
     pub(super) skeleton_fill_buf: Option<VertexBuffer>,

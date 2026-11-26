@@ -41,6 +41,8 @@ pub struct Capture {
     pub checker_tiling: f32,
     /// UV units per metre: the texel-density look's target.
     pub uv_density: f32,
+    /// The channel the palette look reads as an index, and how.
+    pub index: review_render::IndexedColor,
 }
 
 impl Capture {
@@ -70,6 +72,7 @@ impl Capture {
             current: None,
             checker_tiling: 16.0,
             uv_density: 1.0,
+            index: review_render::IndexedColor::default(),
         })
     }
 
@@ -149,6 +152,11 @@ impl Capture {
                     tolerance: 2.0,
                 };
             }
+            Look::Palette => {
+                debug.active_material = review_render::ActiveMaterial::VertexColors;
+                debug.vertex_color_mode = review_render::VertexColorMode::Indexed;
+                debug.indexed_color = self.index;
+            }
             Look::UvStretch => {
                 debug.heat_map = review_render::HeatMap::UvStretch {
                     limit: review_render::UV_STRETCH_LIMIT,
@@ -172,6 +180,7 @@ impl Capture {
             selection: SelectionView::default(),
             hidden_meshes: &surface_hidden,
             wire_meshes: &subject.wire,
+            palette: &[],
             selected_bones: posed.map_or(&[], |posed| &posed.selected_bones),
             selected_nodes: posed.map_or(&[], |posed| &posed.selected_nodes),
             hover: None,

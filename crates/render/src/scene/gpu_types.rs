@@ -373,6 +373,9 @@ pub(super) fn vertex_color_value(debug_options: SceneDebugOptions) -> f32 {
         VertexColorMode::Rgb => 0.0,
         VertexColorMode::Alpha => 1.0,
         VertexColorMode::RgbAlpha => 2.0,
+        // Drawn from its own vertex buffer (`indexed_color_vertices`), as the
+        // heat maps are; RGB is what shows should that buffer be missing.
+        VertexColorMode::Indexed => 0.0,
     }
 }
 
@@ -394,6 +397,7 @@ pub(super) fn buffer_view_value(debug_options: SceneDebugOptions) -> f32 {
 pub(super) fn skin_weight_value(debug_options: SceneDebugOptions) -> f32 {
     if debug_options.active_material == ActiveMaterial::SkinWeights
         || debug_options.heat_map.is_active()
+        || debug_options.indexed_colors()
     {
         1.0
     } else {

@@ -37,6 +37,7 @@ ui-enums-checker-color = Color
 ui-enums-vertex-color-rgb = RGB channel
 ui-enums-vertex-color-alpha = Alpha channel
 ui-enums-vertex-color-rgb-alpha = RGB+A channel
+ui-enums-vertex-color-indexed = Palette index
 
 ## Scopes
 

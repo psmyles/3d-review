@@ -87,6 +87,8 @@ pub(crate) enum Dialog {
     },
     /// Pick an audit profile to load.
     LoadAuditProfile,
+    /// Pick a palette for the Vertex Color panel's palette-index mode.
+    LoadPalette,
     /// Choose where to save the audit report, built before the picker opens.
     /// `stem` is the model's name, for the default file name.
     SaveAuditReport { json: String, stem: String },
@@ -116,6 +118,7 @@ pub(crate) enum DialogAnswer {
         profile: Arc<review_audit::AuditProfile>,
     },
     LoadAuditProfile(PathBuf),
+    LoadPalette(PathBuf),
     SaveAuditReport {
         path: PathBuf,
         json: String,
@@ -135,6 +138,7 @@ impl Dialog {
             Dialog::LoadPreset => "dialog-load-preset",
             Dialog::SaveAuditProfile { .. } => "dialog-save-audit-profile",
             Dialog::LoadAuditProfile => "dialog-load-audit-profile",
+            Dialog::LoadPalette => "dialog-load-palette",
             Dialog::SaveAuditReport { .. } => "dialog-save-audit-report",
         }
     }
@@ -248,6 +252,14 @@ impl Dialog {
                 )
                 .pick_file()
                 .map(DialogAnswer::LoadAuditProfile),
+            Dialog::LoadPalette => picker
+                .set_title(review_localization::tr(keys::app_dialogs::LOAD_PALETTE))
+                .add_filter(
+                    review_localization::tr(keys::app_dialogs::FILTER_PALETTE),
+                    &["json", "png"],
+                )
+                .pick_file()
+                .map(DialogAnswer::LoadPalette),
             Dialog::SaveAuditReport { json, stem } => picker
                 .set_title(review_localization::tr(
                     keys::app_dialogs::SAVE_AUDIT_REPORT,
@@ -366,6 +378,7 @@ impl App {
                 self.write_audit_profile(&path, &profile);
             }
             DialogAnswer::LoadAuditProfile(path) => self.read_audit_profile(&path),
+            DialogAnswer::LoadPalette(path) => self.load_palette(&path),
             DialogAnswer::SaveAuditReport { path, json } => self.write_audit_report(&path, &json),
         }
         if let Some(window) = self.window.as_ref() {

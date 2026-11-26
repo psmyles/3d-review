@@ -12,6 +12,7 @@ app-dialogs-load-preset = Load optimization preset
 app-dialogs-save-audit-profile = Save audit profile
 app-dialogs-load-audit-profile = Load audit profile
 app-dialogs-save-audit-report = Save audit report
+app-dialogs-load-palette = Load palette
 
 # The reason the system's administrator password prompt gives when installing the
 # command-line tool needs one (macOS).
@@ -26,6 +27,7 @@ app-dialogs-filter-image = Image
 app-dialogs-filter-preset = Optimization preset
 app-dialogs-filter-audit-profile = Audit profile
 app-dialogs-filter-audit-report = Audit report
+app-dialogs-filter-palette = Palette (JSON or PNG)
 
 # Default file name offered when saving a preset.
 app-dialogs-preset-file-name = optimization-preset.json

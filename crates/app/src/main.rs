@@ -20,6 +20,7 @@ mod input;
 mod loading;
 mod logging;
 mod opt;
+mod palette;
 mod paths;
 mod pick;
 mod prof;
@@ -200,6 +201,8 @@ fn main() -> anyhow::Result<()> {
         settings::restore(&mut app.ui);
         // The audit profile used last, edits and all.
         audit::restore_saved_profile(&mut app);
+        // The palette file the Vertex Color panel used last, read again.
+        app.restore_palette();
         // What was restored is where the session starts, not an edit made in it.
         // The undo baseline was taken by `App::default`, before the restore
         // bumped the profile's revision; left there, the first Ctrl+Z on the
