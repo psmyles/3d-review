@@ -86,6 +86,23 @@ impl AoTarget {
     }
 }
 
+/// Which mesh a bake measures.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BakeSource {
+    /// The mesh as it stands at this point in the list: each LOD level its own.
+    #[default]
+    Level,
+    /// The model as it came in, before any operation — the detailed mesh — with
+    /// each level's points taking the value of the nearest point on the same
+    /// object there. Every level then shades alike, and keeps detail the
+    /// simplified meshes have lost.
+    Original,
+}
+
+impl BakeSource {
+    pub const ALL: [BakeSource; 2] = [BakeSource::Level, BakeSource::Original];
+}
+
 /// Settings for the [`OpKind::BakeAo`](crate::stack::OpKind::BakeAo) operation.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -101,6 +118,8 @@ pub struct BakeAoParams {
     /// sRGB-encode the written value. RGB-family targets only; alpha is
     /// always linear.
     pub srgb: bool,
+    /// Which mesh is baked.
+    pub source: BakeSource,
 }
 
 impl Default for BakeAoParams {
@@ -111,6 +130,7 @@ impl Default for BakeAoParams {
             intensity: 1.0,
             target: AoTarget::default(),
             srgb: false,
+            source: BakeSource::Level,
         }
     }
 }
@@ -134,6 +154,8 @@ pub struct BakeWearParams {
     pub target: AoTarget,
     /// sRGB-encode the written value. RGB-family targets only.
     pub srgb: bool,
+    /// Which mesh is baked.
+    pub source: BakeSource,
 }
 
 impl Default for BakeWearParams {
@@ -145,6 +167,7 @@ impl Default for BakeWearParams {
             concave: false,
             target: AoTarget::Blue,
             srgb: false,
+            source: BakeSource::Level,
         }
     }
 }

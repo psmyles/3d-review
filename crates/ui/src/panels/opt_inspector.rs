@@ -10,7 +10,7 @@
 use review_labels::opt::{op_description, op_kind};
 use review_model::ModelData;
 use review_optimize::{
-    AoQuality, AoTarget, AttributeWeights, BakeAoParams, BakeWearParams, ChartGrowth,
+    AoQuality, AoTarget, AttributeWeights, BakeAoParams, BakeSource, BakeWearParams, ChartGrowth,
     ExportFileType, ExportOptions, FbxFormat, Flattening, GlbTangents, HierarchyMode, LodLevel,
     LodPackaging, LodParams, NormalMode, NormalParams, NormalWeighting, OpKind, ReduceParams,
     RemeshDensity, RemeshParams, RemeshTopology, SeamSource, ShrinkwrapMethod, ShrinkwrapParams,
@@ -754,6 +754,7 @@ fn unwrap_params(
 fn bake_ao_params(ui: &mut egui::Ui, params: BakeAoParams) -> Option<BakeAoParams> {
     let mut edited = params;
     panel_grid(ui, "opt_bake_ao", |ui| {
+        bake_source_row(ui, "opt_bake_ao_source", &mut edited.source, Page::OptAo);
         labeled_combo(
             ui,
             Tip::new(keys::ui_opt::AO_QUALITY)
@@ -815,9 +816,32 @@ fn bake_ao_params(ui: &mut egui::Ui, params: BakeAoParams) -> Option<BakeAoParam
     (edited != params).then_some(edited)
 }
 
+/// Which mesh a bake measures: the level, or the model as it came in.
+fn bake_source_row(ui: &mut egui::Ui, id: &str, source: &mut BakeSource, page: Page) {
+    labeled_combo(
+        ui,
+        Tip::new(keys::ui_opt::BAKE_SOURCE)
+            .describe(keys::ui_opt::BAKE_SOURCE_DESCRIPTION)
+            .page(page),
+        id,
+        labels::bake_source(*source),
+        |ui| {
+            for option in BakeSource::ALL {
+                ui.selectable_value(source, option, labels::bake_source(option));
+            }
+        },
+    );
+}
+
 fn bake_wear_params(ui: &mut egui::Ui, params: BakeWearParams) -> Option<BakeWearParams> {
     let mut edited = params;
     panel_grid(ui, "opt_bake_wear", |ui| {
+        bake_source_row(
+            ui,
+            "opt_bake_wear_source",
+            &mut edited.source,
+            Page::OptWear,
+        );
         labeled_slider_with_value(
             ui,
             Tip::new(keys::ui_opt::WEAR_ANGLE_START)

@@ -17,6 +17,12 @@ this is part of the model and travels with it.
 
 ## Settings
 
+**Bake from** - **This level** measures each level's own mesh. **Original
+model** measures the model as it came in, before any operation, and gives each
+level's points the shadow of the nearest point on the same part there. Every
+level then shades alike, and a simplified level keeps the soft detail its own
+few triangles could not cast. Put the bake below **Generate LODs** either way.
+
 **Quality** - 32, 64, 128 or 512 rays per point. More rays are slower and
 smoother.
 

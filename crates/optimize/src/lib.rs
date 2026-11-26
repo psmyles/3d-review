@@ -49,6 +49,7 @@ pub mod probe;
 mod ao;
 mod parallel;
 mod shading;
+mod transfer;
 mod unwrap;
 mod wear;
 mod xatlas;
@@ -79,12 +80,12 @@ pub use process::{
 pub use quality::{LevelQuality, QualityLimits};
 pub use replace_file::{Staged, write_bytes_replacing, write_replacing};
 pub use stack::{
-    AoQuality, AoTarget, AttributeWeights, BakeAoParams, BakeWearParams, ExportFileType,
-    ExportOptions, FbxFormat, GlbTangents, HierarchyMode, LodLevel, LodPackaging, LodParams,
-    NodeOverride, NormalMode, NormalParams, NormalWeighting, OpInstance, OpKind, OptStack,
-    RebindReport, ReduceParams, RemeshDensity, RemeshParams, RemeshTopology, ShrinkwrapMethod,
-    ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings, StackRepairs, TargetMode,
-    VoxelTarget, WeldParams,
+    AoQuality, AoTarget, AttributeWeights, BakeAoParams, BakeSource, BakeWearParams,
+    ExportFileType, ExportOptions, FbxFormat, GlbTangents, HierarchyMode, LodLevel, LodPackaging,
+    LodParams, NodeOverride, NormalMode, NormalParams, NormalWeighting, OpInstance, OpKind,
+    OptStack, RebindReport, ReduceParams, RemeshDensity, RemeshParams, RemeshTopology,
+    ShrinkwrapMethod, ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings,
+    StackRepairs, TargetMode, VoxelTarget, WeldParams,
 };
 pub use stack::{ChartGrowth, Flattening, SeamSource, UnwrapParams, UvLayout};
 

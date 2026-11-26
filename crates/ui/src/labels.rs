@@ -16,9 +16,10 @@ use review_localization::Key;
 use review_log::Level;
 use review_model::{NodeKind, SkinningMethod};
 use review_optimize::{
-    AoQuality, AoTarget, ChartGrowth, ExportFileType, FbxFormat, Flattening, GlbTangents,
-    HierarchyMode, LodPackaging, NormalMode, NormalWeighting, RemeshDensity, RemeshTopology,
-    SeamSource, Shortfall, ShrinkwrapMethod, SimplifyAlgorithm, TargetMode, UvLayout, VoxelTarget,
+    AoQuality, AoTarget, BakeSource, ChartGrowth, ExportFileType, FbxFormat, Flattening,
+    GlbTangents, HierarchyMode, LodPackaging, NormalMode, NormalWeighting, RemeshDensity,
+    RemeshTopology, SeamSource, Shortfall, ShrinkwrapMethod, SimplifyAlgorithm, TargetMode,
+    UvLayout, VoxelTarget,
 };
 use review_render::{
     AlphaMode, BufferView, ChannelSelect, CheckerTexture, EnvironmentMap, GtaoQuality,
@@ -315,6 +316,13 @@ pub(crate) fn hierarchy_mode(mode: HierarchyMode) -> Key {
     }
 }
 
+pub(crate) fn bake_source(source: BakeSource) -> Key {
+    match source {
+        BakeSource::Level => keys::ui_enums::BAKE_SOURCE_LEVEL,
+        BakeSource::Original => keys::ui_enums::BAKE_SOURCE_ORIGINAL,
+    }
+}
+
 pub(crate) fn glb_tangents(tangents: GlbTangents) -> Key {
     match tangents {
         GlbTangents::AsSource => keys::ui_enums::GLB_TANGENTS_AS_SOURCE,
@@ -529,6 +537,9 @@ mod tests {
         }
         for value in GlbTangents::ALL {
             assert_resolves(glb_tangents(value));
+        }
+        for value in BakeSource::ALL {
+            assert_resolves(bake_source(value));
         }
         for value in ChartGrowth::ALL {
             assert_resolves(chart_growth(value));

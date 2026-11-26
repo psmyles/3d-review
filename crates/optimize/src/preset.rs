@@ -130,6 +130,7 @@ mod tests {
             intensity: 1.5,
             target: AoTarget::MultiplyRgb,
             srgb: true,
+            source: crate::stack::BakeSource::Original,
         };
         stack.push_op(OpKind::BakeAo(params));
 

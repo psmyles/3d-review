@@ -501,14 +501,37 @@ pub(crate) fn apply_op(
     // out of the scene entirely (see [`ProcessInput::hidden_nodes`]), and the
     // scene partitions by `_LOD<n>` name suffix so co-located LOD copies never
     // shadow each other; `model` supplies the node names for that.
+    //
+    // Either bake may measure the model as it came in instead of the level, and
+    // carry the values across (`transfer`).
     if matches!(op.kind, OpKind::BakeAo(_)) {
-        crate::ao::bake_submeshes(submeshes, op, stack, model, hidden_nodes, run.token());
+        crate::transfer::bake(
+            submeshes,
+            op,
+            stack,
+            model,
+            hidden_nodes,
+            run,
+            |pieces, op, stack| {
+                crate::ao::bake_submeshes(pieces, op, stack, model, hidden_nodes, run.token());
+            },
+        );
         return SimplifyRun::NONE;
     }
 
     // Edge wear is per object, so a material border is no edge.
     if matches!(op.kind, OpKind::BakeWear(_)) {
-        crate::wear::bake_wear_submeshes(submeshes, op, stack, model, run);
+        crate::transfer::bake(
+            submeshes,
+            op,
+            stack,
+            model,
+            hidden_nodes,
+            run,
+            |pieces, op, stack| {
+                crate::wear::bake_wear_submeshes(pieces, op, stack, model, run);
+            },
+        );
         return SimplifyRun::NONE;
     }
 

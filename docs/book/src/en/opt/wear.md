@@ -27,6 +27,13 @@ usually what [ambient occlusion](ao.md) darkens instead.
 A border between two materials of one object is not an edge: the object is
 measured as one surface.
 
+## Bake from
+
+**This level** measures each level's own edges. **Original model** measures the
+model as it came in and gives each level's points the wear of the nearest point
+on the same part there, so a rounded edge that simplifying has turned into one
+sharp corner still wears as the rounded edge did, and every level matches.
+
 ## Where it is written
 
 **Write to** and **sRGB** work as they do for the [AO bake](ao.md): one channel
