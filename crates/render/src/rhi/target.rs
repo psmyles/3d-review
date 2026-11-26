@@ -138,7 +138,35 @@ impl ColorTarget {
         // Built into `self` first, so a failure below still frees everything through
         // one `Drop` rather than a hand-written unwind per resource.
         target.validate(name)?;
+        target.clear_once(label);
         Ok(target)
+    }
+
+    /// Clear the new target to zero once, in a pass of its own, so it holds a
+    /// defined picture before anything draws into it.
+    ///
+    /// Some passes sample a target no pass has written yet — GTAO binds last
+    /// frame's history on the first frame of an average, because sokol requires every
+    /// view a program declares to be bound, read or not. D3D11 zero-fills a new
+    /// resource, Metal leaves it undefined, and Vulkan refuses: an image no pass
+    /// stored into is still in its initial layout, which cannot be sampled (sokol's
+    /// Vulkan backend asserts on it, D28). One empty clear per target, when a size or
+    /// MSAA change makes it, settles it on every backend. Targets are only ever made
+    /// between passes, never inside one.
+    fn clear_once(&self, label: &CStr) {
+        let mut pass = sg::Pass::new();
+        pass.attachments.colors[0] = self.attachment;
+        if let Some(resolve) = self.resolve() {
+            pass.attachments.resolves[0] = resolve;
+        }
+        pass.action.colors[0] = sg::ColorAttachmentAction {
+            load_action: sg::LoadAction::Clear,
+            store_action: sg::StoreAction::Store,
+            clear_value: sg::Color::new(),
+        };
+        pass.label = label.as_ptr();
+        sg::begin_pass(&pass);
+        sg::end_pass();
     }
 
     fn validate(&self, name: &str) -> GpuResult<()> {

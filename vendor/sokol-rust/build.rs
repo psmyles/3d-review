@@ -8,6 +8,8 @@ pub enum SokolBackend {
     Gles2,
     Gles3,
     Wgpu,
+    // 3D Review: the Linux renderer's backend (see vendor/NOTICE.txt).
+    Vulkan,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -77,7 +79,8 @@ fn select_sokol_backend(build: &mut cc::Build, config: &CompilationConfig) -> So
 
     let backend = match &config.desired_backend[..] {
         "AUTO" => match config.build_target {
-            BuildTarget::Linux => SokolBackend::Gl,
+            // 3D Review: Vulkan, not upstream's GL, on Linux (see vendor/NOTICE.txt).
+            BuildTarget::Linux => SokolBackend::Vulkan,
             BuildTarget::Windows => SokolBackend::D3d11,
             BuildTarget::Macos => SokolBackend::Metal,
             BuildTarget::WasmEmscripten => SokolBackend::Gles3,
@@ -89,6 +92,7 @@ fn select_sokol_backend(build: &mut cc::Build, config: &CompilationConfig) -> So
         "GLES2" => SokolBackend::Gles2,
         "GLES3" => SokolBackend::Gles3,
         "WGPU" => SokolBackend::Wgpu,
+        "VULKAN" => SokolBackend::Vulkan,
 
         _ => panic!("Unknown SOKOL_BACKEND: {}", &config.desired_backend),
     };
@@ -112,6 +116,9 @@ fn select_sokol_backend(build: &mut cc::Build, config: &CompilationConfig) -> So
         SokolBackend::Wgpu => {
             build.define("SOKOL_WGPU", None);
         },
+        SokolBackend::Vulkan => {
+            build.define("SOKOL_VULKAN", None);
+        },
     }
 
     backend
@@ -131,10 +138,17 @@ fn make_sokol() {
 
     let backend = select_sokol_backend(&mut build, &config);
 
-    let files = [
-        "sokol_log.c", "sokol_app.c", "sokol_gfx.c", "sokol_glue.c", "sokol_time.c", "sokol_audio.c",
-        "sokol_gl.c", "sokol_debugtext.c", "sokol_shape.c",
-    ];
+    let files: &[&str] = if backend == SokolBackend::Vulkan {
+        // 3D Review: only what a renderer driving sokol_gfx from its own window needs
+        // (see vendor/NOTICE.txt). sokol_app, sokol_glue and sokol_audio would pull in
+        // X11, Wayland and ALSA headers and libraries for nothing.
+        &["sokol_log.c", "sokol_gfx.c"]
+    } else {
+        &[
+            "sokol_log.c", "sokol_app.c", "sokol_gfx.c", "sokol_glue.c", "sokol_time.c", "sokol_audio.c",
+            "sokol_gl.c", "sokol_debugtext.c", "sokol_shape.c",
+        ]
+    };
 
     //
     // include paths
@@ -157,7 +171,7 @@ fn make_sokol() {
         build.flag("-x").flag("objective-c");
     }
 
-    for file in &files {
+    for file in files {
         let file = format!("{BASE_C_DIR}{file}");
 
         println!("cargo:rerun-if-changed={file}");
@@ -210,6 +224,11 @@ fn make_sokol() {
                     todo!("unsupported target-backend combo")
                 },
             }
+        },
+
+        // 3D Review: the Vulkan loader and nothing else (see vendor/NOTICE.txt).
+        BuildTarget::Linux if backend == SokolBackend::Vulkan => {
+            println!("cargo:rustc-link-lib=dylib=vulkan");
         },
 
         BuildTarget::Linux => {

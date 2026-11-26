@@ -21,6 +21,11 @@
 #
 # The Windows rows are checked too, but only ever **warn**: a .dmg ships no `.dxbc`,
 # and it is `check-shader-bytecode.ps1` that hard-fails on those.
+#
+# On Linux it is the Vulkan half that has to be right, and there is no blob to check:
+# the SPIR-V is inside `review_vk.rs`, compiled from `review.glsl` by gen-shaders itself
+# (D28). So there the hard check is that `review_vk.rs` exists and that the `review.glsl`
+# it was generated from is the one in the tree; both other hosts' sets only warn.
 set -euo pipefail
 
 repo="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -37,7 +42,12 @@ EOF
     exit 1
 fi
 
-digest() { shasum -a 256 "$1" | cut -d' ' -f1; }
+# `sha256sum` on Linux, `shasum` on macOS; the same digest either way.
+if command -v sha256sum >/dev/null; then
+    digest() { sha256sum "$1" | cut -d' ' -f1; }
+else
+    digest() { shasum -a 256 "$1" | cut -d' ' -f1; }
+fi
 
 # Check one host's generated sources against the manifest, printing one line per
 # problem. Returns 1 if there was any.
@@ -72,6 +82,29 @@ check_set() {
 }
 
 echo "==> Checking shader bytecode against the committed sources..."
+
+if [[ "$(uname -s)" == Linux ]]; then
+    vk="$generated/review_vk.rs"
+    recorded="$(tr -d '[:space:]' < "$generated/review.glsl.sha256" 2>/dev/null || true)"
+    if [[ ! -f "$vk" ]]; then
+        echo "$vk is missing: run scripts/gen-shaders.sh and commit what it writes." >&2
+        exit 1
+    fi
+    if [[ "$(digest "$repo/crates/render/src/shaders/review.glsl")" != "$recorded" ]]; then
+        echo "review.glsl changed since the shaders were generated, so review_vk.rs is a" >&2
+        echo "shader revision behind: run scripts/gen-shaders.sh and commit what it writes." >&2
+        exit 1
+    fi
+    for set in "metal_macos metal metallib" "hlsl5 hlsl dxbc"; do
+        # shellcheck disable=SC2086
+        if ! problems="$(check_set $set)"; then
+            echo "warning: the ${set%% *} shader bytecode is out of date (Linux does not ship it):" >&2
+            echo "$problems" >&2
+        fi
+    done
+    echo "==> The Vulkan shaders are current."
+    exit 0
+fi
 
 if ! metal_problems="$(check_set metal_macos metal metallib)"; then
     echo "Shader bytecode is out of date:" >&2

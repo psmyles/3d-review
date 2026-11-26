@@ -26,7 +26,9 @@ Not on crates.io under this name — the `sokol` name there belongs to an unrela
 means replacing the tree wholesale and re-checking the `sg_swapchain` / `ShaderDesc`
 shapes the renderer builds by hand.
 
-One local modification, and only one: `sokol-rust/rustfmt.toml` gains
+Two local modifications.
+
+The first: `sokol-rust/rustfmt.toml` gains
 `disable_all_formatting = true`. `cargo fmt --all` follows path dependencies, so it
 reaches this tree even though the workspace `exclude`s it — the exclude keeps it out
 of the build and lint graph, not out of fmt — and reformats upstream's code to a
@@ -34,3 +36,14 @@ style that is neither theirs nor ours, turning every touched line into a conflic
 the next pin bump. rustfmt reads the nearest rustfmt.toml above each file, so that is
 the one place the switch works; the stable `ignore` option is nightly-only. Drop the
 line when re-vendoring, then add it back.
+
+The second: `sokol-rust/build.rs` builds sokol_gfx's **Vulkan** backend on Linux, the
+renderer's backend there (`docs/ARCHITECTURE.md`, D28). Upstream's build script knows
+no Vulkan backend at all (checked against its HEAD on 2026-11-26), though the C
+sources and the Rust bindings both carry one, and its Linux default is GL with GLX.
+Every changed spot is marked `3D Review:`: a `Vulkan` backend (`SOKOL_VULKAN`), the
+Linux default switched to it, only `sokol_log.c` and `sokol_gfx.c` compiled for it (the
+renderer drives sokol_gfx from its own winit window, and sokol_app, sokol_glue and
+sokol_audio would need X11, Wayland and ALSA for nothing), and the Vulkan loader as its
+only library. Windows and macOS build exactly as upstream does. Re-apply it when
+re-vendoring, unless upstream has gained a Vulkan backend of its own by then.

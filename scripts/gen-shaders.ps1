@@ -51,7 +51,14 @@ if ($LASTEXITCODE -ne 0) { throw "sokol-shdc failed ($LASTEXITCODE)" }
 & $shdc -i $src -o "$gen/review.rs" -l $slangs -f sokol_rust
 if ($LASTEXITCODE -ne 0) { throw "sokol-shdc failed ($LASTEXITCODE)" }
 
-# --- 3. make review.rs the same file whoever regenerated it ------------------
+# --- 2b. the Vulkan reflection, a file of its own ----------------------------
+# SPIR-V is bytecode already, so shdc embeds it (glslang compiling it here is what makes a
+# broken shader fail on Linux: D28). A file of its own, compiled only on Linux, so the
+# Windows and macOS binaries do not carry another OS's shaders.
+& $shdc -i $src -o "$gen/review_vk.rs" -l spirv_vk -f sokol_rust
+if ($LASTEXITCODE -ne 0) { throw "sokol-shdc failed ($LASTEXITCODE)" }
+
+# --- 3. make the two reflections the same files whoever regenerated them -----
 # The Rust emitter's formatting and the absolute -o path shdc echoes into its header are
 # machine-specific and change no byte of the shader; left alone they churn thousands of
 # lines whenever the regenerating OS changes. `newline_style` is pinned because shdc writes
@@ -59,12 +66,15 @@ if ($LASTEXITCODE -ne 0) { throw "sokol-shdc failed ($LASTEXITCODE)" }
 if (-not (Get-Command rustfmt -ErrorAction SilentlyContinue)) {
     throw 'rustfmt not found; it ships with the toolchain (rustup component add rustfmt)'
 }
-rustfmt --edition 2024 --config newline_style=Unix "$gen/review.rs"
-if ($LASTEXITCODE -ne 0) { throw "rustfmt failed ($LASTEXITCODE)" }
-# The -o path, rewritten repo-relative. Anchored to the Cmdline line so nothing else matches.
-$text = [IO.File]::ReadAllText("$repo/$gen/review.rs")
-$text = [Regex]::Replace($text, '(sokol-shdc -i .*?)-o \S+', "`$1-o $gen/review.rs")
-[IO.File]::WriteAllText("$repo/$gen/review.rs", $text)
+foreach ($reflection in 'review.rs', 'review_vk.rs') {
+    rustfmt --edition 2024 --config newline_style=Unix "$gen/$reflection"
+    if ($LASTEXITCODE -ne 0) { throw "rustfmt failed ($LASTEXITCODE)" }
+    # The -o path, rewritten repo-relative. Anchored to the Cmdline line so nothing else
+    # matches.
+    $text = [IO.File]::ReadAllText("$repo/$gen/$reflection")
+    $text = [Regex]::Replace($text, '(sokol-shdc -i .*?)-o \S+', "`$1-o $gen/$reflection")
+    [IO.File]::WriteAllText("$repo/$gen/$reflection", $text)
+}
 
 # --- 4. record which review.glsl this set was generated from -----------------
 # The one staleness question the bytecode manifest cannot answer: it chains a blob to

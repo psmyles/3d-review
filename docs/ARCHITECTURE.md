@@ -405,7 +405,7 @@ only platform GPU code in the workspace. `d3d11.rs` creates the device, points
 `sg_environment` at it, owns the DXGI flip-model swapchain, hands sokol a
 render-target view per frame, presents, and answers `supported_sample_counts`
 (sokol only reports MSAA as a yes/no). `metal.rs` does the same with a
-`CAMetalLayer`. Each also carries the leaves for what sokol has no notion of:
+`CAMetalLayer`, and `vulkan.rs` with a Wayland or X11 surface (D28). Each also carries the leaves for what sokol has no notion of:
 `GpuTimer` (timestamp queries) and, gated on `bake` or `headless`,
 `read_image_subresource`; gated on `headless`, `Swapchain::offscreen` +
 `read_back`, which reuse that readback. The offscreen backbuffer differs by OS for
@@ -414,11 +414,19 @@ windowless frame is an ordinary swapchain pass, but sokol's Metal swapchain pass
 takes only a `CAMetalDrawable` and ends in `presentDrawable:`. So Metal's is a
 sokol colour-attachment image (`BGRA8`, swizzled to RGBA on read), and the frame's
 one pass attaches it in place of a swapchain (`Swapchain::pass_attachment`, `None`
-on D3D11) — a pass every swapchain pipeline already matches. Both leaves are
-`Send`, so a windowless `Gpu` can live behind a shell's process-wide lock.
+on D3D11) — a pass every swapchain pipeline already matches. Vulkan's follows
+D3D11's shape instead, for the opposite reason: sokol can neither wrap a native
+`VkImage` nor say which one is behind an image of its own, so the leaf hands an
+image of its own over as the swapchain image and copies it out after the frame's
+submit. The leaves are `Send`, so a windowless `Gpu` can live behind a shell's
+process-wide lock.
 
-The two modules are twins aliased as `backend`, **not a trait**: anything added to
-one must be added to the other.
+The three modules are twins aliased as `backend`, **not a trait**: anything added to
+one must be added to the others. Vulkan's makes the device itself, to sokol's order
+(its feature set is `sokol_app.h`'s), and shares the instance, device and queue
+through one reference-counted context, because `Gpu` drops its device before its
+swapchain and a swapchain must not outlive its `VkDevice`. Its GPU timer brackets
+the frame, as Metal's does, and its bake readback reports itself unavailable (D28).
 
 The Windows swapchain is created with `ALLOW_TEARING` where the factory offers it,
 and a vsync-**off** present passes the matching flag; without that, a flip-model
@@ -530,7 +538,10 @@ shdc's Rust reflection (bind slots, attribute locations, a struct per uniform
 block) — and `build.rs` compiles this host's half to committed bytecode beside it,
 freshness-gated, with jobs *discovered* by filename rather than listed in a table.
 The runtime `include_bytes!`s the bytecode; nothing compiles a shader at run time,
-and a broken shader is a build error.
+and a broken shader is a build error. Linux is the exception that keeps both
+promises another way: SPIR-V is bytecode already, so gen-shaders compiles it with
+glslang and embeds it in a reflection of its own, `generated/review_vk.rs`, which
+only Linux compiles; there is nothing for `build.rs` to do there (D28).
 
 **The UV checker is baked at build time** (`build/uv_checker.rs`, run from the same
 `build.rs`). Each checker PNG in `assets/textures/` becomes its full mip chain —
@@ -1253,7 +1264,7 @@ list of unsafe modules:
   `deny`, and read only through `raw.rs`'s safe accessors.
 - `optimize`: `ffi.rs` + `meshopt/`, `export_ffi.rs` + `export/write.rs`, and the
   test-only `probe.rs`.
-- `render`: `rhi/backend/{d3d11,metal}.rs` and the `extern "C"` logger callback
+- `render`: `rhi/backend/{d3d11,metal,vulkan}.rs` and the `extern "C"` logger callback
   in `rhi/sokol_log.rs`.
 - `shell-windows`: `com.rs` (the DLL exports and the class factory),
   `thumbnail.rs` (reading the `IStream`, building the DIB section),
@@ -1415,14 +1426,15 @@ only sharpens what runs. The UV checker follows the same rule at build time: its
 mip chains are BC7-encoded in `render`'s build script rather than built when the
 checker is first shown.
 
-**Native stack: direct winit plus sokol_gfx as the one drawing API on both
-Windows and macOS** (Direct3D 11 and Metal underneath), with one small device
-and swapchain leaf per OS. Not `eframe`, not wgpu, and not a second native shell
+**Native stack: direct winit plus sokol_gfx as the one drawing API on Windows,
+macOS and Linux** (Direct3D 11, Metal and Vulkan underneath, D28), with one small
+device and swapchain leaf per OS. Not `eframe`, not wgpu, and not a second native shell
 per platform. `egui` is an overlay drawn by our own sokol renderer.
 
 The renderer was migrated off wgpu first, to shrink the shipped binary, startup
 time and baseline RAM — one device creation instead of probing every DX12 adapter.
-The workspace carries **zero** wgpu, naga, pollster or egui-wgpu. That ban stands,
+The workspace carries **zero** wgpu, naga or egui-wgpu (`pollster` arrives on Linux
+alone, as `rfd`'s way of waiting on the desktop portal, not wgpu's). That ban stands,
 and so does the "no second shell" one: **do not reintroduce wgpu, and do not add a
 per-OS renderer.** Anything sokol genuinely cannot do becomes a named leaf beside
 the device (mips, timestamp queries, readback, exact MSAA counts), not a fork.
@@ -1532,8 +1544,9 @@ one settled.
 | D23 | Explorer integration is a COM DLL over a shared, safe core (`crates/preview`) that the macOS Quick Look extensions call too, through a C-ABI dylib (`crates/shell-quicklook`) and two Swift app extensions. The thumbnail provider is **stream-initialized and isolated** in Explorer's COM Surrogate, and accepts that a stream has no directory: textures beside the model reach the preview pane, not the thumbnail (measured alternatives in GOTCHAS). The preview handler gets a `prevhost.exe` of its own AppID and a window thread of its own. Both render offscreen and read back. |
 | D24 | Every binary unwinds on panic. The shell DLL and dylib build with the `release-shell` profile, so `guard::guarded` answers a panic with an `HRESULT` (or a fallback) instead of aborting a surrogate Explorer shares with other vendors' handlers. The viewer's `release` profile unwinds too, so fire-decode can turn a decode's panic into an error (its FD7); the hook `review-log` installs in a release viewer (`install_aborting`) still aborts on every other panic. `review3d-cli` installs no hook, so a panic there exits with code 101. |
 | D25 | Every Windows binary links the C and C++ runtimes statically (`-C target-feature=+crt-static` for `x86_64-pc-windows-msvc` in the committed `.cargo/config.toml`; FD20 in fire-decode's plan). The vendored C++ made the viewer import `MSVCP140.dll`, and no installer ships the redistributable, so a clean machine could not start it; the shell DLL also must not pick up whatever `msvcp140.dll` another vendor's handler loaded into the shared surrogate. Everything `cc` builds follows the flag (`/MT`), and the one prebuilt set, fire-decode's HEIF libraries, is built `/MT` for it (its `heif-sys` refuses a Windows build without `crt-static`). The gate is the import tables of `3d-review.exe`, `review3d-cli.exe` and `review_shell.dll`: no `MSVCP140`, `VCRUNTIME140*` or `api-ms-win-crt-*` entry. A `RUSTFLAGS` environment variable replaces the config's list, so it must repeat the flag. |
-| D26 | Linux (x86_64) is a third host, added beside Windows and macOS and never in place of either: Windows stays first (D13), and every change still builds and passes there. The console tool builds on Linux unchanged, since the Windows-only code on its path was already behind `cfg` for macOS. `scripts/build-linux.sh` packages it as a tarball with no installer (unpack anywhere; the tool is at the folder's top), reproducible to the byte. glibc and `libstdc++` are the system's, so the binary runs on distributions at least as new as the build machine's (the script prints the glibc floor); a build for older ones is made on an older one. The viewer follows on a Vulkan leaf beside `d3d11.rs` and `metal.rs` (the pipeline plan, item 4.2). |
+| D26 | Linux (x86_64) is a third host, added beside Windows and macOS and never in place of either: Windows stays first (D13), and every change still builds and passes there. The console tool builds on Linux unchanged, since the Windows-only code on its path was already behind `cfg` for macOS. `scripts/build-linux.sh` packages it as a tarball with no installer (unpack anywhere; the tool is at the folder's top), reproducible to the byte. glibc and `libstdc++` are the system's, so the binary runs on distributions at least as new as the build machine's (the script prints the glibc floor); a build for older ones is made on an older one. The viewer runs on a Vulkan leaf beside `d3d11.rs` and `metal.rs` (D28). Its settings are under `~/.config/3D Review` and its logs under `~/.local/share/3D Review/logs`, where `dirs` puts them. |
 | D27 | The same input and settings write the same bytes: on every run, at any thread count and on every OS. Nothing written may depend on the clock (the FBX export pins every date to the Unix epoch), on `HashMap` order, or on how work fell across threads (`parallel.rs`'s fixed chunks). `review-cli`'s `tests/determinism.rs` runs `optimize` over the CAD kit and the fixtures and checks every file's SHA-256 against `tests/determinism.sha256`, recorded on one OS and checked on the others; a mismatch there is a rounding difference between two compilers or maths libraries, to be found and removed, not re-recorded. |
+| D28 | The renderer on Linux is sokol_gfx's **Vulkan** backend (1.3, plus `VK_EXT_descriptor_buffer`), on a third leaf, `rhi/backend/vulkan.rs` (over `ash`), twin of the other two — not GL. Its SPIR-V is compiled by glslang inside sokol-shdc when `scripts/gen-shaders` runs, into a reflection of its own (`generated/review_vk.rs`, the only one Linux compiles, so no other OS carries it), which keeps D4/D5's promises — a broken shader fails before the build and nothing compiles one at run time — with no blob for `build.rs` to make. The vendored sokol-rust's build script gains the backend (vendor/NOTICE.txt), since upstream's has none. A device is picked the way D3D11 falls back to WARP: discrete GPU, integrated, then a software rasterizer such as Mesa's lavapipe, which is also what renders on a machine with no GPU at all. sokol names no native image here, so the IBL bake's readback (D19) is unavailable and the bake stays a Windows job; the windowless backbuffer is an image of the leaf's own. HEIC / HEIF / AVIF decode only where fire-decode vendors libheif (Windows, macOS), and are reported unsupported on Linux until it vendors a Linux stack. |
 
 The structural rules the decisions add up to:
 
@@ -1541,5 +1554,5 @@ The structural rules the decisions add up to:
 | --- | --- |
 | **`rhi` owns the backend** | Nothing outside `render/src/rhi/` names an `sg::` type, a backend pixel format or a window handle. Every resource goes through a wrapper, every format is `Format`, every failure is a `GpuError`, and invalid input (a zero dimension, a refused drawable) is an error there rather than a sokol validation abort. |
 | **One swapchain pass** | Exactly one swapchain pass per frame — Metal presents inside `sg_end_pass`, so a second one would double-present. Everything a `Renderer::render_*` draws onscreen is therefore recorded as a deferred `SwapchainJob` and replayed when that pass opens; offscreen passes are issued directly. |
-| **Platform leaves** | The complete inventory of per-OS code: `rhi/backend/{d3d11,metal}.rs` (device, swapchain, GPU timer, bake readback), `crates/shell-macos` (open-file events, menu bar, CLI-on-PATH link), `crates/shell-windows` (Explorer's thumbnail provider and preview handler), `crates/shell-quicklook` (the Quick Look extensions' dylib and their Swift sources), the startup window's show state (`import/src/startup.rs` reads the Windows launch hint and shows the window in one step; `app/window_state.rs`'s `FirstShow` / `reveal_startup_window` create it hidden on Windows and hand it over), and the packaging scripts. Elsewhere an OS is named only for a convention, never a capability: the primary modifier (`app/shortcuts.rs`, `ui/lib.rs`), where per-user files live and how paths compare (`app/logging.rs`, `window_state.rs`, `paths.rs`), and the file dialog's owner window on Windows (`app/dialog.rs`). |
+| **Platform leaves** | The complete inventory of per-OS code: `rhi/backend/{d3d11,metal,vulkan}.rs` (device, swapchain, GPU timer, bake readback), `crates/shell-macos` (open-file events, menu bar, CLI-on-PATH link), `crates/shell-windows` (Explorer's thumbnail provider and preview handler), `crates/shell-quicklook` (the Quick Look extensions' dylib and their Swift sources), the startup window's show state (`import/src/startup.rs` reads the Windows launch hint and shows the window in one step; `app/window_state.rs`'s `FirstShow` / `reveal_startup_window` create it hidden on Windows and hand it over), and the packaging scripts. Elsewhere an OS is named only for a convention, never a capability: the primary modifier (`app/shortcuts.rs`, `ui/lib.rs`), where per-user files live and how paths compare (`app/logging.rs`, `window_state.rs`, `paths.rs`), and the file dialog's owner window on Windows (`app/dialog.rs`). |
 | **Toolchain** | `rust-toolchain.toml` tracks stable rather than pinning a version, and shader edits are the only thing that needs a platform shader compiler (D5): a checkout that does not touch `review.glsl` builds from the committed bytecode. |

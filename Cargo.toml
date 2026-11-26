@@ -157,8 +157,9 @@ review-prof = { path = "crates/prof" }
 # That writes the path into Cargo.lock: `git checkout Cargo.lock` afterwards, and never commit a
 # lock it wrote (a `--locked` build refuses one).
 # `texture()` converts no colour, so `icc` stays off; `mips` is the mip builder every texture
-# upload takes its chain from (FD11).
-fire-decode = { git = "https://github.com/psmyles/fire-decode", tag = "v0.1.1", features = ["psd", "heif", "mips"] }
+# upload takes its chain from (FD11). `heif` is `render`'s to turn on, per OS: fire-decode
+# vendors libheif for Windows and macOS only (D28).
+fire-decode = { git = "https://github.com/psmyles/fire-decode", tag = "v0.1.1", features = ["psd", "mips"] }
 rfd = "0.15"
 # Build-script only: the shader-bytecode manifest keys freshness on content, and
 # the packaging scripts on both OSes have to recompute the same digest from a
@@ -222,6 +223,12 @@ objc2-app-kit = "0.2"
 objc2-foundation = "0.2"
 objc2-metal = "0.2"
 objc2-quartz-core = "0.2"
+
+# --- Linux platform leaf: the Vulkan device and swapchain sokol_gfx draws through
+# (`crates/render/src/rhi/backend/vulkan.rs`, D28). `linked`, not the default `loaded`:
+# sokol_gfx's C calls the loader directly, so the binary links `libvulkan` anyway, and
+# loading it a second time through `libloading` would buy nothing.
+ash = { version = "0.38", default-features = false, features = ["linked", "debug", "std"] }
 # The macOS menu bar (D15). A Mac app without one cannot even be quit — Cmd+Q is
 # the menu's, not the window's.
 muda = { version = "0.19", default-features = false }

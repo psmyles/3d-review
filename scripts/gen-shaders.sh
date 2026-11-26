@@ -63,7 +63,15 @@ mkdir -p "$gen"
 # whichever OS regenerates it, so it carries *source* and build.rs supplies the bytecode.
 "$shdc" -i "$src" -o "$gen/review.rs" -l "$slangs" -f sokol_rust
 
-# --- 3. make review.rs the same file whoever regenerated it ------------------
+# --- 2b. the Vulkan reflection, a file of its own ----------------------------
+# SPIR-V is bytecode already, so shdc embeds it in the reflection (glslang compiles it
+# here, which is what makes a broken shader fail on Linux: D28) and there is nothing left
+# for build.rs to do. It goes in a file of its own, compiled only on Linux, so the
+# Windows and macOS binaries do not carry 250 KB of another OS's shaders; the structs and
+# bindings are the same as review.rs's, since both come from this one run.
+"$shdc" -i "$src" -o "$gen/review_vk.rs" -l spirv_vk -f sokol_rust
+
+# --- 3. make the two reflections the same files whoever regenerated them -----
 # Two things in the sokol_rust output are machine-specific, and neither changes a byte of
 # the shader: the -i/-o paths shdc echoes into its header comment (absolute for -o), and
 # the Rust emitter's formatting, which differs between the per-platform sokol-shdc binaries
@@ -78,10 +86,13 @@ if ! command -v rustfmt >/dev/null; then
     echo "rustfmt not found; it ships with the toolchain (rustup component add rustfmt)" >&2
     exit 1
 fi
-rustfmt --edition 2024 --config newline_style=Unix "$gen/review.rs"
-# The -o path, rewritten repo-relative. Anchored to the Cmdline line so nothing else can match.
-sed -E "/sokol-shdc -i /s#-o [^ ]*#-o $gen/review.rs#" "$gen/review.rs" > "$gen/review.rs.tmp"
-mv "$gen/review.rs.tmp" "$gen/review.rs"
+for reflection in review.rs review_vk.rs; do
+    rustfmt --edition 2024 --config newline_style=Unix "$gen/$reflection"
+    # The -o path, rewritten repo-relative. Anchored to the Cmdline line so nothing else can
+    # match.
+    sed -E "/sokol-shdc -i /s#-o [^ ]*#-o $gen/$reflection#" "$gen/$reflection" > "$gen/$reflection.tmp"
+    mv "$gen/$reflection.tmp" "$gen/$reflection"
+done
 
 # --- 4. record which review.glsl this set was generated from -----------------
 # The one staleness question the bytecode manifest cannot answer: it chains a blob to
@@ -90,6 +101,12 @@ mv "$gen/review.rs.tmp" "$gen/review.rs"
 # digest agrees and the whole shader set is a revision behind. Content, not mtimes,
 # for the same reason as the manifest — a fresh checkout writes review.glsl and the
 # generated directory microseconds apart, in git's order, not the author's.
-shasum -a 256 "$src" | cut -d' ' -f1 > "$gen/review.glsl.sha256"
+# `sha256sum` on Linux, `shasum` on macOS (Linux distributions do not all ship the Perl
+# `shasum`); both print the same digest.
+if command -v sha256sum >/dev/null; then
+    sha256sum "$src" | cut -d' ' -f1 > "$gen/review.glsl.sha256"
+else
+    shasum -a 256 "$src" | cut -d' ' -f1 > "$gen/review.glsl.sha256"
+fi
 
 echo "regenerated $(ls -1 "$gen" | wc -l) files in $gen"

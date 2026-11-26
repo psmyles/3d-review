@@ -46,6 +46,19 @@ winit.workspace = true
 # render-target view per frame. That leaf is invariant 9's sanctioned GPU site; the
 # macOS twin takes the objc2 family here instead. Windows-only now — nothing above
 # `rhi/backend` names it, and `app` no longer depends on `windows` at all.
+# HEIC / HEIF / AVIF through fire-decode's libheif bridge, on the two OSes it vendors
+# the libraries for. Without the feature those formats decode as unsupported rather
+# than failing the build, which is what Linux gets until fire-decode vendors a Linux
+# stack (D28).
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+fire-decode = { workspace = true, features = ["heif"] }
+
+# The Vulkan device, swapchain, timer and readback leaf (`rhi/backend/vulkan.rs`,
+# D28). Linked rather than loaded: sokol_gfx's own C calls the loader directly, so the
+# binary links `libvulkan` either way, and `linked` needs no `libloading`.
+[target.'cfg(target_os = "linux")'.dependencies]
+ash = { workspace = true }
+
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
     "Win32_Foundation",
@@ -95,6 +108,12 @@ objc2-quartz-core = { workspace = true, features = [
 [dependencies.intel_tex_2]
 workspace = true
 optional = true
+
+# The UV checker's BC7 bake links intel_tex_2, whose prebuilt C++ (the ASTC half of
+# ispc_texcomp) needs the C++ runtime it never asks for: MSVC and Apple's linker bring
+# theirs along, GNU ld does not. Host-matched, as a build script's cfg is (GOTCHAS).
+[target.'cfg(target_os = "linux")'.build-dependencies]
+link-cplusplus = "1"
 
 [build-dependencies]
 # The shader-bytecode manifest keys freshness on file content rather than on

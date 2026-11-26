@@ -34,13 +34,20 @@
 //! shader a build error (D5) rather than a runtime surprise; nothing compiles a
 //! shader at run time.
 //!
+//! Linux has no half of its own here: its SPIR-V is inside
+//! `src/shaders/generated/review_vk.rs`, which `scripts/gen-shaders` compiled with
+//! glslang when it generated it, so a broken shader fails there instead (D28). Only
+//! the two hosts with a shader compiler of their own compile anything.
+//!
 //! It also bakes the UV checker's textures (`build/uv_checker.rs`): each checker
 //! PNG's mip chain, BC7-encoded and deflated into `OUT_DIR`, so the viewer neither
 //! decodes the PNG nor builds the chain. Unlike the shaders that needs no external
 //! tool, so it runs on every host and nothing it produces is committed.
 
+#[cfg(any(windows, target_os = "macos"))]
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+#[cfg(any(windows, target_os = "macos"))]
 use std::process::Command;
 
 // The bake's copy of the run-time's mip filter (fire-decode's), held to it byte for
@@ -51,10 +58,16 @@ mod mips;
 #[path = "build/uv_checker.rs"]
 mod uv_checker;
 
+// intel_tex_2's prebuilt C++ needs the C++ runtime, which GNU ld does not add on its
+// own (see Cargo.toml).
+#[cfg(target_os = "linux")]
+use link_cplusplus as _;
+
 /// One shader to compile: the source file, its stage profile, and the committed
 /// output blob (both paths absolute). There is no entry-point field because the
 /// generated entry point is fixed per backend (`main` for HLSL, `main0` for MSL) and
 /// the reflection in `review.rs` already names it.
+#[cfg(any(windows, target_os = "macos"))]
 struct ShaderJob {
     source: PathBuf,
     /// The source's file name, which is how the manifest names it — the manifest
@@ -79,8 +92,16 @@ fn main() {
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
     uv_checker::bake(&crate_dir, &out_dir);
 
-    let jobs = generated_jobs(&generated_dir);
     warn_if_shader_source_changed(&crate_dir, &generated_dir);
+    #[cfg(any(windows, target_os = "macos"))]
+    compile_host_shaders(&generated_dir);
+}
+
+/// Bring this host's committed blobs up to date with their generated sources, where
+/// its shader compiler is installed, and record each in [`MANIFEST`].
+#[cfg(any(windows, target_os = "macos"))]
+fn compile_host_shaders(generated_dir: &Path) {
+    let jobs = generated_jobs(generated_dir);
 
     // Re-run when any source changes, so an edit recompiles where fxc is present.
     // The committed .dxbc outputs are deliberately not watched — we write them.
@@ -172,6 +193,7 @@ fn main() {
 /// not merely the source it came from. Both hosts' rows live in the one file — a
 /// Windows build never touches a `*_metal_macos_*` row and vice versa — so a shader
 /// rebuilt on one OS and not the other is visible in the diff as much as in the check.
+#[cfg(any(windows, target_os = "macos"))]
 const MANIFEST: &str = "bytecode.manifest";
 
 /// One file's identity: the SHA-256 of its bytes, plus its length. The digest is
@@ -182,6 +204,7 @@ const MANIFEST: &str = "bytecode.manifest";
 type Fingerprint = (String, u64);
 
 /// One row: the generated source, then the blob compiled from it.
+#[cfg(any(windows, target_os = "macos"))]
 type Row = (Fingerprint, Fingerprint);
 
 fn fingerprint(path: &Path) -> Option<Fingerprint> {
@@ -196,6 +219,7 @@ fn fingerprint(path: &Path) -> Option<Fingerprint> {
     Some((hex, bytes.len() as u64))
 }
 
+#[cfg(any(windows, target_os = "macos"))]
 fn read_manifest(path: &Path) -> BTreeMap<String, Row> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return BTreeMap::new();
@@ -214,6 +238,7 @@ fn read_manifest(path: &Path) -> BTreeMap<String, Row> {
         .collect()
 }
 
+#[cfg(any(windows, target_os = "macos"))]
 fn write_manifest(path: &Path, manifest: &BTreeMap<String, Row>) {
     let mut text = String::from(concat!(
         "# Written by crates/render/build.rs: what each committed shader blob was\n",
@@ -278,6 +303,7 @@ fn warn_if_shader_source_changed(crate_dir: &Path, generated_dir: &Path) {
 ///
 /// The other host's sources are skipped entirely, by extension: a `.metal` here is
 /// not a job with no compiler, it is not this build's business at all.
+#[cfg(any(windows, target_os = "macos"))]
 fn generated_jobs(generated_dir: &Path) -> Vec<ShaderJob> {
     let Ok(entries) = std::fs::read_dir(generated_dir) else {
         // The directory is absent only before `scripts/gen-shaders` has ever run.

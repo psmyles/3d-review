@@ -28,8 +28,12 @@
 mod d3d11;
 #[cfg(target_os = "macos")]
 mod metal;
+#[cfg(target_os = "linux")]
+mod vulkan;
 
 #[cfg(windows)]
 pub(crate) use d3d11::*;
 #[cfg(target_os = "macos")]
 pub(crate) use metal::*;
+#[cfg(target_os = "linux")]
+pub(crate) use vulkan::*;

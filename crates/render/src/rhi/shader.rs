@@ -11,6 +11,11 @@
 //! The generated desc points its funcs at the *source* it embedded, because that file
 //! is checked in and must be byte-identical whichever OS regenerates it. Every use
 //! replaces those with the bytecode; every binding the desc set stays as generated.
+//!
+//! Linux is the exception that needs no join. SPIR-V is bytecode already, so the
+//! Vulkan reflection (`generated/review_vk.rs`) embeds it, compiled by glslang when
+//! `scripts/gen-shaders` ran (D28); there [`ShaderBytecode`] is empty and the desc is
+//! used as generated.
 
 use sokol::gfx as sg;
 
@@ -22,7 +27,9 @@ use super::make;
 /// A pair rather than two arguments so a call site cannot silently swap the stages:
 /// both are opaque blobs of the same type, and the compiler would not notice.
 pub(crate) struct ShaderBytecode {
+    #[cfg(not(target_os = "linux"))]
     pub(crate) vertex: &'static [u8],
+    #[cfg(not(target_os = "linux"))]
     pub(crate) fragment: &'static [u8],
 }
 
@@ -42,15 +49,21 @@ pub(crate) fn make(
 ) -> GpuResult<sg::Shader> {
     let mut desc = desc_fn(sg::query_backend());
     desc.label = label.as_ptr();
-    desc.vertex_func.source = std::ptr::null();
-    desc.vertex_func.bytecode = sg::slice_as_range(bytecode.vertex);
-    desc.fragment_func.source = std::ptr::null();
-    desc.fragment_func.bytecode = sg::slice_as_range(bytecode.fragment);
+    #[cfg(not(target_os = "linux"))]
+    {
+        desc.vertex_func.source = std::ptr::null();
+        desc.vertex_func.bytecode = sg::slice_as_range(bytecode.vertex);
+        desc.fragment_func.source = std::ptr::null();
+        desc.fragment_func.bytecode = sg::slice_as_range(bytecode.fragment);
+    }
+    // The Vulkan reflection already points both funcs at its own SPIR-V.
+    #[cfg(target_os = "linux")]
+    let _ = bytecode;
     make::shader(&desc, label.to_str().unwrap_or("shader"))
 }
 
 /// The `.dxbc` / `.metallib` pair `build.rs` wrote for one program, by its shdc
-/// program name.
+/// program name; on Linux, the empty pair (the reflection holds the SPIR-V).
 ///
 /// A macro because `include_bytes!` needs a literal path: the per-host extension and
 /// the `hlsl5` / `metal_macos` infix are `cfg`-chosen here, once, instead of at every
@@ -82,6 +95,11 @@ macro_rules! bytecode {
                 $program,
                 "_metal_macos_fragment.metallib"
             )),
+        };
+        #[cfg(target_os = "linux")]
+        const PAIR: $crate::rhi::shader::ShaderBytecode = {
+            let _ = $program;
+            $crate::rhi::shader::ShaderBytecode {}
         };
         &PAIR
     }};

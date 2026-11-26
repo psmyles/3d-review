@@ -305,6 +305,12 @@ const CONTEXT_NAME: &str = "GPU (Metal frame)";
 /// zones are there beside it. Do not "fix" it by claiming Vulkan or D3D12.
 #[cfg(target_os = "macos")]
 const CONTEXT_TYPE: GpuContextType = GpuContextType::Invalid;
+/// Vulkan brackets the whole frame as Metal does (D18, D28), and Tracy does have a
+/// Vulkan context type to say so.
+#[cfg(target_os = "linux")]
+const CONTEXT_NAME: &str = "GPU (Vulkan frame)";
+#[cfg(target_os = "linux")]
+const CONTEXT_TYPE: GpuContextType = GpuContextType::Vulkan;
 
 #[cfg(test)]
 mod tests {

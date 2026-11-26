@@ -10,9 +10,9 @@ If you have used tools like Autodesk FBX Review or F3D, this will feel
 familiar. If you are new to 3D, that is fine too: the manual explains things
 as it goes.
 
-It runs on **Windows and macOS** from one shared codebase. It is written in
+It runs on **Windows, macOS and Linux** from one shared codebase. It is written in
 Rust, using `winit` for the window, `sokol_gfx` to talk to the rendering backend
-(Direct3D 11 on Windows, Metal on macOS), `egui` for the buttons and panels,
+(Direct3D 11 on Windows, Metal on macOS, Vulkan on Linux), `egui` for the buttons and panels,
 and `ufbx` to read FBX files. It is built to be quick: quick to start, quick to open a file, and quick to show you
 the result of a change.
 
@@ -77,10 +77,13 @@ compile.
 full Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`) is only
 needed if you want to _edit_ shaders.
 
-**Linux (x86_64):** GCC (or Clang) and the usual build tools are enough.
-For now only the console tool builds there, with
-`cargo build --release -p review-cli`. The viewer follows once the renderer
-has its Vulkan backend.
+**Linux (x86_64):** GCC (or Clang), the usual build tools, and the Vulkan
+headers and loader: `vulkan-headers` and `vulkan-loader-devel` on Fedora,
+`libvulkan-dev` on Debian and Ubuntu. `vulkan-validation-layers` is worth having
+too: a debug build turns the validation layer on when it is installed. The viewer
+draws through Vulkan 1.3, so it needs a GPU driver that offers it (any current
+NVIDIA, AMD or Intel one) or Mesa's software lavapipe. HEIC, HEIF and AVIF
+textures are not read on Linux yet.
 
 ```
 cargo run -p review-app            # launch the viewer

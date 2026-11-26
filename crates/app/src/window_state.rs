@@ -262,8 +262,13 @@ pub(crate) fn reveal_startup_window(window: &Window, first: FirstShow) {
         // the `SW_SHOW` (and `SW_MAXIMIZE`) it sends change nothing.
         window.set_visible(true);
     }
+    // Created visible, and maximized by winit at creation if it was to be, so all
+    // that can be left is a minimize. No launcher off Windows asks for one today
+    // (`startup_show` answers `None`), but one that did would get it.
     #[cfg(not(windows))]
-    let _ = (window, first);
+    if first.minimized {
+        window.set_minimized(true);
+    }
 }
 
 /// Whether a saved placement still lands on a connected monitor. Guards against

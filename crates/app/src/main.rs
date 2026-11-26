@@ -678,6 +678,14 @@ impl App {
             ))
             .with_visible(FirstShow::CREATE_VISIBLE)
             .with_maximized(first.create_maximized());
+        // A Linux desktop finds a window's icon, and groups its windows, by this name
+        // (Wayland's `app_id`, X11's `WM_CLASS`) rather than by the icon above, which
+        // only X11 reads: the binary's name, as a desktop entry for it is named.
+        #[cfg(target_os = "linux")]
+        {
+            use winit::platform::wayland::WindowAttributesExtWayland;
+            attributes = attributes.with_name(env!("CARGO_BIN_NAME"), "");
+        }
         if self.gate.is_some() {
             attributes = attributes.with_inner_size(winit::dpi::PhysicalSize::new(
                 gate::WINDOW_SIZE.0,
@@ -1042,6 +1050,18 @@ impl ApplicationHandler<UserEvent> for App {
         self.save_window_placement();
         self.persist_settings();
         self.persist_audit_profile();
+        // Everything bound to the window system goes now, while it is still
+        // connected. `run_app` consumes the event loop, which closes winit's
+        // connection before `App` drops, and on Wayland both the egui-winit state's
+        // clipboard (a worker thread speaking the protocol) and the Vulkan swapchain
+        // on the window's surface send requests as they are destroyed: left until
+        // then, either crashed the exit on a dead connection. The `Gpu` shuts
+        // sokol_gfx down as it drops, so every other GPU-holding field's `Drop` finds
+        // `sg::isvalid()` false and does nothing — the guard the field order below
+        // already leans on. Nothing reads any of the three after this.
+        self.egui_state = None;
+        self.gpu = None;
+        self.window = None;
         log::info!("exiting");
     }
 }

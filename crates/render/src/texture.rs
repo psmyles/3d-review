@@ -754,13 +754,17 @@ mod tests {
     }
 
     /// The import dialog and drag-and-drop accept what fire-decode decodes: DDS,
-    /// OpenEXR and HEIC too, which the old fixed list of nine left out.
+    /// OpenEXR and HEIC too, which the old fixed list of nine left out. HEIC and AVIF
+    /// only where fire-decode carries libheif (Windows and macOS, D28): elsewhere the
+    /// dialog does not offer what the viewer cannot open.
     #[test]
     fn the_texture_extensions_are_fire_decodes() {
-        for ext in [
-            "png", "jpg", "tga", "psd", "dds", "exr", "hdr", "heic", "avif", "PNG",
-        ] {
+        for ext in ["png", "jpg", "tga", "psd", "dds", "exr", "hdr", "PNG"] {
             assert!(is_texture_extension(ext), ".{ext}");
+        }
+        let heif = cfg!(any(windows, target_os = "macos"));
+        for ext in ["heic", "avif"] {
+            assert_eq!(is_texture_extension(ext), heif, ".{ext}");
         }
         assert!(!is_texture_extension("fbx"));
         assert!(texture_extensions().contains(&"dds"));

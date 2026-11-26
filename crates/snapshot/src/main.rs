@@ -35,7 +35,32 @@ use crate::cli::Look;
 use crate::compare::NormalError;
 use crate::sheet::Row;
 
+/// Warnings and errors, to standard error. Without a logger the `log` facade drops
+/// everything, and with it the only account of why a frame came out wrong: sokol's
+/// validation failures (`rhi/sokol_log.rs`) and, in a debug build on Linux, the
+/// Vulkan validation layer's.
+struct StderrLog;
+
+impl log::Log for StderrLog {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= log::Level::Warn
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if self.enabled(record.metadata()) {
+            eprintln!("{}: {}", record.level(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+static STDERR_LOG: StderrLog = StderrLog;
+
 fn main() -> ExitCode {
+    if log::set_logger(&STDERR_LOG).is_ok() {
+        log::set_max_level(log::LevelFilter::Warn);
+    }
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

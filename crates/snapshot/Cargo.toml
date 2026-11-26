@@ -14,6 +14,8 @@ publish = false
 anyhow.workspace = true
 glam.workspace = true
 image.workspace = true
+# Warnings and errors to stderr (`main.rs`): sokol's validation, and Vulkan's.
+log.workspace = true
 review-import = { path = "../import" }
 review-model = { path = "../model" }
 review-optimize = { path = "../optimize" }

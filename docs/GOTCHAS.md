@@ -72,6 +72,12 @@ meshes' shading normals from the same cameras — and `--inspect` says what a
 simplifier did to the vertices. It still needs a real GPU, so it is a tool to
 run by hand, not a test.
 
+On Linux it needs no GPU at all: Mesa's lavapipe is a Vulkan device too, and
+`VK_LOADER_DRIVERS_SELECT='*lvp*' review-snapshot ...` renders on the CPU. A debug
+build there loads the Khronos validation layer when `vulkan-validation-layers` is
+installed, and the snapshot tool prints its warnings and sokol's to stderr; a clean
+run says nothing (`VK_LOADER_DEBUG=layer` shows the layer was loaded).
+
 **The shaders are validated by the build, not by a test.** `fxc /WX` (or `xcrun
 metal`) in `render`'s `build.rs` rejects a broken shader.
 
@@ -383,6 +389,17 @@ Tone mapping and sRGB encoding happen once in `post`, not in the scene shader.
   non-uniform control flow.
 - Guard a possibly-negative `pow` base with `max(x, 0.0)` so `/WX` does not reject
   it.
+
+### A target no pass has written cannot be sampled on Vulkan
+
+Some passes bind a target no pass has stored into yet: GTAO binds last frame's
+history on the first frame of an average, because sokol requires every view a
+program declares to be bound, whether the shader reads it or not. D3D11 zero-fills a
+new resource and Metal leaves it undefined, so it passed unnoticed; on Vulkan the
+image is still in its initial layout, and sokol's backend asserts on sampling it.
+`ColorTarget::new` therefore clears every target once, in a pass of its own, when
+it is made — a defined picture on every backend, for one empty pass per target per
+resize. It relies on targets being made between passes, never inside one.
 
 ### Derived views: follow the ensure/free pattern
 
@@ -1394,6 +1411,32 @@ Read `CARGO_CFG_TARGET_OS`, and keep the build dependency unconditional: Cargo
 matches a *build* dependency's platform against the host too, so
 `shell-macos/build.rs` neither ran nor had its dependency when cross-checked
 from Windows.
+
+### On Wayland, whatever speaks the protocol goes in `exiting`
+
+winit 0.30's `run_app` consumes the event loop, so the window system's connection
+is closed by the time it returns and `App` drops. On Wayland two things send
+protocol requests as they are destroyed: egui-winit's clipboard (a worker thread of
+`smithay-clipboard`) and the Vulkan swapchain on the window's surface (NVIDIA's
+driver). Left to `App`'s drop, each crashed the exit on a dead connection.
+`exiting` drops the egui-winit state, the `Gpu` and the window while the
+connection is up; the `Gpu` shuts sokol down as it goes, which turns every other
+GPU-holding field's `Drop` into a no-op through its `sg::isvalid()` guard.
+
+### intel_tex_2's C++ needs the C++ runtime on Linux
+
+`render`'s build script links intel_tex_2 for the UV checker's BC7 bake, and the
+crate's prebuilt ASTC half is C++ that never asks for its runtime. MSVC and Apple's
+linker bring theirs along; GNU ld does not, and the build script failed to link
+(`__gxx_personality_v0`). `link-cplusplus`, a Linux-only build dependency, adds it.
+Not a `-lstdc++` in `.cargo/config.toml`: a `RUSTFLAGS` build would drop it (see
+below).
+
+### `shasum` is not on every Linux
+
+It is a Perl script macOS ships and Fedora does not. The scripts that hash
+(`gen-shaders.sh`, `check-shader-bytecode.sh`) use `sha256sum` where it exists and
+`shasum -a 256` otherwise; the digests are the same.
 
 ### serde_json's default float parser is not exact
 
