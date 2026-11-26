@@ -37,6 +37,57 @@ pub fn triangle_uv_area(model: &ModelData, triangle: usize, channel: usize) -> f
     (b - a).perp_dot(c - a) * 0.5
 }
 
+/// How much a triangle's UVs stretch it one way more than the other: the
+/// ratio of the larger to the smaller singular value of the map from the
+/// triangle (in its own plane) to its UVs. 1 where the UVs are a scaled copy of
+/// the shape; capped at 50 (the pipeline plan, section 3).
+/// `None` for a triangle with no area.
+pub fn uv_stretch(points: [glam::Vec3; 3], uvs: [glam::Vec2; 3]) -> Option<f32> {
+    let (e1, e2) = (points[1] - points[0], points[2] - points[0]);
+    let normal = e1.cross(e2);
+    let (Some(x), Some(n)) = (e1.try_normalize(), normal.try_normalize()) else {
+        return None;
+    };
+    let y = n.cross(x);
+    let (p00, p01, p10, p11) = (e1.dot(x), e2.dot(x), e1.dot(y), e2.dot(y));
+    let det = p00 * p11 - p01 * p10;
+    if det.abs() <= 1.0e-20 {
+        return None;
+    }
+    let (q1, q2) = (uvs[1] - uvs[0], uvs[2] - uvs[0]);
+    // J = U * P^-1, with U's columns the UV edges.
+    let a = (q1.x * p11 - q2.x * p10) / det;
+    let b = (-q1.x * p01 + q2.x * p00) / det;
+    let c = (q1.y * p11 - q2.y * p10) / det;
+    let d = (-q1.y * p01 + q2.y * p00) / det;
+    // A 2x2 matrix's singular values, in closed form.
+    let energy = 0.5 * (a * a + b * b + c * c + d * d);
+    let determinant = a * d - b * c;
+    let root = (energy * energy - determinant * determinant)
+        .max(0.0)
+        .sqrt();
+    let larger = (energy + root).sqrt();
+    let smaller = (energy - root).max(0.0).sqrt();
+    Some(if smaller <= larger / 50.0 {
+        50.0
+    } else {
+        larger / smaller
+    })
+}
+
+/// [`uv_stretch`] of `model`'s triangle in UV set `channel`.
+pub fn triangle_uv_stretch(model: &ModelData, triangle: usize, channel: usize) -> Option<f32> {
+    let corners = model.indices.get(triangle * 3..triangle * 3 + 3)?;
+    let points = [0, 1, 2].map(|k| {
+        model
+            .vertices
+            .get(corners[k] as usize)
+            .map_or(glam::Vec3::ZERO, |vertex| vertex.position)
+    });
+    let uvs = [0, 1, 2].map(|k| model.uv_for_channel(corners[k] as usize, channel));
+    uv_stretch(points, uvs)
+}
+
 /// Per-triangle world area and signed UV area, the two numbers every density
 /// figure is built from.
 #[derive(Debug, Clone, Default, PartialEq)]

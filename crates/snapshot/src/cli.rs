@@ -26,8 +26,12 @@ OPTIONS
   --views <list>        ';'-separated views: iso, iso-back, front, back, left, right,
                         top, bottom, or yaw,pitch[,zoom[,x,y,z]] in degrees with x,y,z
                         a focus point in 0..1 of the framing bounds (default iso;iso-back)
+  --checker-square <m>  the checker's square side in metres, at --uv-density, instead
+                        of 16 repeats per UV unit
+  --uv-density <n>      UV units per metre the layout is meant to have (default 1):
+                        sizes --checker-square, and centres the texel-density look
   --look <list>         ','-separated: shaded, matte, normals, wire, shaded-wire,
-                        checker
+                        checker, texel-density, uv-stretch
                         (default shaded)
   --frame <n>           frame every view on subject n's bounds instead of on all of them
   --chrome <l,t,r,b>    pixels of each view the viewer's chrome covers on the left, top,
@@ -85,6 +89,10 @@ pub struct Args {
     pub curve_style: TrajectoryStyle,
     pub skeleton: bool,
     pub select: Vec<String>,
+    /// `--checker-square`: the checker's square side in metres, at `uv_density`.
+    pub checker_square: Option<f32>,
+    /// `--uv-density`: UV units per metre the layout is meant to have.
+    pub uv_density: f32,
 }
 
 /// Which clip to pose the subjects on, and on which of its frames.
@@ -146,6 +154,10 @@ pub enum Look {
     ShadedWire,
     /// The UV checker over UV set 0, lit: what texture swim and stretching look like.
     Checker,
+    /// Each face coloured by its texel density against `--uv-density`.
+    TexelDensity,
+    /// Each face coloured by how much its UVs stretch it.
+    UvStretch,
 }
 
 impl Look {
@@ -157,6 +169,8 @@ impl Look {
             Look::Wire => "wire",
             Look::ShadedWire => "shaded-wire",
             Look::Checker => "checker",
+            Look::TexelDensity => "texel-density",
+            Look::UvStretch => "uv-stretch",
         }
     }
 }
@@ -184,6 +198,8 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
         curve_style: TrajectoryStyle::default(),
         skeleton: false,
         select: Vec::new(),
+        checker_square: None,
+        uv_density: 1.0,
     };
     while let Some(argument) = arguments.next() {
         let mut value = |flag: &str| {
@@ -229,6 +245,24 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
             "--curves" => args.curves = true,
             "--curve-style" => args.curve_style = parse_curve_style(&value("--curve-style")?)?,
             "--skeleton" => args.skeleton = true,
+            "--checker-square" => {
+                let square: f32 = value("--checker-square")?
+                    .parse()
+                    .context("--checker-square takes metres")?;
+                if !(square.is_finite() && square > 0.0) {
+                    bail!("--checker-square must be above 0");
+                }
+                args.checker_square = Some(square);
+            }
+            "--uv-density" => {
+                let density: f32 = value("--uv-density")?
+                    .parse()
+                    .context("--uv-density takes UV units per metre")?;
+                if !(density.is_finite() && density > 0.0) {
+                    bail!("--uv-density must be above 0");
+                }
+                args.uv_density = density;
+            }
             "--select" => args.select.extend(
                 value("--select")?
                     .split(',')
@@ -351,6 +385,8 @@ fn parse_look(text: &str) -> Result<Look> {
         "wire" => Look::Wire,
         "shaded-wire" => Look::ShadedWire,
         "checker" => Look::Checker,
+        "texel-density" => Look::TexelDensity,
+        "uv-stretch" => Look::UvStretch,
         _ => bail!("unknown look {text}"),
     })
 }

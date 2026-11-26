@@ -7,10 +7,16 @@ use crate::docs::Page;
 use crate::keys;
 use crate::labels;
 use crate::state::{
-    UiState, UvCheckerPanelState,
-    range::{CHECKER_TILING_MAX, CHECKER_TILING_MIN},
+    CheckerScale, UiState, UvCheckerPanelState,
+    range::{
+        CHECKER_DENSITY_MAX, CHECKER_DENSITY_MIN, CHECKER_SQUARE_MAX, CHECKER_SQUARE_MIN,
+        CHECKER_TILING_MAX, CHECKER_TILING_MIN,
+    },
 };
-use crate::widgets::{Tip, labeled_combo, labeled_slider_with_value, panel_footer, panel_grid};
+use crate::widgets::{
+    Tip, labeled_combo, labeled_log_slider_with_value, labeled_slider_with_value, panel_footer,
+    panel_grid,
+};
 
 /// This panel's page in the manual, opened by its footer's `?`.
 const PAGE: Page = Page::PanelsUvChecker;
@@ -19,16 +25,54 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
     let uv_set_count = state.stats.uv_set_count;
     panel_grid(ui, "uv_checker", |ui| {
         checker_texture_row(ui, &mut state.uv_checker.texture);
-        // Integer tiling on the standard slider (0 decimals → integer readout).
-        labeled_slider_with_value(
+        let scale = &mut state.uv_checker.scale;
+        labeled_combo(
             ui,
-            Tip::new(keys::ui_panels::CHECKER_TILING)
-                .describe(keys::ui_panels::CHECKER_TILING_DESCRIPTION)
+            Tip::new(keys::ui_panels::CHECKER_SCALE)
+                .describe(keys::ui_panels::CHECKER_SCALE_DESCRIPTION)
                 .page(PAGE),
-            &mut state.uv_checker.tiling,
-            CHECKER_TILING_MIN..=CHECKER_TILING_MAX,
-            0,
+            "uv_checker_scale",
+            checker_scale(*scale),
+            |ui| {
+                for choice in [CheckerScale::PerTexture, CheckerScale::Size] {
+                    ui.selectable_value(scale, choice, checker_scale(choice));
+                }
+            },
         );
+        match state.uv_checker.scale {
+            // Integer tiling on the standard slider (0 decimals → integer readout).
+            CheckerScale::PerTexture => {
+                labeled_slider_with_value(
+                    ui,
+                    Tip::new(keys::ui_panels::CHECKER_TILING)
+                        .describe(keys::ui_panels::CHECKER_TILING_DESCRIPTION)
+                        .page(PAGE),
+                    &mut state.uv_checker.tiling,
+                    CHECKER_TILING_MIN..=CHECKER_TILING_MAX,
+                    0,
+                );
+            }
+            CheckerScale::Size => {
+                labeled_log_slider_with_value(
+                    ui,
+                    Tip::new(keys::ui_panels::CHECKER_SQUARE_SIZE)
+                        .describe(keys::ui_panels::CHECKER_SQUARE_SIZE_DESCRIPTION)
+                        .page(PAGE),
+                    &mut state.uv_checker.square_size,
+                    CHECKER_SQUARE_MIN..=CHECKER_SQUARE_MAX,
+                    3,
+                );
+                labeled_log_slider_with_value(
+                    ui,
+                    Tip::new(keys::ui_panels::CHECKER_UV_DENSITY)
+                        .describe(keys::ui_panels::CHECKER_UV_DENSITY_DESCRIPTION)
+                        .page(PAGE),
+                    &mut state.uv_checker.density,
+                    CHECKER_DENSITY_MIN..=CHECKER_DENSITY_MAX,
+                    2,
+                );
+            }
+        }
         // The channel picker is only meaningful — and only shown — when the model
         // carries more than one UV set.
         if uv_set_count > 1 {
@@ -38,6 +82,13 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
     ui.separator();
     if panel_footer(ui, PAGE).clicked() {
         state.uv_checker = UvCheckerPanelState::default();
+    }
+}
+
+fn checker_scale(scale: CheckerScale) -> review_localization::Key {
+    match scale {
+        CheckerScale::PerTexture => keys::ui_panels::CHECKER_SCALE_PER_TEXTURE,
+        CheckerScale::Size => keys::ui_panels::CHECKER_SCALE_SIZE,
     }
 }
 

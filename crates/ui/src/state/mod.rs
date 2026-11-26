@@ -63,6 +63,11 @@ pub(crate) mod range {
     /// Checker repeats across the 0..1 UV range.
     pub const CHECKER_TILING_MIN: u32 = 1;
     pub const CHECKER_TILING_MAX: u32 = 16;
+    /// A checker square's side in metres, and the UV density it is read at.
+    pub const CHECKER_SQUARE_MIN: f32 = 0.001;
+    pub const CHECKER_SQUARE_MAX: f32 = 10.0;
+    pub const CHECKER_DENSITY_MIN: f32 = 0.01;
+    pub const CHECKER_DENSITY_MAX: f32 = 1000.0;
     /// Normal-line length: 0.1%–10% of the model's largest bounding extent.
     pub const NORMAL_LENGTH_MIN: f32 = 0.001;
     pub const NORMAL_LENGTH_MAX: f32 = 0.10;
@@ -885,7 +890,7 @@ pub(crate) fn sync_debug_state(state: &mut UiState) {
     state.debug.shading_mode = state.shading_mode;
     state.debug.show_grid = state.show_grid;
     state.debug.uv_checker_texture = state.uv_checker.texture;
-    state.debug.uv_checker_tiling = state.uv_checker.tiling;
+    state.debug.uv_checker_tiling = state.uv_checker.tiling();
     state.debug.uv_channel = state.uv_checker.uv_channel;
     state.debug.vertex_color_mode = state.vertex_colors.mode;
     state.debug.face_normal_length = state.face_normals.length;

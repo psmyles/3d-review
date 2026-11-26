@@ -103,6 +103,8 @@ pub enum DiagnosticView {
     Issues,
     TexelDensity,
     TriangleDensity,
+    /// How much each face's UVs stretch it one way more than the other.
+    UvStretch,
     Overdraw,
     QuadOverdraw,
 }

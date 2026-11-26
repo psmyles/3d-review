@@ -153,6 +153,10 @@ fn run() -> Result<()> {
         args.skeleton,
         args.curve_style,
     )?;
+    capture.uv_density = args.uv_density;
+    if let Some(square) = args.checker_square {
+        capture.checker_tiling = 1.0 / (review_render::CHECKER_SQUARES * square * args.uv_density);
+    }
     let columns: Vec<String> = args.views.iter().map(|view| view.name.clone()).collect();
     let cameras: Vec<_> = args
         .views

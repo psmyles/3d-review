@@ -86,7 +86,11 @@ pub(super) fn scene_uniforms(
             } else {
                 0.0
             },
-            debug.uv_checker_tiling.max(1) as f32,
+            if debug.uv_checker_tiling.is_finite() && debug.uv_checker_tiling > 0.0 {
+                debug.uv_checker_tiling
+            } else {
+                1.0
+            },
             vertex_color_value(debug),
         ],
         // `w` enables the vertex-stage deform path (skinning + blend shapes).

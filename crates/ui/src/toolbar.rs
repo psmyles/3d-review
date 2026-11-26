@@ -865,6 +865,10 @@ fn draw_diagnostic_view_group(ui: &mut egui::Ui, state: &mut UiState, width: f32
                 DiagnosticView::TriangleDensity,
                 &crate::assets::ICON_AUD_TRIANGLE_DENSITY,
             ),
+            (
+                DiagnosticView::UvStretch,
+                &crate::assets::ICON_AUD_UV_STRETCH,
+            ),
             (DiagnosticView::Overdraw, &crate::assets::ICON_AUD_OVERDRAW),
             (
                 DiagnosticView::QuadOverdraw,
@@ -880,7 +884,9 @@ fn draw_diagnostic_view_group(ui: &mut egui::Ui, state: &mut UiState, width: f32
             let supported = state.aud.view_supported(view, &state.capabilities);
             let overridden = matches!(
                 view,
-                DiagnosticView::TexelDensity | DiagnosticView::TriangleDensity
+                DiagnosticView::TexelDensity
+                    | DiagnosticView::TriangleDensity
+                    | DiagnosticView::UvStretch
             )
             .then(|| surface_overridden.clone())
             .flatten();

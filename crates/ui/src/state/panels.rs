@@ -207,15 +207,47 @@ impl Default for BoundingBoxPanelState {
 #[derive(Debug, Clone)]
 pub struct UvCheckerPanelState {
     pub texture: CheckerTexture,
+    pub scale: CheckerScale,
     pub tiling: u32,
+    /// [`CheckerScale::Size`]: one square's side, in metres.
+    pub square_size: f32,
+    /// [`CheckerScale::Size`]: the UV units per metre the layout was made at.
+    pub density: f32,
     pub uv_channel: u32,
+}
+
+/// How the checker's squares are sized.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CheckerScale {
+    /// A number of repeats of the texture across the 0-1 UV square.
+    #[default]
+    PerTexture,
+    /// A square size in metres, at a texel density: a layout at that density
+    /// shows squares of exactly that size, and anywhere the squares come out
+    /// bigger or smaller the density is off.
+    Size,
+}
+
+impl UvCheckerPanelState {
+    /// The checker's repeats across the 0-1 UV square, as the renderer takes it.
+    pub fn tiling(&self) -> f32 {
+        match self.scale {
+            CheckerScale::PerTexture => self.tiling as f32,
+            CheckerScale::Size => {
+                1.0 / (review_render::CHECKER_SQUARES * self.square_size * self.density).max(1.0e-6)
+            }
+        }
+    }
 }
 
 impl Default for UvCheckerPanelState {
     fn default() -> Self {
         Self {
             texture: CheckerTexture::Greyscale,
+            scale: CheckerScale::PerTexture,
             tiling: DEFAULT_CHECKER_TILING,
+            square_size: 0.1,
+            density: 1.0,
             uv_channel: 0,
         }
     }

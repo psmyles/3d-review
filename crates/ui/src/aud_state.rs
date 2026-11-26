@@ -160,7 +160,8 @@ impl AudUiState {
             DiagnosticView::Overdraw | DiagnosticView::QuadOverdraw => capabilities.overdraw,
             DiagnosticView::Issues
             | DiagnosticView::TexelDensity
-            | DiagnosticView::TriangleDensity => true,
+            | DiagnosticView::TriangleDensity
+            | DiagnosticView::UvStretch => true,
         }
     }
 

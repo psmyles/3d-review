@@ -141,7 +141,9 @@ impl UiState {
         }
         let paints_surface = matches!(
             view,
-            DiagnosticView::TexelDensity | DiagnosticView::TriangleDensity
+            DiagnosticView::TexelDensity
+                | DiagnosticView::TriangleDensity
+                | DiagnosticView::UvStretch
         );
         if paints_surface && self.shading_mode == ShadingMode::Wireframe {
             return None;
@@ -171,9 +173,11 @@ impl UiState {
             return None;
         }
         match self.shown_diagnostic() {
-            Some(view @ (DiagnosticView::TexelDensity | DiagnosticView::TriangleDensity)) => {
-                Some(FlatView::Density(view))
-            }
+            Some(
+                view @ (DiagnosticView::TexelDensity
+                | DiagnosticView::TriangleDensity
+                | DiagnosticView::UvStretch),
+            ) => Some(FlatView::Density(view)),
             Some(_) => None,
             None => match self.debug.active_material {
                 ActiveMaterial::Buffers => Some(FlatView::Buffers),
@@ -269,11 +273,12 @@ mod tests {
         ActiveMaterial::Buffers,
         ActiveMaterial::SkinWeights,
     ];
-    const VIEWS: [Option<DiagnosticView>; 6] = [
+    const VIEWS: [Option<DiagnosticView>; 7] = [
         None,
         Some(DiagnosticView::Issues),
         Some(DiagnosticView::TexelDensity),
         Some(DiagnosticView::TriangleDensity),
+        Some(DiagnosticView::UvStretch),
         Some(DiagnosticView::Overdraw),
         Some(DiagnosticView::QuadOverdraw),
     ];

@@ -37,6 +37,10 @@ labels-audit-category-hierarchy = Hierarchy
 labels-audit-view-issues = Issues
     .description = Shows the finding picked in the Issues list on the model, over plain
         grey.
+labels-audit-view-uv-stretch = UV stretch
+    .description = Colours each face by how much its texture layout stretches it one way more
+        than the other: blue where it is not stretched at all, through green, to red where one
+        direction is twice the other or worse. A texture there looks smeared.
 labels-audit-view-texel-density = Texel density
     .description = Colours each face by its texture pixels per meter: blue below the
         profile's target, green on it, red above it. The texture size and target are the

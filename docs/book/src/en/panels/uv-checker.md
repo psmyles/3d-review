@@ -9,8 +9,17 @@ blurrier in some places than in others.
 **Pattern** - a grey checkerboard, or a colored one. The colored one makes a
 mirrored part easy to spot, because its colors run in the opposite order.
 
-**Density** - how many squares fit across the texture. Use more squares on a
-small object and fewer on a big one, so the squares stay a useful size.
+**Scale** - how the squares are sized:
+
+- **Per texture** - **Checker Tiling** repeats the checker that many times
+  across the texture. Use more on a small object and fewer on a big one, so
+  the squares stay a useful size.
+- **By size** - every square is **Square size** across on the model, in
+  metres, for a layout made at **UV density** (UV units per metre; 1 for a
+  texture that tiles once per metre). Anywhere the squares come out bigger or
+  smaller than that, the layout's density is off; anywhere they are not square,
+  it is stretched. For one part against another, or one level of detail against
+  the next, the squares should match.
 
 **UV set** - which texture layout to use, if the model has more than one. A
 second layout is often used for baked lighting or for fine detail, and

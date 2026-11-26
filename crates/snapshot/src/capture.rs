@@ -37,6 +37,10 @@ pub struct Capture {
     next_revision: u64,
     /// The model last drawn (by its `Arc` address) and the revision it was given.
     current: Option<(usize, u64)>,
+    /// The checker look's repeats per UV unit.
+    pub checker_tiling: f32,
+    /// UV units per metre: the texel-density look's target.
+    pub uv_density: f32,
 }
 
 impl Capture {
@@ -64,6 +68,8 @@ impl Capture {
             curve_style,
             next_revision: 1,
             current: None,
+            checker_tiling: 16.0,
+            uv_density: 1.0,
         })
     }
 
@@ -132,7 +138,21 @@ impl Capture {
             }
             Look::Checker => {
                 debug.active_material = ActiveMaterial::UvChecker;
-                debug.uv_checker_tiling = 16;
+                debug.uv_checker_tiling = self.checker_tiling;
+            }
+            // The heat maps the viewer's diagnostic views draw: a 1024-pixel
+            // texture at the layout's density is on target.
+            Look::TexelDensity => {
+                debug.heat_map = review_render::HeatMap::TexelDensity {
+                    texture_size: 1024.0,
+                    target: 1024.0 * self.uv_density,
+                    tolerance: 2.0,
+                };
+            }
+            Look::UvStretch => {
+                debug.heat_map = review_render::HeatMap::UvStretch {
+                    limit: review_render::UV_STRETCH_LIMIT,
+                };
             }
         }
         let scene = SceneFrame {

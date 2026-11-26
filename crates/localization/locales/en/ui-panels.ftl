@@ -39,6 +39,14 @@ ui-panels-checker-texture = Checker Texture
     .description = A grey checkerboard, or a colored one. The colored one makes it easy to
         spot a part whose texture is mirrored, because its colors run in the opposite
         order.
+ui-panels-checker-scale = Scale
+    .description = Per texture repeats the checker a number of times across the texture. By size gives every square one size on the model, in metres, for a layout made at a given texel density: anywhere the squares come out bigger or smaller, the density is off.
+ui-panels-checker-scale-per-texture = Per texture
+ui-panels-checker-scale-size = By size
+ui-panels-checker-square-size = Square size
+    .description = One square's side on the model, in metres, where the layout is at the UV density below.
+ui-panels-checker-uv-density = UV density
+    .description = The UV units per metre the layout was made at: 1 for a texture that tiles once per metre.
 ui-panels-checker-tiling = Checker Tiling
     .description = How many squares fit across the texture. Use more squares for a small
         object and fewer for a large one, so the squares stay a sensible size.

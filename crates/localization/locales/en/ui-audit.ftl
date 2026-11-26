@@ -55,6 +55,7 @@ ui-audit-legend-overdraw = Surfaces per pixel
 ui-audit-legend-quad-overdraw = Shading per visible pixel
 ui-audit-legend-texel-target = Target: { $value }
 ui-audit-legend-texel-size = Tex size: { $size }
+ui-audit-legend-uv-stretch = UV stretch (longer side to shorter)
 ui-audit-legend-triangle = Triangle size at full screen
 ui-audit-legend-dense = denser
 ui-audit-legend-coarse = coarser

@@ -19,7 +19,7 @@ use review_render::{
     TonemapOperator, VertexColorMode, ViewportBackground,
 };
 
-use super::{BoundsScope, CurveShape, UiState, range};
+use super::{BoundsScope, CheckerScale, CurveShape, UiState, range};
 
 /// One remembered value: its key in the file, how to write it, and how to read it
 /// back. A read that returns `None` leaves the state untouched.
@@ -219,6 +219,46 @@ const ENTRIES: &[Entry] = &[
         key: "uv_checker.texture",
         save: |s| checker_id(s.uv_checker.texture),
         load: |s, v| set(&mut s.uv_checker.texture, checker_from(v)),
+    },
+    Entry {
+        key: "uv_checker.scale",
+        save: |s| {
+            match s.uv_checker.scale {
+                CheckerScale::PerTexture => "per_texture",
+                CheckerScale::Size => "size",
+            }
+            .to_owned()
+        },
+        load: |s, v| {
+            set(
+                &mut s.uv_checker.scale,
+                match v {
+                    "per_texture" => Some(CheckerScale::PerTexture),
+                    "size" => Some(CheckerScale::Size),
+                    _ => None,
+                },
+            )
+        },
+    },
+    Entry {
+        key: "uv_checker.square_size",
+        save: |s| f32_text(s.uv_checker.square_size),
+        load: |s, v| {
+            set(
+                &mut s.uv_checker.square_size,
+                f32_in(v, range::CHECKER_SQUARE_MIN, range::CHECKER_SQUARE_MAX),
+            )
+        },
+    },
+    Entry {
+        key: "uv_checker.density",
+        save: |s| f32_text(s.uv_checker.density),
+        load: |s, v| {
+            set(
+                &mut s.uv_checker.density,
+                f32_in(v, range::CHECKER_DENSITY_MIN, range::CHECKER_DENSITY_MAX),
+            )
+        },
     },
     Entry {
         key: "uv_checker.tiling",

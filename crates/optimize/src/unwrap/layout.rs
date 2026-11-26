@@ -328,44 +328,10 @@ fn longest_axis_to_u(points: &[Vec2]) -> impl Fn(Vec2) -> Vec2 {
     move |point: Vec2| Vec2::new(point.x * c - point.y * s, point.x * s + point.y * c)
 }
 
-/// The ratio of the larger to the smaller singular value of the map from a
-/// triangle (in its own plane) to its UVs: 1 where the UVs are a scaled copy of
-/// the shape, larger the more they stretch it one way. Capped at 50, as the
-/// measures in the pipeline plan are; `None` for a triangle
-/// with no area.
+/// [`review_model::measure::uv_stretch`]: one measure for the unwrap and the
+/// viewer's stretch map.
 pub(crate) fn stretch(points: [Vec3; 3], uvs: [Vec2; 3]) -> Option<f32> {
-    let (e1, e2) = (points[1] - points[0], points[2] - points[0]);
-    let normal = e1.cross(e2);
-    let (Some(x), Some(n)) = (e1.try_normalize(), normal.try_normalize()) else {
-        return None;
-    };
-    let y = n.cross(x);
-    // The triangle in its own plane, and its UV edges.
-    let (p00, p01, p10, p11) = (e1.dot(x), e2.dot(x), e1.dot(y), e2.dot(y));
-    let det = p00 * p11 - p01 * p10;
-    if det.abs() <= TINY {
-        return None;
-    }
-    let (q1, q2) = (uvs[1] - uvs[0], uvs[2] - uvs[0]);
-    // J = U * P^-1, with U's columns the UV edges.
-    let inverse = [[p11 / det, -p01 / det], [-p10 / det, p00 / det]];
-    let a = q1.x * inverse[0][0] + q2.x * inverse[1][0];
-    let b = q1.x * inverse[0][1] + q2.x * inverse[1][1];
-    let c = q1.y * inverse[0][0] + q2.y * inverse[1][0];
-    let d = q1.y * inverse[0][1] + q2.y * inverse[1][1];
-    // A 2x2 matrix's singular values, in closed form.
-    let energy = 0.5 * (a * a + b * b + c * c + d * d);
-    let determinant = a * d - b * c;
-    let root = (energy * energy - determinant * determinant)
-        .max(0.0)
-        .sqrt();
-    let larger = (energy + root).sqrt();
-    let smaller = (energy - root).max(0.0).sqrt();
-    Some(if smaller <= larger / 50.0 {
-        50.0
-    } else {
-        larger / smaller
-    })
+    review_model::measure::uv_stretch(points, uvs)
 }
 
 /// The area-weighted mean stretch of `faces` under per-corner `uvs` (laid out

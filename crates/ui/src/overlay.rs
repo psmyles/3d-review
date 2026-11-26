@@ -786,6 +786,21 @@ fn draw_heat_legend(
                 review_localization::tr(crate::keys::ui_audit::LEGEND_DENSE).into_owned(),
             )
         }
+        DiagnosticView::UvStretch => {
+            // The ramp is logarithmic in the stretch: its middle is the
+            // limit's square root.
+            let limit = f64::from(review_render::UV_STRETCH_LIMIT);
+            let number = |value: f64| format!("{value:.2}");
+            (
+                (
+                    review_localization::tr(crate::keys::ui_audit::LEGEND_UV_STRETCH).into_owned(),
+                    None,
+                ),
+                number(1.0),
+                number(limit.sqrt()),
+                number(limit),
+            )
+        }
         DiagnosticView::Overdraw | DiagnosticView::QuadOverdraw => {
             let (title, render_view) = if view == DiagnosticView::Overdraw {
                 (

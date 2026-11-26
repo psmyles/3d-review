@@ -19,6 +19,10 @@ of the finding leaves the view as it is.
 - **Triangle density** colours each face by how its size compares with the
   smallest triangle the profile allows, at the object's own size: dense
   areas such as bolts and bevels light up.
+- **UV stretch** colours each face by how much its texture layout stretches
+  it one way more than the other: blue where the texture lands square, green
+  at about 1.4 times, red where one direction is twice the other or worse. A
+  texture is smeared wherever this goes red, whatever the density says.
 - **Overdraw** counts how many surfaces cover each pixel from where you are
   looking. Overlapping layers, such as foliage cards, cost a GPU time at every
   layer.

@@ -43,8 +43,9 @@ pub struct SceneDebugOptions {
     /// Which vertex-color channels the view shows when `active_material` is
     /// [`ActiveMaterial::VertexColors`].
     pub vertex_color_mode: VertexColorMode,
-    /// Checker repeats across the 0..1 UV range; clamped to 1..=16 by the UI.
-    pub uv_checker_tiling: u32,
+    /// Checker repeats across the 0..1 UV range. Not a whole number when the
+    /// checker is sized in metres (one repeat holds [`CHECKER_SQUARES`] squares).
+    pub uv_checker_tiling: f32,
     /// Which model UV set the checker view samples (0-based). Only meaningful
     /// when the model carries more than one UV set.
     pub uv_channel: u32,
@@ -164,7 +165,19 @@ pub enum HeatMap {
         min_pixel_area: f32,
         screen_height: f32,
     },
+    /// How much a face's UVs stretch it one way more than the other
+    /// (`review_model::measure::uv_stretch`, area-weighted over the face): 1 is
+    /// on target, `limit` and beyond the ramp's high end.
+    UvStretch { limit: f32 },
 }
+
+/// The stretch the UV stretch map reads as its hot end: one direction twice the
+/// other.
+pub const UV_STRETCH_LIMIT: f32 = 2.0;
+
+/// Squares across one repeat of the UV checker's texture, both patterns: what
+/// turns a square size in metres into a tiling.
+pub const CHECKER_SQUARES: f32 = 8.0;
 
 impl HeatMap {
     pub fn is_active(self) -> bool {
@@ -233,7 +246,7 @@ impl Default for SceneDebugOptions {
             material_mode: MaterialMode::Source,
             uv_checker_texture: CheckerTexture::Greyscale,
             vertex_color_mode: VertexColorMode::Rgb,
-            uv_checker_tiling: 4,
+            uv_checker_tiling: 4.0,
             uv_channel: 0,
             show_grid: true,
             show_bounding_box: false,

@@ -55,6 +55,8 @@ fn face_values(model: &ModelData, heat: HeatMap) -> Vec<Option<f32>> {
         }
     };
     let measure = SurfaceMeasure::new(model, 0);
+    // Per face: area-weighted stretch (only the stretch map reads it).
+    let mut stretch = vec![0.0_f64; face_count];
     // Per face: world area, |UV area|, triangle count, owning node.
     let mut world = vec![0.0_f64; face_count];
     let mut uv = vec![0.0_f64; face_count];
@@ -66,6 +68,11 @@ fn face_values(model: &ModelData, heat: HeatMap) -> Vec<Option<f32>> {
             continue;
         }
         world[face] += f64::from(measure.world_area[triangle]);
+        if matches!(heat, HeatMap::UvStretch { .. })
+            && let Some(value) = review_model::measure::triangle_uv_stretch(model, triangle, 0)
+        {
+            stretch[face] += f64::from(value) * f64::from(measure.world_area[triangle]);
+        }
         uv[face] += f64::from(measure.uv_area[triangle].abs());
         triangles[face] += 1;
         if let Some(&owner) = model.triangles.node.get(triangle) {
@@ -85,6 +92,20 @@ fn face_values(model: &ModelData, heat: HeatMap) -> Vec<Option<f32>> {
                     (world[face] > 0.0 && uv[face] > 0.0).then(|| {
                         let density = (uv[face] / world[face]).sqrt() * f64::from(texture_size);
                         ((density / f64::from(target)).log2() / span) as f32
+                    })
+                })
+                .collect()
+        }
+        HeatMap::UvStretch { limit } => {
+            let span = f64::from(limit.max(1.0001)).ln();
+            (0..face_count)
+                .map(|face| {
+                    (world[face] > 0.0 && uv[face] > 0.0).then(|| {
+                        // The whole ramp: unstretched at its low end, the
+                        // limit's square root in the middle, the limit at the
+                        // top.
+                        let mean = (stretch[face] / world[face]).max(1.0);
+                        (2.0 * mean.ln() / span - 1.0) as f32
                     })
                 })
                 .collect()

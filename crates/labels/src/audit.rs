@@ -60,6 +60,7 @@ pub fn view(view: DiagnosticView) -> (Key, Key) {
             k::VIEW_TRIANGLE_DENSITY,
             k::VIEW_TRIANGLE_DENSITY_DESCRIPTION,
         ),
+        DiagnosticView::UvStretch => (k::VIEW_UV_STRETCH, k::VIEW_UV_STRETCH_DESCRIPTION),
         DiagnosticView::Overdraw => (k::VIEW_OVERDRAW, k::VIEW_OVERDRAW_DESCRIPTION),
         DiagnosticView::QuadOverdraw => (k::VIEW_QUAD_OVERDRAW, k::VIEW_QUAD_OVERDRAW_DESCRIPTION),
     }

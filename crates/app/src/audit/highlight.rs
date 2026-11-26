@@ -373,6 +373,9 @@ impl App {
                     screen_height: number(RuleId::TriangleLod, "screen_height", 1080.0),
                 }
             }
+            Some(review_audit::DiagnosticView::UvStretch) => review_render::HeatMap::UvStretch {
+                limit: review_render::UV_STRETCH_LIMIT,
+            },
             _ => review_render::HeatMap::None,
         }
     }

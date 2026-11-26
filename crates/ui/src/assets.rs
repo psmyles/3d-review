@@ -63,6 +63,11 @@ pub(crate) const ICON_AUD_TRIANGLE_DENSITY: AppIcon = AppIcon {
     id: "icon_aud_triangle_density",
     png_bytes: include_bytes!("../../../assets/icons/icon_aud_triangle_density.png"),
 };
+/// "UV stretch" — the stretch heat map.
+pub(crate) const ICON_AUD_UV_STRETCH: AppIcon = AppIcon {
+    id: "icon_aud_uv_stretch",
+    png_bytes: include_bytes!("../../../assets/icons/icon_aud_uv_stretch.png"),
+};
 /// "Overdraw" — the Aud layered-overdraw count.
 pub(crate) const ICON_AUD_OVERDRAW: AppIcon = AppIcon {
     id: "icon_aud_overdraw",
