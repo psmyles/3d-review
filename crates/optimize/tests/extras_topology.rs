@@ -196,6 +196,7 @@ fn polygons_survive_every_operation_that_keeps_triangles_whole() {
         target: LodLevel {
             target_ratio: 0.5,
             target_error: 0.05,
+            ..LodLevel::default()
         },
     }));
     let result = run(&model, &extras, &stack);

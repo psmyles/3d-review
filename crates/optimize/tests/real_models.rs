@@ -27,8 +27,9 @@ use review_model::{
     TopologyFace, TriangleData, Vertex,
 };
 use review_optimize::{
-    AoQuality, AoTarget, BakeAoParams, LodLevel, LodParams, NormalParams, OpKind, OptStack,
-    OptWarning, ReduceParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings, WeldParams,
+    AoQuality, AoTarget, BakeAoParams, LodLevel, LodParams, NormalParams, OpInstance, OpKind,
+    OptStack, OptWarning, ReduceParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings,
+    TargetMode, WeldParams,
 };
 
 mod common;
@@ -302,6 +303,7 @@ fn a_reduce_over_a_smooth_asset_hits_its_target_in_place() {
         target: LodLevel {
             target_ratio: 0.5,
             target_error: 0.02,
+            ..LodLevel::default()
         },
     }));
 
@@ -352,6 +354,7 @@ fn a_flat_shaded_mesh_simplifies_once_its_attribute_seams_are_dealt_with() {
         levels: vec![LodLevel {
             target_ratio: 0.5,
             target_error: 0.05,
+            ..LodLevel::default()
         }],
     };
 
@@ -443,14 +446,17 @@ fn lod_chain_hits_its_targets(model: &ModelData, label: &str) -> Vec<usize> {
             LodLevel {
                 target_ratio: 0.5,
                 target_error: 0.02,
+                ..LodLevel::default()
             },
             LodLevel {
                 target_ratio: 0.25,
                 target_error: 0.05,
+                ..LodLevel::default()
             },
             LodLevel {
                 target_ratio: 0.1,
                 target_error: 0.1,
+                ..LodLevel::default()
             },
         ],
     }));
@@ -538,6 +544,7 @@ fn weld_and_halve() -> OptStack {
         levels: vec![LodLevel {
             target_ratio: 0.5,
             target_error: 0.05,
+            ..LodLevel::default()
         }],
     }));
     stack
@@ -655,6 +662,7 @@ fn excluding_a_node_leaves_its_geometry_untouched() {
         levels: vec![LodLevel {
             target_ratio: 0.25,
             target_error: 0.2,
+            ..LodLevel::default()
         }],
     }));
     stack.node_override_mut(node as usize).exclude = true;
@@ -714,6 +722,130 @@ fn most_common_node(model: &ModelData) -> Option<u32> {
         .map(|(node, _)| node)
 }
 
+/// Triangles per node, in node order.
+fn triangles_per_node(model: &ModelData) -> Vec<(u32, usize)> {
+    let mut counts = std::collections::BTreeMap::<u32, usize>::new();
+    for &node in &model.triangles.node {
+        *counts.entry(node).or_default() += 1;
+    }
+    counts.into_iter().collect()
+}
+
+/// A target given as a number of triangles, as a game states a budget.
+fn count_target(triangles: u32) -> LodLevel {
+    LodLevel {
+        target_mode: TargetMode::Triangles,
+        target_triangles: triangles,
+        target_error: 1.0,
+        ..LodLevel::default()
+    }
+}
+
+/// A Reduce aimed at a count, over the torus's two equal halves.
+fn reduce_to(triangles: u32) -> ReduceParams {
+    ReduceParams {
+        simplify: SimplifySettings {
+            algorithm: SimplifyAlgorithm::Standard,
+            ..SimplifySettings::default()
+        },
+        target: count_target(triangles),
+    }
+}
+
+/// A count is the budget for every object together, shared out so each keeps the
+/// same share of what it had — what "1500 triangles" means for a file, and the
+/// reading under which objects still never trade triangles.
+#[test]
+fn a_triangle_count_is_met_and_every_object_keeps_the_same_share() {
+    let model = smooth_torus();
+    let source = triangles_per_node(&model);
+    assert_eq!(source.len(), 2, "the torus is two objects");
+    let total: usize = source.iter().map(|&(_, count)| count).sum();
+
+    let mut stack = OptStack::default();
+    stack.push_op(OpKind::Weld(WeldParams::default()));
+    stack.push_op(OpKind::Reduce(reduce_to(1000)));
+    let reduced = &run(&model, &stack).lods[0].model;
+    assert_consistent(reduced, "reduced to a count");
+
+    let triangles = reduced.stats.triangle_count;
+    assert!(
+        (950..=1000).contains(&triangles),
+        "a 1000-triangle target over {total} lands just under it: {triangles}"
+    );
+    for (node, count) in triangles_per_node(reduced) {
+        assert!(
+            (475..=500).contains(&count),
+            "each half keeps half of the 1000: node {node} has {count}"
+        );
+    }
+}
+
+/// An object whose own override names a count takes exactly that, and the
+/// objects left share the operation's count among themselves — Remesh's rule for
+/// its face budget, so pinning one object never re-weights the rest.
+#[test]
+fn an_object_with_its_own_count_takes_it_and_leaves_the_pool() {
+    let model = smooth_torus();
+    let source = triangles_per_node(&model);
+    let (pinned, other) = (source[0].0, source[1].0);
+
+    let mut stack = OptStack::default();
+    stack.push_op(OpKind::Weld(WeldParams::default()));
+    let id = stack.push_op(OpKind::Reduce(reduce_to(1000)));
+    stack
+        .node_override_mut(pinned as usize)
+        .ops
+        .push(OpInstance {
+            id,
+            enabled: true,
+            kind: OpKind::Reduce(reduce_to(300)),
+        });
+    let reduced = &run(&model, &stack).lods[0].model;
+    let counts: std::collections::BTreeMap<u32, usize> =
+        triangles_per_node(reduced).into_iter().collect();
+    assert!(
+        (285..=300).contains(&counts[&pinned]),
+        "the pinned half takes its own 300: {}",
+        counts[&pinned]
+    );
+    assert!(
+        (950..=1000).contains(&counts[&other]),
+        "the other half has the operation's 1000 to itself: {}",
+        counts[&other]
+    );
+}
+
+/// A LOD chain can be given in counts too, each measured against level 0 as a
+/// share is; and a count above what the mesh has leaves it whole.
+#[test]
+fn a_lod_chain_given_in_counts_lands_on_its_counts() {
+    let model = smooth_torus();
+    let mut stack = OptStack::default();
+    stack.push_op(OpKind::Weld(WeldParams::default()));
+    stack.push_op(OpKind::SimplifyLod(LodParams {
+        simplify: SimplifySettings {
+            algorithm: SimplifyAlgorithm::Standard,
+            ..SimplifySettings::default()
+        },
+        levels: vec![count_target(100_000), count_target(2000), count_target(500)],
+    }));
+    let result = run(&model, &stack);
+    let counts: Vec<usize> = result
+        .lods
+        .iter()
+        .map(|lod| lod.model.stats.triangle_count)
+        .collect();
+    assert_eq!(
+        counts[1], counts[0],
+        "a count above the mesh's own leaves it as it is: {counts:?}"
+    );
+    assert!(
+        (1900..=2000).contains(&counts[2]) && (475..=500).contains(&counts[3]),
+        "the counted levels land just under their counts: {counts:?}"
+    );
+}
+
 /// Sanity: every file the tests above load is where they expect it. Checking the
 /// directory alone was not enough — renaming one fixture turned four tests into
 /// silent green passes.
@@ -751,6 +883,7 @@ fn a_lod_operation_alone_simplifies_a_corner_split_import() {
         levels: vec![LodLevel {
             target_ratio: 0.5,
             target_error: 0.01,
+            ..LodLevel::default()
         }],
     }));
     let result = run(&model, &stack);

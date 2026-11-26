@@ -1172,6 +1172,7 @@ mod tests {
             target: LodLevel {
                 target_ratio: 0.5,
                 target_error: 1.0,
+                ..LodLevel::default()
             },
         }));
         assert!(

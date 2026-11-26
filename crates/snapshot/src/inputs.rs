@@ -96,6 +96,7 @@ pub fn load(spec: &InputSpec) -> Result<Vec<Subject>> {
                     .map(|&target_ratio| LodLevel {
                         target_ratio,
                         target_error: error.unwrap_or(LodLevel::default().target_error),
+                        ..LodLevel::default()
                     })
                     .collect(),
                 ..LodParams::default()

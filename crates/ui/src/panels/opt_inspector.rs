@@ -13,7 +13,7 @@ use review_optimize::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode,
     LodLevel, LodPackaging, LodParams, NormalMode, NormalParams, OpKind, ReduceParams,
     RemeshDensity, RemeshParams, RemeshTopology, ShrinkwrapMethod, ShrinkwrapParams,
-    SimplifyAlgorithm, SimplifyFlags, SimplifySettings, VoxelTarget, WeldParams,
+    SimplifyAlgorithm, SimplifyFlags, SimplifySettings, TargetMode, VoxelTarget, WeldParams,
 };
 use review_render::Selection;
 
@@ -26,11 +26,12 @@ use crate::state::{
     range::{
         AO_BAKE_DISTANCE_MAX, AO_BAKE_DISTANCE_MIN, AO_BAKE_INTENSITY_MAX, AO_BAKE_INTENSITY_MIN,
         ATTRIBUTE_WEIGHT_MAX, ATTRIBUTE_WEIGHT_MIN, LOD_ERROR_MAX, LOD_ERROR_MIN, LOD_RATIO_MAX,
-        LOD_RATIO_MIN, MAX_LOD_LEVELS, NORMAL_CREASE_MAX, NORMAL_CREASE_MIN, NORMAL_SMOOTHING_MAX,
-        NORMAL_SMOOTHING_MIN, OVERDRAW_THRESHOLD_MAX, OVERDRAW_THRESHOLD_MIN, PRUNE_THRESHOLD_MAX,
-        PRUNE_THRESHOLD_MIN, REMESH_ADAPTIVE_MAX, REMESH_ADAPTIVE_MIN, REMESH_CREASE_MAX,
-        REMESH_CREASE_MIN, REMESH_FACES_MAX, REMESH_FACES_MIN, REMESH_RATIO_MAX, REMESH_RATIO_MIN,
-        REMESH_SMOOTH_MAX, SHRINKWRAP_OFFSET_MAX, SHRINKWRAP_OFFSET_MIN, SHRINKWRAP_RESOLUTION_MAX,
+        LOD_RATIO_MIN, LOD_TRIANGLES_MAX, LOD_TRIANGLES_MIN, MAX_LOD_LEVELS, NORMAL_CREASE_MAX,
+        NORMAL_CREASE_MIN, NORMAL_SMOOTHING_MAX, NORMAL_SMOOTHING_MIN, OVERDRAW_THRESHOLD_MAX,
+        OVERDRAW_THRESHOLD_MIN, PRUNE_THRESHOLD_MAX, PRUNE_THRESHOLD_MIN, REMESH_ADAPTIVE_MAX,
+        REMESH_ADAPTIVE_MIN, REMESH_CREASE_MAX, REMESH_CREASE_MIN, REMESH_FACES_MAX,
+        REMESH_FACES_MIN, REMESH_RATIO_MAX, REMESH_RATIO_MIN, REMESH_SMOOTH_MAX,
+        SHRINKWRAP_OFFSET_MAX, SHRINKWRAP_OFFSET_MIN, SHRINKWRAP_RESOLUTION_MAX,
         SHRINKWRAP_RESOLUTION_MIN, SHRINKWRAP_TARGET_RATIO_MAX, SHRINKWRAP_TARGET_RATIO_MIN,
         SHRINKWRAP_TARGET_TRIANGLES_MAX, SHRINKWRAP_TARGET_TRIANGLES_MIN,
         SHRINKWRAP_VOXEL_RESOLUTION_MAX, SHRINKWRAP_VOXEL_RESOLUTION_MIN, WELD_TOLERANCE_MAX,
@@ -40,8 +41,8 @@ use crate::state::{
 use crate::theme;
 use crate::theme::{color, size};
 use crate::widgets::{
-    Tip, labeled_checkbox, labeled_combo, labeled_slider_with_value, panel_grid, tip, tip_body,
-    wide_button,
+    Tip, labeled_checkbox, labeled_combo, labeled_log_slider_with_value, labeled_slider_with_value,
+    panel_grid, tip, tip_body, wide_button,
 };
 
 /// What the Opt inspector emitted this frame.
@@ -704,19 +705,51 @@ fn simplify_settings(ui: &mut egui::Ui, id: &str, edited: &mut SimplifySettings)
     }
 }
 
-/// The ratio / error-limit pair one simplify run is aimed at — a LOD level's
-/// target, and equally the Reduce operation's single one.
+/// The target / error-limit pair one simplify run is aimed at — a LOD level's
+/// target, and equally the Reduce operation's single one. The target is a share or
+/// a count, both kept, so switching between them gives back what each was.
 fn simplify_target(ui: &mut egui::Ui, id: &str, target: &mut LodLevel) {
     panel_grid(ui, id, |ui| {
-        labeled_slider_with_value(
+        labeled_combo(
             ui,
-            Tip::new(keys::ui_opt::TRIANGLES)
-                .describe(keys::ui_opt::TRIANGLES_DESCRIPTION)
-                .page(Page::OptOperations),
-            &mut target.target_ratio,
-            LOD_RATIO_MIN..=LOD_RATIO_MAX,
-            3,
+            Tip::new(keys::ui_opt::TARGET_MODE)
+                .describe(keys::ui_opt::TARGET_MODE_DESCRIPTION)
+                .page(Page::OptSimplify),
+            &format!("{id}_mode"),
+            labels::target_mode(target.target_mode),
+            |ui| {
+                for mode in TargetMode::ALL {
+                    ui.selectable_value(&mut target.target_mode, mode, labels::target_mode(mode));
+                }
+            },
         );
+        match target.target_mode {
+            TargetMode::Ratio => {
+                labeled_slider_with_value(
+                    ui,
+                    Tip::new(keys::ui_opt::TRIANGLES)
+                        .describe(keys::ui_opt::TRIANGLES_DESCRIPTION)
+                        .page(Page::OptOperations),
+                    &mut target.target_ratio,
+                    LOD_RATIO_MIN..=LOD_RATIO_MAX,
+                    3,
+                );
+            }
+            // A log rail: a budget is 300 for a bolt and 30,000 for a hero, and on a
+            // linear one every small part would sit in the first pixel. The box
+            // beside it takes a typed number.
+            TargetMode::Triangles => {
+                labeled_log_slider_with_value(
+                    ui,
+                    Tip::new(keys::ui_opt::TRIANGLE_COUNT)
+                        .describe(keys::ui_opt::TRIANGLE_COUNT_DESCRIPTION)
+                        .page(Page::OptSimplify),
+                    &mut target.target_triangles,
+                    LOD_TRIANGLES_MIN..=LOD_TRIANGLES_MAX,
+                    0,
+                );
+            }
+        }
         labeled_slider_with_value(
             ui,
             Tip::new(keys::ui_opt::ERROR_LIMIT)
@@ -765,12 +798,15 @@ fn lod_params(ui: &mut egui::Ui, params: LodParams) -> Option<LodParams> {
             {
                 // A new level continues the halving the defaults establish, so
                 // adding one lands somewhere sensible rather than at a duplicate
-                // of the level above it. It keeps that level's error limit: the
-                // defaults hold one limit down the chain.
+                // of the level above it. It keeps that level's error limit and
+                // kind of target: the defaults hold one limit down the chain.
                 let previous = edited.levels.last().copied().unwrap_or(LodLevel::default());
+                // Halving either kind of target: the level continues the chain in
+                // whichever the one above it is given in.
                 edited.levels.push(LodLevel {
-                    target_ratio: (previous.target_ratio * 0.5).max(0.01),
-                    target_error: previous.target_error,
+                    target_ratio: (previous.target_ratio * 0.5).max(LOD_RATIO_MIN),
+                    target_triangles: (previous.target_triangles / 2).max(LOD_TRIANGLES_MIN),
+                    ..previous
                 });
             }
         });

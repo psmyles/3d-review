@@ -34,8 +34,9 @@ with and without it.
   detail) for a game to show at a distance. Operations above it run once on the
   base model; operations below it run on every level. You can only have one in
   the list. The starting chain is three levels at 50%, 25% and 12.5%, each
-  with an error limit of 0.01. A level you add keeps the limit of the one
-  above it.
+  with an error limit of 0.01. Each level's target can be a share or a number
+  of triangles ([Target](simplify.md#target)). A level you add halves the one
+  above it and keeps its limit.
 
   If the model already has levels - parts named `Wall_LOD0`, `Wall_LOD1` and
   so on, or a group with that name around them - the new chain is made from

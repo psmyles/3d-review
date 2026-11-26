@@ -146,6 +146,8 @@ ui-enums-remesh-topology-quads = Quads
 
 ui-enums-remesh-density-ratio = Ratio of current
 ui-enums-remesh-density-absolute = Face count
+ui-enums-target-mode-ratio = Share
+ui-enums-target-mode-triangles = Count
 
 ui-enums-simplify-standard = Standard
 ui-enums-simplify-attributes = Preserve Attributes

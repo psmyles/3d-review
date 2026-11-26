@@ -46,8 +46,17 @@ ui-opt-algorithm = Algorithm
         keeps exactly as it was, which can leave dark patches on flat faces. Sloppy does
         not care about keeping the shape connected: it is much faster and nearly always
         reaches the target, but it can close up holes.
+ui-opt-target-mode = Target
+    .description = How the target is given - as a share of what each object has, or as a
+        number of triangles for the objects together, shared out so each keeps the same
+        share of what it had. An object with its own setting for this operation keeps
+        exactly its own count.
 ui-opt-triangles = Triangles
     .description = What share of the triangles to keep.
+ui-opt-triangle-count = Triangle count
+    .description = How many triangles to keep, for every object together. It is a ceiling:
+        the error limit can stop the simplifier short of it, and no object gains
+        triangles it did not have.
 ui-opt-error-limit = Error limit
     .description = How far the surface is allowed to move. If reaching the triangle target
         would mean going past this, the simplifier stops early instead.

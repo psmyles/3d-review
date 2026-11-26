@@ -18,7 +18,9 @@ use std::path::PathBuf;
 
 use review_audit::{Engine, Severity};
 use review_localization::{Key, tr};
-use review_optimize::stack::limits::{LOD_RATIO_MAX, LOD_RATIO_MIN, MAX_LOD_LEVELS};
+use review_optimize::stack::limits::{
+    LOD_RATIO_MAX, LOD_RATIO_MIN, LOD_TRIANGLES_MAX, LOD_TRIANGLES_MIN, MAX_LOD_LEVELS,
+};
 use review_optimize::{FbxFormat, HierarchyMode, LodPackaging};
 
 use crate::keys::cli as k;
@@ -134,7 +136,7 @@ pub(crate) struct OptimizeArgs {
     pub(crate) out: PathBuf,
     pub(crate) preset: Option<PathBuf>,
     pub(crate) lods: Option<Lods>,
-    pub(crate) reduce: Option<f32>,
+    pub(crate) reduce: Option<Target>,
     pub(crate) packaging: Option<LodPackaging>,
     pub(crate) hierarchy: Option<HierarchyMode>,
     pub(crate) format: Option<FbxFormat>,
@@ -149,7 +151,16 @@ pub(crate) struct OptimizeArgs {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Lods {
     None,
-    Ratios(Vec<f32>),
+    Levels(Vec<Target>),
+}
+
+/// One triangle target, as `--lods` and `--reduce` take it: a share of the
+/// triangles (`0.5`, `50%`) or a number of them (`1500t`), which is how a game
+/// states a budget. Either is measured against the mesh the operation starts from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Target {
+    Share(f32),
+    Triangles(u32),
 }
 
 /// `--if-exists`: what to do about a file a model would write that is already
@@ -681,14 +692,14 @@ fn optimize_args(given: &Given) -> Result<OptimizeArgs, String> {
     let lods = match given.trimmed(LODS) {
         None => None,
         Some(value) if value.eq_ignore_ascii_case(NO_LODS) => Some(Lods::None),
-        Some(value) => Some(Lods::Ratios(ratio_list(LODS, &value)?)),
+        Some(value) => Some(Lods::Levels(target_list(LODS, &value)?)),
     };
     let reduce = given
         .trimmed(REDUCE)
-        .map(|value| ratio(REDUCE, &value))
+        .map(|value| target(REDUCE, &value))
         .transpose()?;
     let preset = given.path(PRESET);
-    let makes_lods = matches!(lods, Some(Lods::Ratios(_)));
+    let makes_lods = matches!(lods, Some(Lods::Levels(_)));
     if preset.is_none() && !makes_lods && reduce.is_none() {
         return Err(tr(k::USAGE_NOTHING_TO_DO).into_owned());
     }
@@ -780,9 +791,25 @@ fn choice(
 }
 
 /// A share of the triangles: `0.5` or `50%`.
-fn ratio(name: &str, value: &str) -> Result<f32, String> {
-    let bad = || k::usage_bad_ratio(name.to_owned(), value.to_owned());
+fn target(name: &str, value: &str) -> Result<Target, String> {
     let text = value.trim();
+    // A count: digits, then a `t` (`1500t`, `1500 t`). A whole number only; a
+    // fraction of a triangle is a typo, not a target.
+    if let Some(count) = text.strip_suffix(['t', 'T']) {
+        let bad = || {
+            k::usage_bad_count(
+                f64::from(LOD_TRIANGLES_MAX),
+                name.to_owned(),
+                value.to_owned(),
+            )
+        };
+        let parsed = count.trim().parse::<u32>().map_err(|_| bad())?;
+        if !(LOD_TRIANGLES_MIN..=LOD_TRIANGLES_MAX).contains(&parsed) {
+            return Err(bad());
+        }
+        return Ok(Target::Triangles(parsed));
+    }
+    let bad = || k::usage_bad_ratio(name.to_owned(), value.to_owned());
     let parsed = match text.strip_suffix('%') {
         Some(percent) => percent.trim().parse::<f32>().map(|percent| percent / 100.0),
         None => text.parse::<f32>(),
@@ -791,27 +818,27 @@ fn ratio(name: &str, value: &str) -> Result<f32, String> {
     if !(LOD_RATIO_MIN..=LOD_RATIO_MAX).contains(&parsed) {
         return Err(bad());
     }
-    Ok(parsed)
+    Ok(Target::Share(parsed))
 }
 
-/// `0.5,0.25` or `50%, 25%`.
-fn ratio_list(name: &str, value: &str) -> Result<Vec<f32>, String> {
-    let ratios = value
+/// `0.5,0.25`, `50%, 25%`, `750t,375t`, or a mix of the two.
+fn target_list(name: &str, value: &str) -> Result<Vec<Target>, String> {
+    let targets = value
         .split(',')
         .map(str::trim)
         .filter(|item| !item.is_empty())
-        .map(|item| ratio(name, item))
+        .map(|item| target(name, item))
         .collect::<Result<Vec<_>, _>>()?;
-    if ratios.is_empty() {
+    if targets.is_empty() {
         return Err(k::usage_bad_ratio(name.to_owned(), value.to_owned()));
     }
-    if ratios.len() > MAX_LOD_LEVELS {
+    if targets.len() > MAX_LOD_LEVELS {
         return Err(k::usage_too_many_lods(
             MAX_LOD_LEVELS as f64,
             name.to_owned(),
         ));
     }
-    Ok(ratios)
+    Ok(targets)
 }
 
 /// `--help` for `topic`, or the program's own when there is none.
@@ -914,6 +941,34 @@ mod tests {
         }
     }
 
+    /// A count is digits and a `t`, as a budget is written (`1500t`, `1500T`), and
+    /// it mixes with shares in one chain; a fraction of a triangle, a zero or a bare
+    /// `t` is refused with the count's own message.
+    #[test]
+    fn triangle_counts_are_read_with_a_t() {
+        let parsed = run("optimize a.fbx --out o --lods 750t,25%,375T --reduce 1500t");
+        let Command::Optimize(args) = parsed.command else {
+            panic!("not optimize");
+        };
+        assert_eq!(
+            args.lods,
+            Some(Lods::Levels(vec![
+                Target::Triangles(750),
+                Target::Share(0.25),
+                Target::Triangles(375)
+            ]))
+        );
+        assert_eq!(args.reduce, Some(Target::Triangles(1500)));
+        for bad in ["1.5t", "0t", "t", "-3t"] {
+            let error = target(REDUCE, bad).expect_err(bad);
+            assert!(
+                error.starts_with("--reduce takes a whole number of triangles between 1 and 100")
+                    && error.contains(&format!("not \"{bad}\"")),
+                "{bad}: the count's message, its values in their places: {error}"
+            );
+        }
+    }
+
     #[test]
     fn an_optimize_line_reads_every_option() {
         let parsed = run(
@@ -933,8 +988,11 @@ mod tests {
         };
         assert_eq!(args.out, PathBuf::from("out"));
         assert_eq!(args.preset, Some(PathBuf::from("p.json")));
-        assert_eq!(args.lods, Some(Lods::Ratios(vec![0.5, 0.25])));
-        assert_eq!(args.reduce, Some(0.8));
+        assert_eq!(
+            args.lods,
+            Some(Lods::Levels(vec![Target::Share(0.5), Target::Share(0.25)]))
+        );
+        assert_eq!(args.reduce, Some(Target::Share(0.8)));
         assert_eq!(args.packaging, Some(LodPackaging::FilePerLod));
         assert_eq!(args.hierarchy, Some(HierarchyMode::FlatBaked));
         assert_eq!(args.format, Some(FbxFormat::Ascii));
@@ -1057,6 +1115,10 @@ mod tests {
             "optimize a.fbx --out o --lods 0.5,x",
             "optimize a.fbx --out o --lods 0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1",
             "optimize a.fbx --out o --lods none",
+            "optimize a.fbx --out o --reduce 0t",
+            "optimize a.fbx --out o --reduce 1.5t",
+            "optimize a.fbx --out o --reduce t",
+            "optimize a.fbx --out o --lods 750t,-3t",
             "optimize a.fbx --out o --reduce 0",
             "optimize a.fbx --out o --reduce 0.5 --packaging both",
             "optimize a.fbx --out o --reduce 0.5 --recurse=yes",

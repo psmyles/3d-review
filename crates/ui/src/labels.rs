@@ -17,7 +17,7 @@ use review_log::Level;
 use review_model::{NodeKind, SkinningMethod};
 use review_optimize::{
     AoQuality, AoTarget, FbxFormat, HierarchyMode, LodPackaging, NormalMode, RemeshDensity,
-    RemeshTopology, ShrinkwrapMethod, SimplifyAlgorithm, VoxelTarget,
+    RemeshTopology, ShrinkwrapMethod, SimplifyAlgorithm, TargetMode, VoxelTarget,
 };
 use review_render::{
     AlphaMode, BufferView, ChannelSelect, CheckerTexture, EnvironmentMap, GtaoQuality,
@@ -252,6 +252,13 @@ pub(crate) fn remesh_density(density: RemeshDensity) -> Key {
     match density {
         RemeshDensity::Ratio => keys::ui_enums::REMESH_DENSITY_RATIO,
         RemeshDensity::Absolute => keys::ui_enums::REMESH_DENSITY_ABSOLUTE,
+    }
+}
+
+pub(crate) fn target_mode(mode: TargetMode) -> Key {
+    match mode {
+        TargetMode::Ratio => keys::ui_enums::TARGET_MODE_RATIO,
+        TargetMode::Triangles => keys::ui_enums::TARGET_MODE_TRIANGLES,
     }
 }
 

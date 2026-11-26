@@ -81,6 +81,7 @@ fn skin_survives(model: &ModelData, extras: &review_model::SourceExtras, dir: &s
         target: LodLevel {
             target_ratio: 0.5,
             target_error: 0.05,
+            ..LodLevel::default()
         },
     }));
     stacks.push(("halved", stack));

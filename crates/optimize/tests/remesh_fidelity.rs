@@ -716,6 +716,7 @@ fn matched_pair(ratio: f32, smoothing: u32) -> (OptStack, OptStack) {
         target: LodLevel {
             target_ratio: ratio,
             target_error: 0.01,
+            ..LodLevel::default()
         },
         ..ReduceParams::default()
     }));

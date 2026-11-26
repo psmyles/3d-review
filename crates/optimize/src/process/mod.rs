@@ -992,10 +992,12 @@ mod tests {
                 LodLevel {
                     target_ratio: 0.5,
                     target_error: 1.0,
+                    ..LodLevel::default()
                 },
                 LodLevel {
                     target_ratio: 0.25,
                     target_error: 1.0,
+                    ..LodLevel::default()
                 },
             ],
         }));
@@ -1026,6 +1028,7 @@ mod tests {
             levels: vec![LodLevel {
                 target_ratio: 0.5,
                 target_error: 1.0,
+                ..LodLevel::default()
             }],
         }));
 
@@ -1054,6 +1057,7 @@ mod tests {
             target: LodLevel {
                 target_ratio: 0.5,
                 target_error: 1.0,
+                ..LodLevel::default()
             },
         }));
 
@@ -1118,12 +1122,14 @@ mod tests {
             target: LodLevel {
                 target_ratio: 0.5,
                 target_error: 1.0,
+                ..LodLevel::default()
             },
         }));
         stack.push_op(OpKind::SimplifyLod(LodParams {
             levels: vec![LodLevel {
                 target_ratio: 0.5,
                 target_error: 0.01,
+                ..LodLevel::default()
             }],
             ..LodParams::default()
         }));
@@ -1153,6 +1159,7 @@ mod tests {
             target: LodLevel {
                 target_ratio: 1.0,
                 target_error: 0.0,
+                ..LodLevel::default()
             },
         };
         let mut stack = OptStack::default();
@@ -1176,6 +1183,7 @@ mod tests {
                 target: LodLevel {
                     target_ratio: 0.5,
                     target_error: 1.0,
+                    ..LodLevel::default()
                 },
                 ..untouched
             }),
@@ -1403,6 +1411,7 @@ mod tests {
             levels: vec![LodLevel {
                 target_ratio: 0.5,
                 target_error: 0.01,
+                ..LodLevel::default()
             }],
         }));
         stack.push_op(OpKind::VertexFetch);
@@ -1444,6 +1453,7 @@ mod tests {
             levels: vec![LodLevel {
                 target_ratio: 0.05,
                 target_error: 1.0,
+                ..LodLevel::default()
             }],
         }));
 

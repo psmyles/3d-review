@@ -76,6 +76,7 @@ fn stacks() -> Vec<(&'static str, OptStack, Vec<&'static str>)> {
             LodLevel {
                 target_ratio: 0.25,
                 target_error: 1.0,
+                ..LodLevel::default()
             },
         ],
         ..LodParams::default()

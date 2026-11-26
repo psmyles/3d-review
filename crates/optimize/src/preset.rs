@@ -83,7 +83,7 @@ mod tests {
     use super::*;
     use crate::stack::{
         AoQuality, AoTarget, BakeAoParams, LodParams, NormalMode, NormalParams, OpKind,
-        ReduceParams, SimplifyAlgorithm, WeldParams,
+        ReduceParams, SimplifyAlgorithm, TargetMode, WeldParams,
     };
 
     #[test]
@@ -210,6 +210,53 @@ mod tests {
         }
         let reloaded = from_json(&to_json(&stack).expect("serializes")).expect("parses");
         assert_eq!(reloaded.ops[0].kind, stack.ops[0].kind);
+    }
+
+    /// A target saved before counts existed is still a share; a count is written
+    /// beside the operation's other settings, flat, as `--reduce 1500t` and the
+    /// Inspector both make it, and a count of zero is clamped to the one triangle
+    /// the range allows.
+    #[test]
+    fn a_triangle_count_target_round_trips_and_older_targets_stay_shares() {
+        let json = r#"{
+            "version": 1,
+            "stack": { "ops": [{ "id": 1, "enabled": true, "kind": {
+                "Reduce": { "algorithm": "WithAttributes", "target_ratio": 0.25, "target_error": 0.5 }
+            } }] }
+        }"#;
+        let loaded = from_json(json).expect("an older preset still parses");
+        let OpKind::Reduce(params) = &loaded.ops[0].kind else {
+            panic!("the operation survives as a Reduce");
+        };
+        assert_eq!(params.target.target_mode, TargetMode::Ratio);
+        assert_eq!(params.target.target_ratio, 0.25);
+
+        let counted = r#"{
+            "version": 1,
+            "stack": { "ops": [{ "id": 1, "enabled": true, "kind": {
+                "Reduce": { "target_mode": "Triangles", "target_triangles": 1500 }
+            } }, { "id": 2, "enabled": true, "kind": {
+                "SimplifyLod": { "levels": [{ "target_mode": "Triangles", "target_triangles": 0 }] }
+            } }] }
+        }"#;
+        let loaded = from_json(counted).expect("a count parses");
+        let OpKind::Reduce(params) = &loaded.ops[0].kind else {
+            panic!("the operation survives as a Reduce");
+        };
+        assert_eq!(params.target.target_mode, TargetMode::Triangles);
+        assert_eq!(params.target.target_triangles, 1500);
+        let OpKind::SimplifyLod(lods) = &loaded.ops[1].kind else {
+            panic!("the chain survives as a chain");
+        };
+        assert_eq!(lods.levels[0].target_triangles, 1, "clamped into the range");
+
+        let text = to_json(&loaded).expect("serializes");
+        assert!(
+            text.contains("\"target_triangles\": 1500"),
+            "flat beside the rest: {text}"
+        );
+        let reloaded = from_json(&text).expect("parses");
+        assert_eq!(reloaded.ops, loaded.ops);
     }
 
     /// A Remesh or Shrinkwrap saved before rebuilt surfaces could generate

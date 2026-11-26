@@ -158,17 +158,62 @@ impl Default for LodParams {
     }
 }
 
+/// How a simplify run's triangle target is given: as a share of what each object
+/// has, or as a number of triangles.
+///
+/// Both are read per object in the end — objects never trade triangles, so none
+/// vanishes to pay for another — and both keep every object's relative detail. They
+/// differ in what the user states: "half of it" against "1500 triangles", which is
+/// how a game states a budget.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TargetMode {
+    /// [`LodLevel::target_ratio`] of each object's triangles.
+    #[default]
+    Ratio,
+    /// [`LodLevel::target_triangles`] for every object the target applies to,
+    /// together, shared out in proportion to their own counts — so every one of
+    /// them keeps the same share, as under [`Self::Ratio`]. An object whose own
+    /// override names a count takes exactly that and leaves the pool, as Remesh's
+    /// face budget does.
+    Triangles,
+}
+
+impl TargetMode {
+    pub const ALL: [TargetMode; 2] = [TargetMode::Ratio, TargetMode::Triangles];
+
+    /// A stable English identifier for logs and reports; the chrome shows the
+    /// catalog's name (`ui`'s `labels.rs`).
+    pub fn label(self) -> &'static str {
+        match self {
+            TargetMode::Ratio => "ratio",
+            TargetMode::Triangles => "triangles",
+        }
+    }
+}
+
 /// How far one simplify run is asked to go: a LOD level's target, and equally
 /// [`ReduceParams`]'s single one.
+///
+/// Measured against the mesh the operation starts from: what Reduce is handed,
+/// and level 0 for every LOD level.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LodLevel {
-    /// Target triangle count as a fraction of the level-0 mesh, in `0.0..=1.0`.
+    /// Target triangle count as a fraction of the level-0 mesh, in `0.0..=1.0`,
+    /// when [`Self::target_mode`] is [`TargetMode::Ratio`].
     pub target_ratio: f32,
     /// Error the simplifier may not exceed, relative to the mesh extent (or in
     /// world units when [`SimplifyFlags::error_absolute`] is set). The
-    /// simplifier stops short of `target_ratio` rather than exceed this.
+    /// simplifier stops short of its target rather than exceed this.
     pub target_error: f32,
+    /// Which of [`Self::target_ratio`] and [`Self::target_triangles`] is the
+    /// target. Both are kept, so switching between them gives back what each was;
+    /// a preset written before counts existed reads as [`TargetMode::Ratio`].
+    pub target_mode: TargetMode,
+    /// The triangles to keep, when [`Self::target_mode`] is
+    /// [`TargetMode::Triangles`]. A ceiling, like the ratio: the error limit still
+    /// stops the simplifier short of it, and an object never gains triangles.
+    pub target_triangles: u32,
 }
 
 impl Default for LodLevel {
@@ -176,6 +221,8 @@ impl Default for LodLevel {
         Self {
             target_ratio: 0.5,
             target_error: 0.01,
+            target_mode: TargetMode::Ratio,
+            target_triangles: 1000,
         }
     }
 }
@@ -193,7 +240,7 @@ impl Default for LodLevel {
 pub struct ReduceParams {
     #[serde(flatten)]
     pub simplify: SimplifySettings,
-    /// Ratio and error limit, read exactly as a LOD level's are.
+    /// The target and error limit, read exactly as a LOD level's are.
     #[serde(flatten)]
     pub target: LodLevel,
 }

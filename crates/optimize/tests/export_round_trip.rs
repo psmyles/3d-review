@@ -43,6 +43,7 @@ fn weld_and_halve() -> OptStack {
         levels: vec![LodLevel {
             target_ratio: 0.5,
             target_error: 0.05,
+            ..LodLevel::default()
         }],
     }));
     stack

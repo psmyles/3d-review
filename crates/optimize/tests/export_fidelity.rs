@@ -764,6 +764,7 @@ fn a_display_layer_holds_every_level_of_its_node() {
         levels: vec![LodLevel {
             target_ratio: 0.5,
             target_error: 0.05,
+            ..LodLevel::default()
         }],
     }));
     let path = dir.join("layers_out.fbx");

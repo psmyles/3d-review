@@ -14,6 +14,7 @@ use crate::notice::OptWarning;
 use crate::ops;
 use crate::stack::{
     LodLevel, LodParams, OpInstance, OpKind, OptStack, SimplifyAlgorithm, SimplifySettings,
+    TargetMode,
 };
 use crate::submesh::Submesh;
 
@@ -131,7 +132,13 @@ pub(crate) fn build_lod_level(
     let operation = OpKind::SimplifyLod(params.clone());
     let simplify_error =
         simplify_submeshes(&mut submeshes, stack, &operation, warnings, cancel, |_| {
-            (params.simplify, *level)
+            ObjectSettings {
+                simplify: params.simplify,
+                target: *level,
+                // The chain has no per-object overrides: every object shares its
+                // levels' counts.
+                overridden: false,
+            }
         });
 
     LevelState {
@@ -139,6 +146,16 @@ pub(crate) fn build_lod_level(
         simplify_error,
         simplified: true,
     }
+}
+
+/// What one object is simplified with: the settings and target its operation
+/// resolves to for it, and whether they came from its own override.
+pub(crate) struct ObjectSettings {
+    pub(crate) simplify: SimplifySettings,
+    pub(crate) target: LodLevel,
+    /// The node's own override supplied them, so a triangle count is the object's
+    /// alone rather than its share of the operation's pool (see [`TargetMode`]).
+    pub(crate) overridden: bool,
 }
 
 /// Simplify every non-excluded submesh toward the settings and target
@@ -156,7 +173,7 @@ pub(crate) fn simplify_submeshes(
     operation: &OpKind,
     warnings: &mut Warnings,
     cancel: Option<&CancelToken>,
-    mut settings_for: impl FnMut(&Submesh) -> (SimplifySettings, LodLevel),
+    mut settings_for: impl FnMut(&Submesh) -> ObjectSettings,
 ) -> f32 {
     let mut worst_error = 0.0f32;
     let mut requested = 0usize;
@@ -174,29 +191,54 @@ pub(crate) fn simplify_submeshes(
             nodes.push(piece.node);
         }
     }
+    // Each object's settings and triangles first, so a count the objects share
+    // (`TargetMode::Triangles`) can be split before any of them is cut. Settings
+    // resolve per node (an override names a node), so any piece answers for all of
+    // a node's.
+    let mut plan: Vec<(u32, ObjectSettings, usize)> = Vec::new();
     for node in nodes {
-        if cancelled(cancel) {
-            return worst_error;
-        }
         if is_excluded(stack, node) {
             continue;
+        }
+        let Some(first) = submeshes.iter().find(|piece| piece.node == node) else {
+            continue;
+        };
+        let settings = settings_for(first);
+        let before = submeshes
+            .iter()
+            .filter(|piece| piece.node == node)
+            .map(Submesh::triangle_count)
+            .sum();
+        plan.push((node, settings, before));
+    }
+    // The pool: every object whose count is the operation's own. They all carry
+    // the same target, so any of them names the count.
+    let pooled = |settings: &ObjectSettings| {
+        settings.target.target_mode == TargetMode::Triangles && !settings.overridden
+    };
+    let pool = plan
+        .iter()
+        .find(|(_, settings, _)| pooled(settings))
+        .map(|(_, settings, _)| {
+            let triangles: usize = plan
+                .iter()
+                .filter(|(_, settings, _)| pooled(settings))
+                .map(|&(_, _, before)| before)
+                .sum();
+            (settings.target.target_triangles, triangles)
+        });
+
+    for (node, object, before) in plan {
+        if cancelled(cancel) {
+            return worst_error;
         }
         let mut pieces: Vec<&mut Submesh> = submeshes
             .iter_mut()
             .filter(|piece| piece.node == node)
             .collect();
-        // Settings resolve per node (an override names a node), so any piece
-        // answers for all of them.
-        let (settings, target) = settings_for(pieces[0]);
+        let (settings, target) = (object.simplify, object.target);
         seam_bound |= settings.algorithm != SimplifyAlgorithm::Sloppy && !settings.flags.permissive;
-
-        // The ratio is applied per object, which is the only interpretation
-        // consistent with processing them independently: a 50% target means each
-        // object keeps half its triangles, not that the scene total halves while
-        // one object vanishes.
-        let ratio = target.target_ratio.clamp(0.0, 1.0);
-        let before: usize = pieces.iter().map(|piece| piece.triangle_count()).sum();
-        let triangles = ((before as f32) * ratio).round() as usize;
+        let triangles = object_target(before, &object, pool);
 
         let outcome = ops::simplify_object(
             &mut pieces,
@@ -236,6 +278,37 @@ pub(crate) fn simplify_submeshes(
     worst_error
 }
 
+/// How many triangles one object is asked for.
+///
+/// A ratio is applied per object, which is the only interpretation consistent with
+/// processing them independently: a 50% target means each object keeps half its
+/// triangles, not that the scene total halves while one object vanishes. A count
+/// is the object's own when its override names one; otherwise it is the pool's
+/// (`pool`: the count and the pooled objects' triangles together), shared out in
+/// proportion to each object's triangles — so every pooled object keeps the same
+/// share, exactly as under a ratio. Never more than the object has.
+fn object_target(before: usize, object: &ObjectSettings, pool: Option<(u32, usize)>) -> usize {
+    let target = &object.target;
+    match target.target_mode {
+        // Kept to the arithmetic it has always had, so a ratio's output is the
+        // same bytes it was (D27).
+        TargetMode::Ratio => {
+            let ratio = target.target_ratio.clamp(0.0, 1.0);
+            ((before as f32) * ratio).round() as usize
+        }
+        TargetMode::Triangles if object.overridden => {
+            (target.target_triangles as usize).min(before)
+        }
+        TargetMode::Triangles => match pool {
+            Some((count, pooled)) if pooled > 0 => {
+                let share = f64::from(count) / pooled as f64;
+                ((before as f64 * share).round() as usize).min(before)
+            }
+            _ => before,
+        },
+    }
+}
+
 /// Apply one stack operation across every submesh, honouring per-node
 /// exclusions and parameter overrides. Returns the worst simplification error it
 /// caused, which is non-zero only for [`OpKind::Reduce`].
@@ -270,14 +343,19 @@ pub(crate) fn apply_op(
     // level starts from, and what the export writes in the source mesh's place.
     if let OpKind::Reduce(params) = &op.kind {
         return simplify_submeshes(submeshes, stack, &op.kind, warnings, run.token(), |piece| {
-            let params = match resolve_op(stack, op, piece.node) {
-                OpKind::Reduce(resolved) => resolved,
+            let resolved = resolve_op(stack, op, piece.node);
+            let (params, overridden) = match resolved {
+                OpKind::Reduce(own) => (own, !std::ptr::eq(resolved, &op.kind)),
                 // An override can only ever hold the same kind as the operation
                 // it overrides; fall back to the global settings if one somehow
                 // doesn't.
-                _ => params,
+                _ => (params, false),
             };
-            (params.simplify, params.target)
+            ObjectSettings {
+                simplify: params.simplify,
+                target: params.target,
+                overridden,
+            }
         });
     }
 

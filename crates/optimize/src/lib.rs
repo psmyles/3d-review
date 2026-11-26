@@ -78,7 +78,7 @@ pub use stack::{
     LodLevel, LodPackaging, LodParams, NodeOverride, NormalMode, NormalParams, OpInstance, OpKind,
     OptStack, RebindReport, ReduceParams, RemeshDensity, RemeshParams, RemeshTopology,
     ShrinkwrapMethod, ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings,
-    StackRepairs, VoxelTarget, WeldParams,
+    StackRepairs, TargetMode, VoxelTarget, WeldParams,
 };
 
 /// Everything that can go wrong in this crate.

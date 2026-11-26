@@ -554,6 +554,9 @@ impl OpKind {
                 LOD_ERROR_MAX,
                 default.target_error,
             );
+            level.target_triangles = level
+                .target_triangles
+                .clamp(LOD_TRIANGLES_MIN, LOD_TRIANGLES_MAX);
         }
         match self {
             OpKind::Weld(params) => fit(

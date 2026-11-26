@@ -36,12 +36,23 @@ moves together with every copy of itself, so none of those can open up.
 
 ## Target
 
-You give a share of triangles to keep, and a limit on how far the surface may
-move. The share is counted per object: all of an object's materials are
-simplified together, and the triangles go wherever the shape needs them most.
-A thin, finely detailed trim and a broad panel that share one object are not
-each cut to the same share. The panel, which loses nothing by giving up
-triangles, pays for most of it.
+You give a target and a limit on how far the surface may move. The target is
+either a **Share** of the triangles each object has, or a **Count**: a number
+of triangles for the objects together, the way a game states a budget ("1500
+triangles"). Both are measured against the model the operation starts from -
+for a level of detail, the base model.
+
+A count is shared out between the objects in proportion to their own
+triangles, so each keeps the same share of what it had, just as with a share.
+No object is cut to nothing to pay for another. An object with its own setting
+for the operation ([overrides](overrides.md)) keeps exactly its own count, and
+the others share the operation's. A count larger than an object has leaves it
+as it is.
+
+Either way, all of an object's materials are simplified together, and the
+triangles go wherever the shape needs them most. A thin, finely detailed trim
+and a broad panel that share one object are not each cut to the same share.
+The panel, which loses nothing by giving up triangles, pays for most of it.
 
 The simplifier stops early rather than go past the limit. So if a model cannot
 be reduced that far without visible damage, you get back a model with more

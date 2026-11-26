@@ -20,11 +20,11 @@ use review_localization::tr;
 use review_model::ENGINE_VERTEX_BYTES;
 use review_optimize::{
     LodLevel, LodParams, OpKind, OptProgress, OptStack, OptStage, ProcessInput, ProcessedResult,
-    ReduceParams, export::planned_files, export_fbx, preset, process_with_progress,
+    ReduceParams, TargetMode, export::planned_files, export_fbx, preset, process_with_progress,
 };
 use serde_json::{Value, json};
 
-use crate::args::{CommandName, Common, IfExists, Lods, OptimizeArgs};
+use crate::args::{CommandName, Common, IfExists, Lods, OptimizeArgs, Target};
 use crate::console::{self, Bar};
 use crate::inputs::{self, Model};
 use crate::keys::cli as k;
@@ -131,10 +131,10 @@ fn build_stack(args: &OptimizeArgs) -> Result<OptStack, String> {
                 }
             }
         }
-        Some(Lods::Ratios(ratios)) => set_lods(&mut stack, ratios),
+        Some(Lods::Levels(targets)) => set_lods(&mut stack, targets),
     }
-    if let Some(ratio) = args.reduce {
-        set_reduce(&mut stack, ratio);
+    if let Some(target) = args.reduce {
+        set_reduce(&mut stack, target);
     }
     if let Some(packaging) = args.packaging {
         stack.export.packaging = packaging;
@@ -152,13 +152,28 @@ fn build_stack(args: &OptimizeArgs) -> Result<OptStack, String> {
     Ok(stack)
 }
 
+/// Aim `level` at `target`: a share or a count, the other of the two kept as
+/// it was, as the Inspector keeps both.
+fn aim(level: &mut LodLevel, target: Target) {
+    match target {
+        Target::Share(ratio) => {
+            level.target_mode = TargetMode::Ratio;
+            level.target_ratio = ratio;
+        }
+        Target::Triangles(count) => {
+            level.target_mode = TargetMode::Triangles;
+            level.target_triangles = count;
+        }
+    }
+}
+
 /// `--lods`: the stack's LOD chain becomes these levels. A level the preset
 /// already has keeps its error limit; a new one gets the one before it, which
 /// is what the Inspector's "add level" does.
-fn set_lods(stack: &mut OptStack, ratios: &[f32]) {
+fn set_lods(stack: &mut OptStack, targets: &[Target]) {
     let chain = |existing: &[LodLevel]| {
-        let mut levels: Vec<LodLevel> = Vec::with_capacity(ratios.len());
-        for (index, &target_ratio) in ratios.iter().enumerate() {
+        let mut levels: Vec<LodLevel> = Vec::with_capacity(targets.len());
+        for (index, &target) in targets.iter().enumerate() {
             let target_error = existing.get(index).map_or_else(
                 || {
                     levels
@@ -169,10 +184,12 @@ fn set_lods(stack: &mut OptStack, ratios: &[f32]) {
                 },
                 |level| level.target_error,
             );
-            levels.push(LodLevel {
-                target_ratio,
+            let mut level = LodLevel {
                 target_error,
-            });
+                ..LodLevel::default()
+            };
+            aim(&mut level, target);
+            levels.push(level);
         }
         levels
     };
@@ -196,7 +213,7 @@ fn set_lods(stack: &mut OptStack, ratios: &[f32]) {
 }
 
 /// `--reduce`: the stack's Reduce takes this target, or one is added.
-fn set_reduce(stack: &mut OptStack, ratio: f32) {
+fn set_reduce(stack: &mut OptStack, target: Target) {
     if let Some(op) = stack
         .ops
         .iter_mut()
@@ -204,12 +221,12 @@ fn set_reduce(stack: &mut OptStack, ratio: f32) {
     {
         op.enabled = true;
         if let OpKind::Reduce(params) = &mut op.kind {
-            params.target.target_ratio = ratio;
+            aim(&mut params.target, target);
         }
         return;
     }
     let mut params = ReduceParams::default();
-    params.target.target_ratio = ratio;
+    aim(&mut params.target, target);
     insert(stack, OpKind::Reduce(params), true);
 }
 
@@ -526,7 +543,7 @@ fn record_levels(entry: &mut Entry, result: &ProcessedResult) {
 mod tests {
     use super::*;
 
-    fn args(lods: Option<Lods>, reduce: Option<f32>) -> OptimizeArgs {
+    fn args(lods: Option<Lods>, reduce: Option<Target>) -> OptimizeArgs {
         OptimizeArgs {
             out: PathBuf::from("out"),
             preset: None,
@@ -547,8 +564,8 @@ mod tests {
 
     #[test]
     fn lods_alone_make_a_chain_with_one_error_limit() {
-        let stack = build_stack(&args(Some(Lods::Ratios(vec![0.5, 0.25, 0.1, 0.05])), None))
-            .expect("a stack");
+        let shares = [0.5, 0.25, 0.1, 0.05].map(Target::Share).to_vec();
+        let stack = build_stack(&args(Some(Lods::Levels(shares)), None)).expect("a stack");
         let params = stack.lod_params().expect("a LOD op");
         let levels: Vec<(f32, f32)> = params
             .levels
@@ -568,7 +585,7 @@ mod tests {
         let mut stack = OptStack::default();
         stack.push_op(OpKind::SimplifyLod(LodParams::default()));
         stack.push_op(OpKind::VertexCache);
-        set_reduce(&mut stack, 0.5);
+        set_reduce(&mut stack, Target::Share(0.5));
         assert_eq!(
             kinds(&stack)[0],
             OpKind::Reduce(ReduceParams::default()).label()
@@ -576,7 +593,7 @@ mod tests {
 
         let mut stack = OptStack::default();
         stack.push_op(OpKind::VertexCache);
-        set_lods(&mut stack, &[0.5]);
+        set_lods(&mut stack, &[Target::Share(0.5)]);
         assert_eq!(
             kinds(&stack),
             [
@@ -584,6 +601,34 @@ mod tests {
                 OpKind::VertexCache.label()
             ]
         );
+    }
+
+    /// Counts land in the same levels shares do, with the error limits the chain
+    /// would have given shares, and a Reduce takes one too; a level keeps the share
+    /// it had, so switching it back in the Inspector gives back what it was.
+    #[test]
+    fn counts_aim_the_chain_and_the_reduce() {
+        let lods = Lods::Levels(vec![Target::Triangles(750), Target::Share(0.25)]);
+        let stack = build_stack(&args(Some(lods), Some(Target::Triangles(1500)))).expect("a stack");
+        let params = stack.lod_params().expect("a LOD op");
+        assert_eq!(params.levels[0].target_mode, TargetMode::Triangles);
+        assert_eq!(params.levels[0].target_triangles, 750);
+        assert_eq!(
+            params.levels[0].target_ratio, 0.5,
+            "the default share is kept"
+        );
+        assert_eq!(params.levels[1].target_mode, TargetMode::Ratio);
+        assert_eq!(params.levels[1].target_ratio, 0.25);
+        let reduce = stack
+            .ops
+            .iter()
+            .find_map(|op| match &op.kind {
+                OpKind::Reduce(params) => Some(params),
+                _ => None,
+            })
+            .expect("a Reduce");
+        assert_eq!(reduce.target.target_mode, TargetMode::Triangles);
+        assert_eq!(reduce.target.target_triangles, 1500);
     }
 
     #[test]

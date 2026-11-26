@@ -9,7 +9,8 @@
 //! The weld tolerance and the prune size threshold are both fractions of the
 //! mesh's overall size; the attribute weights scale a simplifier's per-attribute
 //! error; the overdraw threshold is the vertex-cache efficiency it may give up
-//! (1.0 = none); the LOD rows are the per-level triangle target and error limit.
+//! (1.0 = none); the LOD rows are the per-level triangle target (a share, or a
+//! count) and error limit.
 
 pub const WELD_TOLERANCE_MIN: f32 = 0.0;
 pub const WELD_TOLERANCE_MAX: f32 = 0.1;
@@ -23,6 +24,13 @@ pub const LOD_RATIO_MIN: f32 = 0.01;
 pub const LOD_RATIO_MAX: f32 = 1.0;
 pub const LOD_ERROR_MIN: f32 = 0.0;
 pub const LOD_ERROR_MAX: f32 = 1.0;
+/// A triangle target given as a count (`TargetMode::Triangles`). The floor is one
+/// triangle — the simplifier stops where the error limit says long before — and the
+/// ceiling is past any game asset; a count above an object's own triangles leaves
+/// it as it is. The ratio's 1% floor does not apply to the share a count works out
+/// to: a million-triangle scan can be asked for 1500.
+pub const LOD_TRIANGLES_MIN: u32 = 1;
+pub const LOD_TRIANGLES_MAX: u32 = 100_000_000;
 
 /// The most levels a LOD chain may hold. Past this the chain stops being a
 /// pipeline decision and starts being an experiment; the cost is one full
