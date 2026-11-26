@@ -146,8 +146,16 @@ impl Dialog {
         match self {
             Dialog::OpenModel => picker
                 .add_filter(
+                    review_localization::tr(keys::app_dialogs::FILTER_MODELS),
+                    &["fbx", "gltf", "glb"],
+                )
+                .add_filter(
                     review_localization::tr(keys::app_dialogs::FILTER_FBX),
                     &["fbx"],
+                )
+                .add_filter(
+                    review_localization::tr(keys::app_dialogs::FILTER_GLTF),
+                    &["gltf", "glb"],
                 )
                 .set_title(review_localization::tr(keys::app_dialogs::OPEN_MODEL))
                 .pick_files()

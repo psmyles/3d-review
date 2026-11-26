@@ -1,9 +1,17 @@
 # Getting a model in
 
-3D Review opens FBX files. FBX is the most common way to hand a model from a
-modelling program to a game engine, and it keeps everything an artist cares
-about: the shape, the texture layout, the materials, the bones and the
-animations. Other file types are not supported yet.
+3D Review opens FBX files and glTF files (`.gltf`, and the single-file
+`.glb`). FBX is the most common way to hand a model from a modelling program to
+a game engine, and it keeps everything an artist cares about: the shape, the
+texture layout, the materials, the bones and the animations. glTF is what many
+engines load directly, Godot and Bevy among them, so it is often the very file
+the game reads.
+
+From a glTF file, 3D Review reads the parts and how they are placed, the shape,
+the texture layout, the vertex colours, each material's colour and finish, and
+any custom data the file carries per vertex or on its parts. It does not yet
+read a glTF file's bones, animations, shape keys or textures. glTF is always in
+metres with +Y up.
 
 There are four ways to open a file:
 
@@ -13,7 +21,7 @@ There are four ways to open a file:
   pick more than one file in it.
 - Double-click the empty view.
 - Open the file from your desktop. On Windows the installer teaches the system
-  that `.fbx` files belong to 3D Review; on macOS the app offers itself in
+  that `.fbx` files belong to 3D Review (a `.glb` you can open with it); on macOS the app offers itself in
   Finder's Open With menu. You can also give the file path on the command line.
 
 ## What happens while a file loads

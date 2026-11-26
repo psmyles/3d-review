@@ -1082,7 +1082,7 @@ A developer tool, not part of the shipped viewer: it renders models, their
 `_LOD<n>` levels, or an Opt stack's output to PNG through the real `Renderer` on
 `Gpu::headless`, so nothing opens a window, takes focus or reads input — a change
 can be looked at from a script while the machine is in use. `cli.rs` is the
-command line (`--help` documents it), `inputs.rs` turns `file.fbx[@stack][#level]`
+command line (`--help` documents it), `inputs.rs` turns `file.fbx[@stack][#level]` (or `.glb`, `.gltf`)
 into subjects (a model plus the nodes hidden from it), `capture.rs` drives the
 frame loop (drawing until ambient occlusion converges, as the viewer does),
 `sheet.rs` lays views out as a labelled contact sheet. Two modes measure rather

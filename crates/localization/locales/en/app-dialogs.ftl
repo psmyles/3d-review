@@ -18,7 +18,9 @@ app-dialogs-save-audit-report = Save audit report
 app-dialogs-install-cli-prompt = { $product } wants to install the { $command } command in { $folder }.
 
 # Filter names in the dialog's file-type dropdown.
+app-dialogs-filter-models = Models
 app-dialogs-filter-fbx = FBX
+app-dialogs-filter-gltf = glTF
 app-dialogs-filter-glb = glb (binary glTF)
 app-dialogs-filter-image = Image
 app-dialogs-filter-preset = Optimization preset

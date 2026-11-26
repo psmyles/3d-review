@@ -10,7 +10,7 @@ review-snapshot - headless renders through the viewer's own renderer
 
 USAGE: review-snapshot [OPTIONS] <INPUT>...
 
-INPUT   <file.fbx>[@<stack>][#<level>]
+INPUT   <file.fbx|.glb|.gltf>[@<stack>][#<level>]
         @<preset.json>      run an Opt preset (as saved from the Opt workspace)
         @lods[:r1,r2,...][/err]
                             Generate LODs at these triangle ratios with the default
@@ -369,20 +369,24 @@ fn parse_background(text: &str) -> Result<ViewportBackground> {
 
 /// `path[@stack][#level]`.
 ///
-/// The file is everything up to the last `.fbx` (in any case) that ends the
-/// argument or is followed by `@` or `#`, so `exports.fbx_old/hero.fbx` and
+/// The file is everything up to the last `.fbx`, `.glb` or `.gltf` (in any case)
+/// that ends the argument or is followed by `@` or `#`, so `exports.fbx_old/hero.fbx` and
 /// `hero.fbx.v2.fbx` are files, and a `#` or `@` in a directory name is not
 /// mistaken for a suffix. The level is what follows the last `#` - but a
 /// preset's path may hold a `#` of its own, so after `@<preset.json>` a `#` that
 /// does not start a level selector is part of the path.
 fn parse_input(text: &str) -> Result<InputSpec> {
     let lower = text.to_ascii_lowercase();
-    let path_end = lower
-        .match_indices(".fbx")
-        .map(|(at, _)| at + 4)
+    let path_end = [".fbx", ".glb", ".gltf"]
+        .iter()
+        .flat_map(|extension| {
+            lower
+                .match_indices(extension)
+                .map(move |(at, _)| at + extension.len())
+        })
         .filter(|&end| matches!(lower.as_bytes().get(end), None | Some(b'@' | b'#')))
-        .last()
-        .ok_or_else(|| anyhow!("an input must name an .fbx file: {text}"))?;
+        .max()
+        .ok_or_else(|| anyhow!("an input must name an .fbx, .glb or .gltf file: {text}"))?;
     let (path, mut rest) = text.split_at(path_end);
     let mut level = LevelSpec::Default;
     if let Some((before, after)) = rest.rsplit_once('#') {
@@ -502,6 +506,15 @@ mod tests {
             )
         );
         assert!(parse_input("hero.fbx.txt").is_err());
+        assert_eq!(
+            input("parts/link.glb@lods#1"),
+            (
+                "parts/link.glb".into(),
+                Some(StackSpec::Lods(vec![0.5, 0.25, 0.125], None)),
+                LevelSpec::One(1)
+            )
+        );
+        assert_eq!(input("a.fbx.gltf").0, PathBuf::from("a.fbx.gltf"));
     }
 
     #[test]
