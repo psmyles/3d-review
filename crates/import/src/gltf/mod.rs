@@ -605,6 +605,7 @@ impl<'a> Reader<'a> {
             originals
                 .tangents
                 .push(primitive.tangents.as_deref().map(|values| vec4(values, at)));
+            originals.colored.push(primitive.colors.is_some());
             for (set, values) in originals.uvs.iter_mut().enumerate() {
                 values.push(primitive.uvs.get(set).map(|uvs| vec2(uvs, at)));
             }

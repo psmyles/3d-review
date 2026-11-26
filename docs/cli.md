@@ -120,8 +120,8 @@ review3d-cli optimize props --recurse --out build/lods --lods 50%,25%,12.5%
 review3d-cli optimize hero.fbx --preset presets/hero.json --out build --if-exists replace
 ```
 
-Runs an operation stack over each model and writes the result as FBX, as the Opt
-workspace's Export does.
+Runs an operation stack over each model and writes the result as FBX or glb,
+as the Opt workspace's Export does.
 
 | Option | |
 |---|---|
@@ -137,8 +137,9 @@ workspace's Export does.
 | `--max-distance <share>\|none` | The farthest any object's surface may move from the model as it came, as a share of the object's size (`0.01`, `1%`). The same way. |
 | `--packaging single-file\|file-per-lod` | `single-file` writes one FBX holding `Name_LOD0`...`Name_LODn`. `file-per-lod` writes `name_LOD0.fbx`, `name_LOD1.fbx`... A run with no chain writes `name.fbx` either way. |
 | `--hierarchy rebuild\|flat` | `rebuild` keeps the model's hierarchy; `flat` writes every mesh at the top level, in world space. |
-| `--format binary\|ascii` | The FBX encoding. |
-| `--suffix <text>` | Added to each file name, before `.fbx` and any `_LOD<n>`. |
+| `--format binary\|ascii\|glb` | What to write: binary FBX (the default), ASCII FBX, or glb (binary glTF). A glb keeps a glTF model's extras, materials and custom attributes; see [glb output](#glb-output). |
+| `--strip-custom-attributes` | Leave the custom vertex attributes (glTF names starting with `_`, such as `_CAD_FACE`) out of a glb, for the files a game loads. |
+| `--suffix <text>` | Added to each file name, before the extension and any `_LOD<n>`. |
 | `--if-exists fail\|skip\|replace` | When a file a model would write is already there. `fail` (the default) fails that model, `skip` leaves the model out, `replace` writes over the file. |
 | `--replace-models` | Let each model's results replace the model itself, when `--out` and `--suffix` put them there: so an engine that has the model placed in its scenes picks up the new one. There is no undo; keep the models in source control. |
 
@@ -181,7 +182,8 @@ what it leaves out comes from the command line. So the run's shared settings go
 on the command line once, and each line says only what differs. A line may set
 `--out`, `--preset`, `--lods`, `--reduce`, `--target-error`, `--simplifier`,
 `--simplify-flags`, `--max-volume-change`, `--max-distance`, `--packaging`,
-`--hierarchy`, `--format` and `--suffix`; the rest belong to the whole run.
+`--hierarchy`, `--format`, `--strip-custom-attributes` and `--suffix`; the rest
+belong to the whole run.
 Paths are relative to the working folder, double quotes keep one with spaces
 together, and blank lines and lines starting with `#` are skipped. The file is
 read as `--files-from` reads one (UTF-8, or UTF-16 with a byte-order mark).
@@ -204,12 +206,39 @@ whatever `--if-exists` says; its other files (`file-per-lod`'s levels) still go 
 it. Both compare files rather than spellings: links and `..`
 are resolved, a folder `--out` creates during the run makes no difference, and on
 Windows and macOS, whose file systems ignore case, names differing only in case
-are one file. The output is always `.fbx` in lower case, so `Rock.FBX` written
+are one file. The output's extension is always lower case (`.fbx`, `.glb`), so `Rock.FBX` written
 into its own folder without a suffix is refused, as are `a/Body.fbx` and
 `b/body.fbx` written to one folder.
 
 Nothing is hidden as it can be in the viewer's Outliner. To keep an object out of
 an AO bake, exclude it in the preset.
+
+### glb output
+
+`--format glb` writes binary glTF 2.0, from a glTF model or any other:
+
+- The scene graph as it was: every node, with its own translation, rotation and
+  scale (or matrix) and its `extras`; each mesh's name and `extras`. A LOD chain
+  in one file names each level's object `<name>_LOD<n>`, beside the original
+  under the same parent; one file per level puts each level on the original
+  objects.
+- One primitive per material, with `POSITION`, `NORMAL`, each UV set the
+  primitive had, `TANGENT` where it had tangents, `COLOR_0` in the type it came
+  in (16-bit normalized from Blender, never cut to 8 bits, so a palette index in
+  R survives), and the custom attributes in their own types.
+- A glTF model's materials, textures, samplers and images exactly as the file
+  had them.
+- A vertex no operation changed is written with the very values the file stored,
+  so a glb run through a stack that changes nothing comes out byte for byte the
+  same as it went in, once it has been through once.
+- A model from FBX is turned from its own axes into glTF's (+Y up), with its
+  material factors; its textures and user properties are not written, and the
+  notes say so. Skins, blend shapes and animation are not written yet.
+
+The custom attributes are also what the simplifier keeps: a vertex whose
+`_CAD_FACE` differs from its neighbour's is never merged with it, so no triangle
+of any level reaches across two CAD faces. `--strip-custom-attributes` leaves
+them out of the file once they have done that.
 
 ## audit
 

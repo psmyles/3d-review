@@ -16,8 +16,9 @@ use review_localization::Key;
 use review_log::Level;
 use review_model::{NodeKind, SkinningMethod};
 use review_optimize::{
-    AoQuality, AoTarget, FbxFormat, HierarchyMode, LodPackaging, NormalMode, RemeshDensity,
-    RemeshTopology, Shortfall, ShrinkwrapMethod, SimplifyAlgorithm, TargetMode, VoxelTarget,
+    AoQuality, AoTarget, ExportFileType, FbxFormat, HierarchyMode, LodPackaging, NormalMode,
+    RemeshDensity, RemeshTopology, Shortfall, ShrinkwrapMethod, SimplifyAlgorithm, TargetMode,
+    VoxelTarget,
 };
 use review_render::{
     AlphaMode, BufferView, ChannelSelect, CheckerTexture, EnvironmentMap, GtaoQuality,
@@ -314,6 +315,13 @@ pub(crate) fn hierarchy_mode(mode: HierarchyMode) -> Key {
     }
 }
 
+pub(crate) fn export_file_type(file_type: ExportFileType) -> Key {
+    match file_type {
+        ExportFileType::Fbx => keys::ui_enums::FILE_TYPE_FBX,
+        ExportFileType::Glb => keys::ui_enums::FILE_TYPE_GLB,
+    }
+}
+
 pub(crate) fn fbx_format(format: FbxFormat) -> Key {
     match format {
         FbxFormat::Binary => keys::ui_enums::FBX_BINARY,
@@ -461,6 +469,9 @@ mod tests {
         }
         for value in FbxFormat::ALL {
             assert_resolves(fbx_format(value));
+        }
+        for value in ExportFileType::ALL {
+            assert_resolves(export_file_type(value));
         }
     }
 }

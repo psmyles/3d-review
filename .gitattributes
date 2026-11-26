@@ -26,3 +26,4 @@ assets/test_models/*.jpg filter=lfs diff=lfs merge=lfs -text
 *.tga filter=lfs diff=lfs merge=lfs -text
 assets/textures/** filter=lfs diff=lfs merge=lfs -text
 assets/test_models/*.png filter=lfs diff=lfs merge=lfs -text
+*.glb filter=lfs diff=lfs merge=lfs -text

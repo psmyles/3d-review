@@ -19,6 +19,7 @@ app-dialogs-install-cli-prompt = { $product } wants to install the { $command } 
 
 # Filter names in the dialog's file-type dropdown.
 app-dialogs-filter-fbx = FBX
+app-dialogs-filter-glb = glb (binary glTF)
 app-dialogs-filter-image = Image
 app-dialogs-filter-preset = Optimization preset
 app-dialogs-filter-audit-profile = Audit profile

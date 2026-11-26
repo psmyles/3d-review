@@ -67,6 +67,18 @@ file reopens the first; use `exact` instead (tests and the viewer need not).
 change the output; say so in the commit and check the new hashes on the other
 OS. Debug and release builds write the same bytes, so either profile checks it.
 
+**A glb only reproduces itself through the source's stored values.** Import
+bakes a glTF vertex into world space and turns V up; undoing either in the
+writer (`inverse(world) * p`, `1 - v`) moves the last bit of most values. The
+writer gets byte-identical output by writing `GltfVertices`' stored values for
+every vertex still bit-identical to its source corner, so anything that changes
+a vertex without changing what it *is* — a pass that renormalizes normals, a
+tangent rebuild, an op that rewrites colours to the same colour through a
+different path — turns that off for the vertices it touched. Check with
+`optimize/tests/glb_export.rs`. Blender writes `node.translation` as the `f32`
+printed through `f64` (`-0.3799999952316284`); the writer prints the shortest
+`f32` (`-0.38`). They are the same number: compare glTF JSON in `f32`.
+
 **Render checks can be scripted, headlessly.** `review-snapshot` (see
 [ARCHITECTURE](ARCHITECTURE.md#snapshot--review-snapshot)) draws through the
 real renderer on a windowless GPU and writes PNGs; `--compare` turns "the

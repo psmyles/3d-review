@@ -5,7 +5,7 @@
 //! the export options laid over it - or, with no preset, only those. Each model
 //! then goes through exactly what the viewer's Export does: the preset's
 //! per-object settings rebound to this model's objects by name, the run, and
-//! `export_fbx`. What it writes, and where, is settled before the model is even
+//! `export`. What it writes, and where, is settled before the model is even
 //! loaded, so a model whose files are already there costs nothing to skip and a
 //! batch can never write one model over another - or over a model it is
 //! reading, but for a model replacing itself under `--replace-models`.
@@ -19,9 +19,9 @@ use review_labels::opt::{
 use review_localization::tr;
 use review_model::ENGINE_VERTEX_BYTES;
 use review_optimize::{
-    Aim, LodLevel, LodParams, OpKind, OptProgress, OptStack, OptStage, ProcessInput,
-    ProcessedResult, ReduceParams, Shortfall, SimplifySettings, TargetMode, export::planned_files,
-    export_fbx, preset, process_with_progress,
+    Aim, ExportFileType, LodLevel, LodParams, OpKind, OptProgress, OptStack, OptStage,
+    ProcessInput, ProcessedResult, ReduceParams, Shortfall, SimplifySettings, TargetMode, export,
+    export::planned_files, preset, process_with_progress,
 };
 use serde_json::{Value, json};
 
@@ -150,14 +150,14 @@ fn work(common: &Common, args: &OptimizeArgs, bar: &Bar, report: &mut Report) {
 }
 
 /// Where `model`'s file goes under `args`' `--out` and `--suffix`, keeping its
-/// place below the argument that named it.
-fn destination(model: &Model, args: &OptimizeArgs) -> PathBuf {
+/// place below the argument that named it, with `file_type`'s extension.
+fn destination(model: &Model, args: &OptimizeArgs, file_type: ExportFileType) -> PathBuf {
     let stem = model
         .relative
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let name = format!("{stem}{}.fbx", args.suffix);
+    let name = format!("{stem}{}.{}", args.suffix, file_type.extension());
     args.out.join(model.relative.with_file_name(name))
 }
 
@@ -256,8 +256,14 @@ fn build_stack(args: &OptimizeArgs) -> Result<OptStack, String> {
     if let Some(hierarchy) = args.hierarchy {
         stack.export.hierarchy = hierarchy;
     }
+    if let Some(file_type) = args.file_type {
+        stack.export.file_type = file_type;
+    }
     if let Some(format) = args.format {
         stack.export.format = format;
+    }
+    if args.strip_custom_attributes {
+        stack.export.strip_custom_attributes = true;
     }
     stack.sanitize();
     if !stack.ops.iter().any(|op| op.enabled) {
@@ -393,7 +399,7 @@ impl Batch<'_> {
         let model = &job.model;
         let job_args = job.args.as_ref().unwrap_or(self.args);
         let mut entry = Entry::new(&model.label());
-        let destination = destination(model, job_args);
+        let destination = destination(model, job_args, job.stack.export.file_type);
         let planned = planned_files(0..level_count(&job.stack), &destination, &job.stack.export);
         if let Err((status, problem)) = self.claim(model, &planned) {
             return (status, entry, Some(problem), Vec::new());
@@ -480,7 +486,7 @@ impl Batch<'_> {
         {
             return (Status::Failed, entry, Some(error.to_string()), Vec::new());
         }
-        let exported = export_fbx(
+        let exported = export(
             &result.lods,
             &loaded.model,
             loaded.extras.as_ref(),
@@ -517,7 +523,7 @@ impl Batch<'_> {
     }
 
     /// Where `model` is written: its place under `--out`, its name with the
-    /// suffix, and the `.fbx` extension whatever the source's case.
+    /// suffix, and the export's lower-case extension whatever the source's case.
     /// Claim `files` for `model`, or say why it cannot have them: one is a
     /// model of this run, another model of this run is to write one, or one is
     /// already there and `--if-exists` does not say to replace it.
@@ -701,11 +707,31 @@ mod tests {
             base: crate::args::JobBase::default(),
             packaging: None,
             hierarchy: None,
+            file_type: None,
             format: None,
+            strip_custom_attributes: false,
             suffix: String::new(),
             if_exists: IfExists::Fail,
             replace_models: false,
         }
+    }
+
+    #[test]
+    fn glb_and_its_options_reach_the_export_settings() {
+        let mut glb = args(Some(Lods::None), Some(Target::Share(0.5)));
+        glb.file_type = Some(ExportFileType::Glb);
+        glb.strip_custom_attributes = true;
+        let stack = build_stack(&glb).expect("a stack");
+        assert_eq!(stack.export.file_type, ExportFileType::Glb);
+        assert!(stack.export.strip_custom_attributes);
+        let model = Model {
+            relative: PathBuf::from("props/Rock.GLTF"),
+            path: PathBuf::from("in/props/Rock.GLTF"),
+        };
+        assert_eq!(
+            destination(&model, &glb, stack.export.file_type),
+            Path::new("out").join("props").join("Rock.glb")
+        );
     }
 
     fn kinds(stack: &OptStack) -> Vec<&'static str> {

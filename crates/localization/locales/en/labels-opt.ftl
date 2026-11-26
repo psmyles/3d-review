@@ -159,6 +159,16 @@ labels-opt-note-capture-not-loaded =
 labels-opt-note-gltf-into-fbx =
     The source is glTF: its nodes and material factors were written, its extras and textures
     were not, since FBX has no place for them. Export as glb to keep them.
+labels-opt-note-fbx-into-glb =
+    The source is not glTF: its nodes, geometry and material factors were written, its user
+    properties and textures were not.
+labels-opt-note-glb-no-deform =
+    Skinning, blend shapes and animation were not written: the glb export does not write them yet.
+labels-opt-note-glb-extra-color-sets =
+    Only the first vertex-colour set was written: the others have no place in glb.
+labels-opt-note-glb-axes-mirrored =
+    The source's axes are a mirror image of glTF's, so they were written as they are: the model
+    may come out mirrored or on its side.
 labels-opt-note-deform-not-written-flat =
     Skinning and blend shapes were not written: a flat hierarchy bakes the geometry into
     world space, which has no bones to bind to.

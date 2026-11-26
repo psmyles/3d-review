@@ -10,9 +10,9 @@
 use review_labels::opt::{op_description, op_kind};
 use review_model::ModelData;
 use review_optimize::{
-    AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode,
-    LodLevel, LodPackaging, LodParams, NormalMode, NormalParams, OpKind, ReduceParams,
-    RemeshDensity, RemeshParams, RemeshTopology, ShrinkwrapMethod, ShrinkwrapParams,
+    AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportFileType, ExportOptions, FbxFormat,
+    HierarchyMode, LodLevel, LodPackaging, LodParams, NormalMode, NormalParams, OpKind,
+    ReduceParams, RemeshDensity, RemeshParams, RemeshTopology, ShrinkwrapMethod, ShrinkwrapParams,
     SimplifyAlgorithm, SimplifyFlags, SimplifySettings, TargetMode, VoxelTarget, WeldParams,
 };
 use review_render::Selection;
@@ -925,6 +925,21 @@ fn export_body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> {
     panel_grid(ui, "opt_export", |ui| {
         labeled_combo(
             ui,
+            Tip::new(keys::ui_opt::EXPORT_FILE_TYPE).page(Page::OptOperations),
+            "opt_export_file_type",
+            labels::export_file_type(edited.file_type),
+            |ui| {
+                for file_type in ExportFileType::ALL {
+                    ui.selectable_value(
+                        &mut edited.file_type,
+                        file_type,
+                        labels::export_file_type(file_type),
+                    );
+                }
+            },
+        );
+        labeled_combo(
+            ui,
             Tip::new(keys::ui_opt::EXPORT_PACKAGING).page(Page::OptOperations),
             "opt_export_packaging",
             labels::lod_packaging(edited.packaging),
@@ -953,17 +968,31 @@ fn export_body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> {
                 }
             },
         );
-        labeled_combo(
-            ui,
-            Tip::new(keys::ui_opt::EXPORT_FORMAT).page(Page::OptOperations),
-            "opt_export_format",
-            labels::fbx_format(edited.format),
-            |ui| {
-                for format in FbxFormat::ALL {
-                    ui.selectable_value(&mut edited.format, format, labels::fbx_format(format));
-                }
-            },
-        );
+        // Each file type's own settings: FBX's encoding; glb's custom attributes.
+        match edited.file_type {
+            ExportFileType::Fbx => labeled_combo(
+                ui,
+                Tip::new(keys::ui_opt::EXPORT_FORMAT).page(Page::OptOperations),
+                "opt_export_format",
+                labels::fbx_format(edited.format),
+                |ui| {
+                    for format in FbxFormat::ALL {
+                        ui.selectable_value(&mut edited.format, format, labels::fbx_format(format));
+                    }
+                },
+            ),
+            ExportFileType::Glb => {
+                let mut keep = !edited.strip_custom_attributes;
+                labeled_checkbox(
+                    ui,
+                    Tip::new(keys::ui_opt::EXPORT_KEEP_CUSTOM)
+                        .describe(keys::ui_opt::EXPORT_KEEP_CUSTOM_DESCRIPTION)
+                        .page(Page::OptOperations),
+                    &mut keep,
+                );
+                edited.strip_custom_attributes = !keep;
+            }
+        }
     });
 
     if edited != current {

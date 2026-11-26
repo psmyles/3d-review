@@ -195,6 +195,9 @@ pub struct GltfVertices {
     pub tangents: Vec<Option<glam::Vec4>>,
     /// Per UV set, per vertex; `None` where the primitive lacked the set.
     pub uvs: Vec<Vec<Option<glam::Vec2>>>,
+    /// Whether the vertex's primitive had `COLOR_0`: a primitive that had none
+    /// is not given one.
+    pub colored: Vec<bool>,
 }
 
 /// One node's glTF-only data.

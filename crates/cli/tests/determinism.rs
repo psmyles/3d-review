@@ -5,7 +5,8 @@
 //! (`experiments/cad-kit/inputs`) and the committed fixtures,
 //! through stacks that between them take every floating-point path a run has —
 //! welding, both simplifiers, normals, the AO bake, the reorders, the remesher
-//! and the shrinkwrap — and every file written is hashed against
+//! and the shrinkwrap — the kit once more as glb, written as glb, and every
+//! file written is hashed against
 //! `determinism.sha256`, which was recorded on another OS. A mismatch means this
 //! OS's compiler or maths library rounds something differently from the one
 //! that recorded it, and names the files it shows in.
@@ -45,9 +46,18 @@ fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// The stacks, by name, with the models each runs on. Each name is the folder
-/// its files are hashed under, so renaming one is a change to the expected file.
-fn stacks() -> Vec<(&'static str, OptStack, Vec<&'static str>)> {
+/// The kit's parts as glb (`blender_kit_glb.py`), the CAD face id in `_CAD_FACE`.
+const KIT_GLB: &[&str] = &[
+    "experiments/cad-kit/inputs/link.glb",
+    "experiments/cad-kit/inputs/shell.glb",
+    "experiments/cad-kit/inputs/hinge_block.glb",
+    "experiments/cad-kit/inputs/hinge_pin.glb",
+];
+
+/// The stacks, by name, with the models each runs on and the options beside
+/// the preset. Each name is the folder its files are hashed under, so renaming
+/// one is a change to the expected file.
+fn stacks() -> Vec<(&'static str, OptStack, Vec<&'static str>, Vec<&'static str>)> {
     // What a game-ready chain does: weld, cut to a budget evening the triangles
     // out, re-derive the normals, a LOD chain, bake AO into the vertex colour,
     // then the three reorders.
@@ -101,15 +111,17 @@ fn stacks() -> Vec<(&'static str, OptStack, Vec<&'static str>)> {
         .chain(["assets/test_models/monkey.fbx"])
         .collect();
     vec![
-        ("chain", chain, everything),
-        ("rebuild", rebuild, rebuildable),
+        ("chain", chain.clone(), everything, Vec::new()),
+        ("rebuild", rebuild, rebuildable, Vec::new()),
+        // The glb writer, and custom attributes through every operation.
+        ("glb", chain, KIT_GLB.to_vec(), vec!["--format", "glb"]),
     ]
 }
 
 /// `<stack>/<file>` -> SHA-256 hex of every file `optimize` wrote.
 fn hash_outputs(scratch: &Path) -> BTreeMap<String, String> {
     let mut hashes = BTreeMap::new();
-    for (name, stack, models) in stacks() {
+    for (name, stack, models, options) in stacks() {
         let preset_path = scratch.join(format!("{name}.json"));
         std::fs::write(
             &preset_path,
@@ -122,6 +134,7 @@ fn hash_outputs(scratch: &Path) -> BTreeMap<String, String> {
             .arg("optimize")
             .args(models)
             .args(["--progress-bar", "off", "--packaging", "file-per-lod"])
+            .args(options)
             .arg("--preset")
             .arg(&preset_path)
             .arg("--out")

@@ -23,7 +23,9 @@ use review_optimize::stack::limits::{
     LOD_RATIO_MIN, LOD_TRIANGLES_MAX, LOD_TRIANGLES_MIN, MAX_LOD_LEVELS, VOLUME_CHANGE_MAX,
     VOLUME_CHANGE_MIN,
 };
-use review_optimize::{FbxFormat, HierarchyMode, LodPackaging, SimplifyAlgorithm, SimplifyFlags};
+use review_optimize::{
+    ExportFileType, FbxFormat, HierarchyMode, LodPackaging, SimplifyAlgorithm, SimplifyFlags,
+};
 
 use crate::keys::cli as k;
 
@@ -157,7 +159,11 @@ pub(crate) struct OptimizeArgs {
     pub(crate) base: JobBase,
     pub(crate) packaging: Option<LodPackaging>,
     pub(crate) hierarchy: Option<HierarchyMode>,
+    /// `--format`: the file type, and for FBX its encoding.
+    pub(crate) file_type: Option<ExportFileType>,
     pub(crate) format: Option<FbxFormat>,
+    /// `--strip-custom-attributes`: leave a glb's `_` attributes out.
+    pub(crate) strip_custom_attributes: bool,
     pub(crate) suffix: String,
     pub(crate) if_exists: IfExists,
     /// `--replace-models`: a model's results may be written over the model
@@ -282,11 +288,13 @@ const JOB_OPTIONS: &[&str] = &[
     PACKAGING,
     HIERARCHY,
     FORMAT,
+    STRIP_CUSTOM_ATTRIBUTES,
     SUFFIX,
 ];
 const PACKAGING: &str = "--packaging";
 const HIERARCHY: &str = "--hierarchy";
 const FORMAT: &str = "--format";
+const STRIP_CUSTOM_ATTRIBUTES: &str = "--strip-custom-attributes";
 const SUFFIX: &str = "--suffix";
 const IF_EXISTS: &str = "--if-exists";
 const REPLACE_MODELS: &str = "--replace-models";
@@ -305,7 +313,7 @@ const VERSION: &str = "--version";
 // The words a choice takes. The order is the order `--help` shows them in.
 const PACKAGING_CHOICES: &[&str] = &["single-file", "file-per-lod"];
 const HIERARCHY_CHOICES: &[&str] = &["rebuild", "flat"];
-const FORMAT_CHOICES: &[&str] = &["binary", "ascii"];
+const FORMAT_CHOICES: &[&str] = &["binary", "ascii", "glb"];
 const IF_EXISTS_CHOICES: &[&str] = &["fail", "skip", "replace"];
 const PROFILE_CHOICES: &[&str] = &["unity", "unreal", "generic"];
 const FAIL_ON_CHOICES: &[&str] = &["error", "warning", "info", "never"];
@@ -428,6 +436,12 @@ const SPECS: &[Spec] = &[
         name: FORMAT,
         takes: Takes::Choice(FORMAT_CHOICES),
         help: k::HELP_OPTION_FORMAT,
+        on: OPTIMIZE,
+    },
+    Spec {
+        name: STRIP_CUSTOM_ATTRIBUTES,
+        takes: Takes::Nothing,
+        help: k::HELP_OPTION_STRIP_CUSTOM_ATTRIBUTES,
         on: OPTIMIZE,
     },
     Spec {
@@ -857,10 +871,16 @@ fn optimize_args(given: &Given) -> Result<OptimizeArgs, String> {
             "flat" => HierarchyMode::FlatBaked,
             _ => HierarchyMode::Rebuild,
         }),
-        format: choice(given, FORMAT, FORMAT_CHOICES)?.map(|word| match word {
-            "ascii" => FbxFormat::Ascii,
-            _ => FbxFormat::Binary,
+        file_type: choice(given, FORMAT, FORMAT_CHOICES)?.map(|word| match word {
+            "glb" => ExportFileType::Glb,
+            _ => ExportFileType::Fbx,
         }),
+        format: choice(given, FORMAT, FORMAT_CHOICES)?.and_then(|word| match word {
+            "ascii" => Some(FbxFormat::Ascii),
+            "binary" => Some(FbxFormat::Binary),
+            _ => None,
+        }),
+        strip_custom_attributes: given.flag(STRIP_CUSTOM_ATTRIBUTES),
         suffix: given.trimmed(SUFFIX).unwrap_or_default(),
         if_exists: match choice(given, IF_EXISTS, IF_EXISTS_CHOICES)? {
             Some("skip") => IfExists::Skip,
@@ -1339,6 +1359,26 @@ mod tests {
         let error = usage_error("optimize a.fbx --out o --reduce 0.5 --max-volume-change 300%");
         assert!(error.contains("between 0.1% and 100%"), "{error}");
         assert!(!usage_error("optimize a.fbx --out o --reduce 0.5 --max-distance 0").is_empty());
+    }
+
+    #[test]
+    fn format_glb_picks_the_file_type_and_leaves_the_encoding() {
+        let parsed =
+            run("optimize a.glb --out out --lods 0.5 --format glb --strip-custom-attributes");
+        let Command::Optimize(args) = parsed.command else {
+            panic!("an optimize run");
+        };
+        assert_eq!(args.file_type, Some(ExportFileType::Glb));
+        assert_eq!(args.format, None, "glb has no FBX encoding to set");
+        assert!(args.strip_custom_attributes);
+
+        let parsed = run("optimize a.fbx --out out --lods 0.5 --format binary");
+        let Command::Optimize(args) = parsed.command else {
+            panic!("an optimize run");
+        };
+        assert_eq!(args.file_type, Some(ExportFileType::Fbx));
+        assert_eq!(args.format, Some(FbxFormat::Binary));
+        assert!(!args.strip_custom_attributes);
     }
 
     #[test]

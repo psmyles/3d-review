@@ -251,6 +251,15 @@ pub enum ExportNote {
     CaptureNotLoaded,
     /// A glTF source written as FBX: what FBX has no place for stays behind.
     GltfIntoFbx,
+    /// A non-glTF source written as glb: its user properties and textures stay
+    /// behind.
+    FbxIntoGlb,
+    /// The glb writer does not write skins, blend shapes or animation yet.
+    GlbNoDeform,
+    /// glb takes one vertex-colour set; the source had more.
+    GlbExtraColorSets,
+    /// The source's axes are a mirror of glTF's, which no rotation can fix.
+    GlbAxesMirrored,
     /// A flat hierarchy has no bones for skins and blend shapes to bind to.
     DeformNotWrittenFlat,
     /// A flat hierarchy has no nodes for animation curves to drive.
@@ -287,6 +296,21 @@ impl fmt::Display for ExportNote {
                 "The source is glTF: its nodes and material factors were written, its extras \
                  and textures were not, since FBX has no place for them. Export as glb to keep \
                  them.",
+            ),
+            Self::FbxIntoGlb => f.write_str(
+                "The source is not glTF: its nodes, geometry and material factors were written, \
+                 its user properties and textures were not.",
+            ),
+            Self::GlbNoDeform => f.write_str(
+                "Skinning, blend shapes and animation were not written: the glb export does not \
+                 write them yet.",
+            ),
+            Self::GlbExtraColorSets => f.write_str(
+                "Only the first vertex-colour set was written: the others have no place in glb.",
+            ),
+            Self::GlbAxesMirrored => f.write_str(
+                "The source's axes are a mirror image of glTF's, so they were written as they \
+                 are: the model may come out mirrored or on its side.",
             ),
             Self::DeformNotWrittenFlat => f.write_str(
                 "Skinning and blend shapes were not written: a flat hierarchy bakes the \

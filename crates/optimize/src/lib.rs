@@ -66,7 +66,7 @@ pub mod stack;
 pub mod submesh;
 
 pub use cancel::CancelToken;
-pub use export::{ExportReport, export_fbx};
+pub use export::{ExportReport, export, export_fbx, export_glb};
 pub use notice::{ExportNote, OptWarning};
 pub use process::{
     Aim, AnalysisMetrics, MeshCounts, OptPreview, OptPreviewSink, OptProgress, OptProgressSink,
@@ -76,11 +76,11 @@ pub use process::{
 pub use quality::{LevelQuality, QualityLimits};
 pub use replace_file::{Staged, write_bytes_replacing, write_replacing};
 pub use stack::{
-    AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportOptions, FbxFormat, HierarchyMode,
-    LodLevel, LodPackaging, LodParams, NodeOverride, NormalMode, NormalParams, OpInstance, OpKind,
-    OptStack, RebindReport, ReduceParams, RemeshDensity, RemeshParams, RemeshTopology,
-    ShrinkwrapMethod, ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings,
-    StackRepairs, TargetMode, VoxelTarget, WeldParams,
+    AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportFileType, ExportOptions, FbxFormat,
+    HierarchyMode, LodLevel, LodPackaging, LodParams, NodeOverride, NormalMode, NormalParams,
+    OpInstance, OpKind, OptStack, RebindReport, ReduceParams, RemeshDensity, RemeshParams,
+    RemeshTopology, ShrinkwrapMethod, ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags,
+    SimplifySettings, StackRepairs, TargetMode, VoxelTarget, WeldParams,
 };
 
 /// Everything that can go wrong in this crate.

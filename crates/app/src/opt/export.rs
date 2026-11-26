@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use review_model::ModelData;
-use review_optimize::{ExportOptions, ExportReport, OptError, ProcessedResult, export_fbx};
+use review_optimize::{ExportOptions, ExportReport, OptError, ProcessedResult, export};
 use review_ui::{ActivityId, NoticeKind};
 
 use super::*;
@@ -91,8 +91,8 @@ impl App {
                 prof::thread_name("mesh-export");
                 let started = Instant::now();
                 let outcome = {
-                    let _z = prof::zone!("Export FBX");
-                    export_fbx(&result.lods, &source, extras.as_deref(), &path, &options)
+                    let _z = prof::zone!("Export");
+                    export(&result.lods, &source, extras.as_deref(), &path, &options)
                 };
                 // The failures are logged where they are reported, on the main thread.
                 if let Ok(report) = &outcome {

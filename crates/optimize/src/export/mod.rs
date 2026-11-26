@@ -49,6 +49,7 @@ use crate::stack::{ExportOptions, LodPackaging};
 mod anim;
 mod build;
 mod deform;
+mod glb;
 mod materials;
 mod mesh;
 mod nodes;
@@ -61,6 +62,7 @@ mod write;
 pub(crate) use anim::*;
 pub(crate) use build::*;
 pub(crate) use deform::*;
+pub use glb::export_glb;
 pub(crate) use materials::*;
 pub(crate) use mesh::*;
 pub(crate) use nodes::*;
@@ -87,7 +89,22 @@ pub const fn available() -> bool {
     cfg!(has_ufbxw)
 }
 
-/// Write `lods` to `path` according to `options`.
+/// Write `lods` to `path` in the file type `options` names: [`export_fbx`] or
+/// [`export_glb`]. `extras` is only an FBX's to give, and only FBX reads it.
+pub fn export(
+    lods: &[ProcessedLod],
+    source: &ModelData,
+    extras: Option<&SourceExtras>,
+    path: &Path,
+    options: &ExportOptions,
+) -> Result<ExportReport, OptError> {
+    match options.file_type {
+        crate::stack::ExportFileType::Fbx => export_fbx(lods, source, extras, path, options),
+        crate::stack::ExportFileType::Glb => export_glb(lods, source, path, options),
+    }
+}
+
+/// Write `lods` to `path` as FBX, according to `options`.
 ///
 /// `extras` is the source's property capture, when it has landed; without it
 /// the export writes what the viewer shows and says so in the report.

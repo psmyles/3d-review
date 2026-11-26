@@ -175,21 +175,25 @@ impl Dialog {
                 extras,
                 options,
                 stem,
-            } => picker
-                .set_title(review_localization::tr(keys::app_dialogs::EXPORT_MESH))
-                .add_filter(
-                    review_localization::tr(keys::app_dialogs::FILTER_FBX),
-                    &["fbx"],
-                )
-                .set_file_name(format!("{stem}.fbx")) // localization: exempt a file name and its extension, not prose
-                .save_file()
-                .map(|path| DialogAnswer::ExportOpt {
-                    path,
-                    result,
-                    source,
-                    extras,
-                    options,
-                }),
+            } => {
+                let extension = options.file_type.extension();
+                let filter = match options.file_type {
+                    review_optimize::ExportFileType::Fbx => keys::app_dialogs::FILTER_FBX,
+                    review_optimize::ExportFileType::Glb => keys::app_dialogs::FILTER_GLB,
+                };
+                picker
+                    .set_title(review_localization::tr(keys::app_dialogs::EXPORT_MESH))
+                    .add_filter(review_localization::tr(filter), &[extension])
+                    .set_file_name(format!("{stem}.{extension}")) // localization: exempt a file name and its extension, not prose
+                    .save_file()
+                    .map(|path| DialogAnswer::ExportOpt {
+                        path,
+                        result,
+                        source,
+                        extras,
+                        options,
+                    })
+            }
             Dialog::SavePreset { json } => picker
                 .set_title(review_localization::tr(keys::app_dialogs::SAVE_PRESET))
                 .add_filter(

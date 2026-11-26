@@ -173,6 +173,8 @@ ui-enums-hierarchy-flat = Flat, world-baked meshes
 
 ui-enums-fbx-binary = Binary
 ui-enums-fbx-ascii = ASCII
+ui-enums-file-type-fbx = FBX
+ui-enums-file-type-glb = glb (binary glTF)
 
 ## Viewport tool
 

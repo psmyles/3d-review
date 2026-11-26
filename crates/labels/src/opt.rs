@@ -173,6 +173,10 @@ pub fn explain_export_note(note: &ExportNote) -> String {
     match note {
         ExportNote::CaptureNotLoaded => tr(k::NOTE_CAPTURE_NOT_LOADED).into_owned(),
         ExportNote::GltfIntoFbx => tr(k::NOTE_GLTF_INTO_FBX).into_owned(),
+        ExportNote::FbxIntoGlb => tr(k::NOTE_FBX_INTO_GLB).into_owned(),
+        ExportNote::GlbNoDeform => tr(k::NOTE_GLB_NO_DEFORM).into_owned(),
+        ExportNote::GlbExtraColorSets => tr(k::NOTE_GLB_EXTRA_COLOR_SETS).into_owned(),
+        ExportNote::GlbAxesMirrored => tr(k::NOTE_GLB_AXES_MIRRORED).into_owned(),
         ExportNote::DeformNotWrittenFlat => tr(k::NOTE_DEFORM_NOT_WRITTEN_FLAT).into_owned(),
         ExportNote::AnimationNotWrittenFlat => tr(k::NOTE_ANIMATION_NOT_WRITTEN_FLAT).into_owned(),
         ExportNote::OrphanedAnimationLayers { count: layers } => {
