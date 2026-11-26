@@ -80,6 +80,18 @@ fn run() -> Result<()> {
     for spec in &args.inputs {
         subjects.extend(inputs::load(spec)?);
     }
+    if !args.colliders.is_empty() {
+        let names = review_audit::glob::GlobSet::new(&args.colliders)
+            .map_err(|_| anyhow::anyhow!("--colliders: a pattern does not parse"))?;
+        for subject in &mut subjects {
+            subject.wire = (0..subject.model.nodes.len() as u32)
+                .filter(|node| {
+                    names.matches(&subject.model.nodes[*node as usize].name)
+                        && subject.hidden.binary_search(node).is_err()
+                })
+                .collect();
+        }
+    }
     for (index, subject) in subjects.iter().enumerate() {
         let (triangles, vertices) = subject.counts();
         println!(

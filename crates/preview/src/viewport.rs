@@ -303,6 +303,7 @@ impl Viewport {
             },
             selection: SelectionView::default(),
             hidden_meshes: &[],
+            wire_meshes: &[],
             selected_bones: &[],
             selected_nodes: &[],
             hover: None,

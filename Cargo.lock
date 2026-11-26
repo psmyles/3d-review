@@ -3505,6 +3505,7 @@ dependencies = [
  "glam",
  "image",
  "log",
+ "review-audit",
  "review-import",
  "review-model",
  "review-optimize",

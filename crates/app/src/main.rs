@@ -8,6 +8,7 @@
 mod animation;
 mod audit;
 mod cli_install;
+mod colliders;
 mod dialog;
 mod docs_dir;
 mod events;
@@ -282,6 +283,9 @@ struct App {
     /// after its last change event, so a save written in several goes is read
     /// once, whole (`loading::reload`).
     reload_due: Option<std::time::Instant>,
+    /// Which nodes are collision meshes, worked out once per model and list of
+    /// names (`colliders.rs`).
+    colliders: colliders::ColliderCache,
     scene_revision: u64,
     /// Source of every model revision handed to the renderer, for the source mesh
     /// and each processed Opt level alike. One shared counter because the
@@ -507,6 +511,7 @@ impl Default for App {
             scene_files: Vec::new(),
             loads: loading::LoadQueue::default(),
             reload_due: None,
+            colliders: colliders::ColliderCache::default(),
             scene_revision: 0,
             model_revision_counter: 0,
             model_load_generation: Arc::new(AtomicU64::new(0)),

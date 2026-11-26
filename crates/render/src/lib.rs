@@ -247,6 +247,12 @@ pub struct SceneFrame<'a> {
     pub anti_aliasing: AntiAliasing,
     pub selection: SelectionView,
     pub hidden_meshes: &'a [u32],
+    /// Mesh nodes drawn as their edges only (sorted, deduplicated), in
+    /// [`SceneDebugOptions::wire_mesh_color`]: solid where they are in view and
+    /// faint where something hides them. The caller lists them in
+    /// `hidden_meshes` too, which is what keeps their surfaces out; one hidden
+    /// outright is in `hidden_meshes` alone. The viewer's collision meshes.
+    pub wire_meshes: &'a [u32],
     /// Bone nodes selected in the Outliner (sorted, deduplicated node indices).
     /// Drives the skeleton overlay's persistent highlight and the skin-weight heat
     /// map; empty when no bone is selected.

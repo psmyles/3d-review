@@ -651,7 +651,7 @@ fn param_widget(ui: &mut egui::Ui, salt: (RuleId, &str), kind: ParamKind, value:
 
 /// A patterns field's text as the list it names: comma-separated, each one
 /// trimmed, the empty ones dropped.
-fn parse_patterns(text: &str) -> Vec<String> {
+pub(crate) fn parse_patterns(text: &str) -> Vec<String> {
     text.split(',')
         .map(str::trim)
         .filter(|pattern| !pattern.is_empty())
@@ -685,7 +685,7 @@ struct Draft {
 ///
 /// `build` makes the field from the text it edits, so a caller can style it by
 /// what is being typed.
-fn committed_text_edit(
+pub(crate) fn committed_text_edit(
     ui: &mut egui::Ui,
     id: egui::Id,
     committed: &str,

@@ -17,6 +17,8 @@ pub struct Subject {
     pub model: Arc<ModelData>,
     /// Sorted node indices, exactly what the viewer's Outliner eye toggles.
     pub hidden: Vec<u32>,
+    /// Sorted node indices drawn as their edges only (`--colliders`).
+    pub wire: Vec<u32>,
     /// The textures the file's materials name, decoded, as the viewer binds
     /// them on load. Shared by every subject of one file: a processed level
     /// keeps the source's material table.
@@ -141,6 +143,7 @@ pub fn load(spec: &InputSpec) -> Result<Vec<Subject>> {
             label: format!("{file} @{stack_name} LOD{}", lod.level),
             model: Arc::new(lod.model),
             hidden: Vec::new(),
+            wire: Vec::new(),
             textures: Arc::clone(&textures),
         })
         .collect();
@@ -213,6 +216,7 @@ fn split_by_lod_suffix(
             .copied()
             .filter(|&node| node_lod(&model, node) != Some(lod))
             .collect(),
+        wire: Vec::new(),
         textures: Arc::clone(textures),
     };
     match level {
@@ -222,6 +226,7 @@ fn split_by_lod_suffix(
             label: file.to_owned(),
             model,
             hidden: Vec::new(),
+            wire: Vec::new(),
             textures: Arc::clone(textures),
         }],
     }

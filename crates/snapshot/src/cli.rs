@@ -61,6 +61,9 @@ OPTIONS
                         how --curves draws them, as the Animation Curves window
                         sets it: straight (default) or smooth, then the line width
                         in points, its opacity (0-1) and the frame dots' size
+  --colliders <names>   ','-separated name patterns (* and ?): draw the parts they
+                        match as their edges, faint where the model hides them, as
+                        the viewer draws collision meshes
   --skeleton            draw the skeleton overlay
   --select <names>      ','-separated node names, selected as an Outliner click
                         would: bones narrow the curves to their own, a mesh or group
@@ -95,6 +98,8 @@ pub struct Args {
     pub curve_style: TrajectoryStyle,
     pub skeleton: bool,
     pub select: Vec<String>,
+    /// `--colliders`: name patterns of the parts drawn as their edges.
+    pub colliders: Vec<String>,
     /// `--checker-square`: the checker's square side in metres, at `uv_density`.
     pub checker_square: Option<f32>,
     /// `--uv-density`: UV units per metre the layout is meant to have.
@@ -217,6 +222,7 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
         curve_style: TrajectoryStyle::default(),
         skeleton: false,
         select: Vec::new(),
+        colliders: Vec::new(),
         checker_square: None,
         uv_density: 1.0,
     };
@@ -287,6 +293,13 @@ pub fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Option<Args>
                 }
                 args.uv_density = density;
             }
+            "--colliders" => args.colliders.extend(
+                value("--colliders")?
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned),
+            ),
             "--select" => args.select.extend(
                 value("--select")?
                     .split(',')

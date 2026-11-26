@@ -155,6 +155,11 @@ impl Capture {
                 };
             }
         }
+        // A wire-drawn part's surface is left out, as a hidden one's is.
+        let mut surface_hidden = subject.hidden.clone();
+        surface_hidden.extend_from_slice(&subject.wire);
+        surface_hidden.sort_unstable();
+        surface_hidden.dedup();
         let scene = SceneFrame {
             model: &subject.model,
             model_revision: revision,
@@ -165,7 +170,8 @@ impl Capture {
             tonemap: TonemapSettings::default(),
             anti_aliasing: AntiAliasing::default(),
             selection: SelectionView::default(),
-            hidden_meshes: &subject.hidden,
+            hidden_meshes: &surface_hidden,
+            wire_meshes: &subject.wire,
             selected_bones: posed.map_or(&[], |posed| &posed.selected_bones),
             selected_nodes: posed.map_or(&[], |posed| &posed.selected_nodes),
             hover: None,

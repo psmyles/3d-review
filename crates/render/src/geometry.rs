@@ -48,4 +48,4 @@ pub(crate) use skin::skin_weight_vertices;
 pub(crate) use trajectory::{trajectory_geometry, trajectory_node_colors};
 pub(crate) use uv::{UvNodeScope, uv_fill_triangles, uv_highlight_triangles, uv_wireframe_lines};
 pub(crate) use uv_seams::uv_seam_lines;
-pub(crate) use wireframe::wireframe_edge_indices;
+pub(crate) use wireframe::{node_edge_lines, wireframe_edge_indices};

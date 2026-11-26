@@ -398,7 +398,8 @@ impl App {
         let background = self.ui.viewport_background;
         let anti_aliasing = self.ui.anti_aliasing;
         let selection = self.ui.selection_view();
-        let hidden_meshes = self.ui.hidden_mesh_nodes();
+        let hidden_meshes = self.surface_hidden_nodes();
+        let wire_meshes = self.wire_mesh_nodes();
         let selected_bones = self.ui.selected_bone_nodes();
         let selected_nodes = self.ui.selected_node_set();
         // The pick's preview, split by what it targets: the skeleton overlay
@@ -618,6 +619,7 @@ impl App {
                         anti_aliasing,
                         selection,
                         hidden_meshes: &hidden_meshes,
+                        wire_meshes: &wire_meshes,
                         selected_bones: &selected_bones,
                         selected_nodes: &selected_nodes,
                         hover,

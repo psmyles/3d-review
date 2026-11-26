@@ -114,6 +114,10 @@ pub struct SceneDebugOptions {
     /// drawn as screen-space quads rather than hardware lines precisely so that this
     /// can hold — a hardware line is one *device* pixel wide whatever the display.
     pub wireframe_width: f32,
+    /// Color of the edges of [`crate::SceneFrame::wire_meshes`] — the chrome's
+    /// collision meshes — baked into their line buffers and rebuilt when it
+    /// changes. Drawn at [`Self::wireframe_width`].
+    pub wire_mesh_color: [f32; 4],
     /// Color of the bounding-box edges, baked into its line buffer and rebuilt
     /// when it changes.
     pub bounding_box_color: [f32; 4],
@@ -270,6 +274,7 @@ impl Default for SceneDebugOptions {
             uv_seam_channel: 0,
             wireframe_color: [0.6, 0.6, 0.6, 1.0],
             wireframe_width: 1.0,
+            wire_mesh_color: [0.25, 0.9, 0.47, 1.0],
             bounding_box_color: [1.0, 0.803_921_6, 0.250_980_4, 1.0],
             bounding_box_scope: BoundingBoxScope::default(),
             bounding_box_selection: Selection::None,

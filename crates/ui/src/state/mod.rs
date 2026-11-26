@@ -914,6 +914,7 @@ pub(crate) fn sync_debug_state(state: &mut UiState) {
     state.debug.uv_seam_channel = state.uv_seams.uv_channel;
     state.debug.wireframe_color = theme::color32_to_rgba(state.wireframe.color);
     state.debug.wireframe_width = state.wireframe.width;
+    state.debug.wire_mesh_color = theme::color32_to_rgba(state.wireframe.collider_color);
     state.debug.bounding_box_color = theme::color32_to_rgba(state.bounding_box.color);
     state.debug.bounding_box_scope = match state.bounding_box.scope {
         BoundsScope::AllMeshes => BoundingBoxScope::AllMeshes,

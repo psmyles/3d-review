@@ -134,14 +134,21 @@ impl CurvesPanelState {
     }
 }
 
-/// Editable state backing the Wireframe options panel. The renderer applies both
-/// values as uniforms at draw time via [`SceneDebugOptions`], so neither rebuilds
-/// anything.
+/// Editable state backing the Wireframe options panel. The renderer applies the
+/// line colour and width as uniforms at draw time via [`SceneDebugOptions`], so
+/// neither rebuilds anything.
+///
+/// It also says how collision meshes are drawn: the parts whose names match
+/// `collider_names`, which a game uses for physics rather than to show.
 #[derive(Debug, Clone)]
 pub struct WireframePanelState {
     pub color: egui::Color32,
     /// Line width in points.
     pub width: f32,
+    pub colliders: ColliderDisplay,
+    /// Name patterns (globs) that mark a collision mesh.
+    pub collider_names: Vec<String>,
+    pub collider_color: egui::Color32,
 }
 
 impl Default for WireframePanelState {
@@ -149,8 +156,46 @@ impl Default for WireframePanelState {
         Self {
             color: theme::color::WIREFRAME_DEFAULT,
             width: DEFAULT_WIREFRAME_WIDTH,
+            colliders: ColliderDisplay::default(),
+            collider_names: DEFAULT_COLLIDER_NAMES
+                .iter()
+                .map(|&name| name.to_owned())
+                .collect(),
+            collider_color: theme::color::COLLIDER_DEFAULT,
         }
     }
+}
+
+/// What marks a collision mesh to start with: a `_box`, `_sphere`, `_capsule`,
+/// `_hull` or `_convex` suffix, Unreal's `UBX_` / `USP_` / `UCP_` / `UCX_`
+/// prefixes, and Godot's `-col` / `-convcol` suffixes (and their `only` forms).
+pub const DEFAULT_COLLIDER_NAMES: [&str; 13] = [
+    "*_box",
+    "*_sphere",
+    "*_capsule",
+    "*_hull",
+    "*_convex",
+    "UBX_*",
+    "USP_*",
+    "UCP_*",
+    "UCX_*",
+    "*-col",
+    "*-colonly",
+    "*-convcol",
+    "*-convcolonly",
+];
+
+/// How the parts the Wireframe panel's collider names match are drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColliderDisplay {
+    /// Their edges only, in the collider colour, faint where something hides
+    /// them, so they read as shapes around the model rather than parts of it.
+    #[default]
+    Wireframe,
+    /// Like every other part.
+    Shaded,
+    /// Not at all.
+    Hidden,
 }
 
 /// Which geometry the bounding box wraps: the whole model, or only the meshes

@@ -254,6 +254,19 @@ pub const UV_SEAM_SWATCHES: [Color32; 6] = [
     Color32::from_rgb(32, 224, 232),
 ];
 
+/// Collision meshes' edges: a physics-debug green, apart from every other line.
+pub const COLLIDER_DEFAULT: Color32 = Color32::from_rgb(64, 230, 120);
+
+/// Swatch palette offered for the collider color row: green (default), cyan,
+/// amber, magenta, white.
+pub const COLLIDER_SWATCHES: [Color32; 5] = [
+    COLLIDER_DEFAULT,
+    Color32::from_rgb(32, 224, 232),
+    Color32::from_rgb(255, 176, 32),
+    Color32::from_rgb(232, 64, 232),
+    Color32::WHITE,
+];
+
 /// Swatch palette offered for the wireframe color row: 60% grey (default),
 /// black, red, cyan, green, white.
 pub const WIREFRAME_SWATCHES: [Color32; 6] = [

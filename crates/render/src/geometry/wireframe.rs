@@ -8,7 +8,10 @@
 
 use review_model::ModelData;
 
+use super::deform::corner_deform;
 use super::hidden::HiddenFilter;
+use super::vertex::push_line_deformed;
+use crate::scene::SceneVertex;
 
 /// The model wireframe: each *original* polygon's edges (quads stay quads, n-gons
 /// stay n-gons — not the triangulated diagonals, which a viewer must not show as
@@ -86,6 +89,39 @@ pub(crate) fn wireframe_edge_indices(model: &ModelData, hidden_nodes: &[u32]) ->
     }
 
     indices
+}
+
+/// The polygon edges of the mesh nodes in `nodes` (sorted), as a line list in
+/// `color` that bends with a skinned mesh as the wireframe does. Empty for a
+/// model without per-triangle node info, which cannot tell one node's faces
+/// from another's.
+pub(crate) fn node_edge_lines(
+    model: &ModelData,
+    lanes: &[[u32; 4]],
+    nodes: &[u32],
+    color: [f32; 4],
+) -> Vec<SceneVertex> {
+    if nodes.is_empty() || model.triangles.node.len() != model.indices.len() / 3 {
+        return Vec::new();
+    }
+    // Every other node is "hidden" from the edge list.
+    let others: Vec<u32> = (0..model.nodes.len() as u32)
+        .filter(|node| nodes.binary_search(node).is_err())
+        .collect();
+    let edges = wireframe_edge_indices(model, &others);
+    let mut lines = Vec::with_capacity(edges.len());
+    for pair in edges.as_chunks::<2>().0 {
+        let (a, b) = (pair[0] as usize, pair[1] as usize);
+        push_line_deformed(
+            &mut lines,
+            model.vertices[a].position.to_array(),
+            model.vertices[b].position.to_array(),
+            color,
+            corner_deform(lanes, a),
+            corner_deform(lanes, b),
+        );
+    }
+    lines
 }
 
 #[cfg(test)]

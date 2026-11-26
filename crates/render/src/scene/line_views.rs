@@ -10,9 +10,9 @@ use review_model::{Bounds, ModelData};
 
 use crate::geometry::{
     BoneTint, audit_lines, bounding_box_lines, face_normal_lines, group_triangles, heat_vertices,
-    model_pivot, pivot_half_extent, pivot_lines, skeleton_fill_triangles, skeleton_lines,
-    skin_weight_vertices, trajectory_geometry, trajectory_node_colors, uv_seam_lines,
-    vertex_normal_lines, wireframe_edge_indices,
+    model_pivot, node_edge_lines, pivot_half_extent, pivot_lines, skeleton_fill_triangles,
+    skeleton_lines, skin_weight_vertices, trajectory_geometry, trajectory_node_colors,
+    uv_seam_lines, vertex_normal_lines, wireframe_edge_indices,
 };
 use crate::rhi::{GpuResult, StorageBuffer, VertexBuffer};
 use crate::selection::{Selection, selection_bounds};
@@ -39,6 +39,9 @@ pub(super) fn optional_vertex_buffer(
         Ok(Some(VertexBuffer::new(vertices, c"derived view")?))
     }
 }
+
+/// How strongly a wire-drawn mesh's edges show where something hides them.
+const WIRE_MESH_HIDDEN_ALPHA: f32 = 0.3;
 
 /// [`optional_vertex_buffer`] for a line list: built
 /// [`VertexBuffer::pullable`], because `vs_line` reads each line's two ends
@@ -378,6 +381,49 @@ impl SceneGpu {
         views.weights_buf = optional_vertex_buffer(&vertices)?;
         views.weights_baked = None;
         views.heat_baked = Some(key);
+        Ok(())
+    }
+
+    /// Build (or free) the wire-drawn meshes' edges — solid, and faint for where
+    /// something hides them — when the nodes or their colour change; freed when
+    /// none is drawn that way (invariant 3).
+    pub(super) fn sync_wire_meshes(
+        &mut self,
+        model: &ModelData,
+        nodes: &[u32],
+        color: [f32; 4],
+    ) -> GpuResult<()> {
+        let views = &mut self.active.views;
+        if nodes.is_empty() {
+            views.wire_mesh_edges = None;
+            views.wire_mesh_edges_hidden = None;
+            views.wire_mesh_baked = None;
+            return Ok(());
+        }
+        if views
+            .wire_mesh_baked
+            .as_ref()
+            .is_some_and(|(baked, baked_color)| baked == nodes && *baked_color == color)
+        {
+            return Ok(());
+        }
+        let lanes = self.active.lanes();
+        let solid = node_edge_lines(model, lanes, nodes, color);
+        let faint = node_edge_lines(
+            model,
+            lanes,
+            nodes,
+            [
+                color[0],
+                color[1],
+                color[2],
+                color[3] * WIRE_MESH_HIDDEN_ALPHA,
+            ],
+        );
+        let views = &mut self.active.views;
+        views.wire_mesh_edges = optional_line_buffer(&solid)?;
+        views.wire_mesh_edges_hidden = optional_line_buffer(&faint)?;
+        views.wire_mesh_baked = Some((nodes.to_vec(), color));
         Ok(())
     }
 

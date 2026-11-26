@@ -211,7 +211,7 @@ impl App {
     /// tells a click on a highlighted offender from one beside it.
     fn cast_hit(&mut self, position: Vec2) -> Option<(PickTarget, Option<u32>)> {
         let bones = self.picking_bones();
-        let hidden = self.ui.hidden_mesh_nodes();
+        let hidden = self.surface_hidden_nodes();
         let solo = self.ui.solo.then(|| self.ui.selected_node_set());
 
         // Rebuilt before the borrow below, since it needs `&mut self`.

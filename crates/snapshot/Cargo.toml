@@ -17,6 +17,8 @@ serde_json.workspace = true
 image.workspace = true
 # Warnings and errors to stderr (`main.rs`): sokol's validation, and Vulkan's.
 log.workspace = true
+# `--colliders`' name patterns, matched as the audit and the viewer match them.
+review-audit = { path = "../audit" }
 review-import = { path = "../import" }
 review-model = { path = "../model" }
 review-optimize = { path = "../optimize" }

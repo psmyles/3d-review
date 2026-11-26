@@ -495,6 +495,7 @@ its own image too); and:
 | `--frame each` | Frame each model on its own bounds, so a catalogue of parts of every size fills its cells. Without it every model is framed on all of them together, which keeps their sizes comparable; `--frame <n>` frames on model `n`. |
 | `--report <file>` | Write a JSON report: per model its file, triangles, GPU vertices and `bounds_m` (`min`, `max`, `size`, in metres and the file's own axes), the framing, and every image written. |
 | `--checker-square <m>`, `--uv-density <n>` | The `checker` look's squares at a size in metres, for a layout made at `n` UV units per metre; `--uv-density` also sets the `texel-density` look's target. |
+| `--colliders <names>` | Draw the parts whose names match these comma-separated patterns (`*` and `?`) as their edges, faint where the model hides them, as the viewer draws collision meshes: `--colliders "*_hull,*_box,UCX_*"`. |
 
 Exit status: 0 when every picture was written, 1 when one was not, 2 when the
 render engine is missing.

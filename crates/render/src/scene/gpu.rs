@@ -532,6 +532,7 @@ impl SceneGpu {
         self.sync_heat_map(scene.model, scene.model_revision, scene.debug)?;
         self.sync_overdraw(scene)?;
         self.sync_audit_overlay(scene.model, scene.audit.as_ref())?;
+        self.sync_wire_meshes(scene.model, scene.wire_meshes, scene.debug.wire_mesh_color)?;
         self.sync_selection(
             scene.model,
             scene.model_revision,
@@ -667,6 +668,7 @@ impl SceneGpu {
             || (views.wireframe_ghost.is_some() && self.idle.ghost_wireframe_edges.is_some())
             || derived.audit_edges.is_some()
             || derived.audit_dots.is_some()
+            || derived.wire_mesh_edges.is_some()
     }
 
     /// The skybox, behind all geometry.
@@ -835,6 +837,25 @@ impl SceneGpu {
         if let Some(ghost_uniforms) = wireframe_ghost {
             self.draw_wireframe_ghost(frame, ghost_uniforms, &lines.wireframe);
         }
+
+        // The wire-drawn meshes (collision meshes) at the wireframe's width: faint
+        // and always on top, so one inside the model still shows, then solid where
+        // it is in view.
+        let views = &self.active.views;
+        self.draw_lines(
+            frame,
+            &self.lines.line_overlay,
+            views.wire_mesh_edges_hidden.iter(),
+            uniforms,
+            &lines.wireframe,
+        );
+        self.draw_lines(
+            frame,
+            &self.lines.line,
+            views.wire_mesh_edges.iter(),
+            uniforms,
+            &lines.wireframe,
+        );
 
         // The Aud workspace's offender edges and dots, last so nothing covers them:
         // first faint and always on top, so an offender inside or behind the model

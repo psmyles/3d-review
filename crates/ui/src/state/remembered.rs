@@ -19,7 +19,7 @@ use review_render::{
     TonemapOperator, VertexColorMode, ViewportBackground,
 };
 
-use super::{BoundsScope, CheckerScale, CurveShape, UiState, range};
+use super::{BoundsScope, CheckerScale, ColliderDisplay, CurveShape, UiState, range};
 
 /// One remembered value: its key in the file, how to write it, and how to read it
 /// back. A read that returns `None` leaves the state untouched.
@@ -53,6 +53,12 @@ macro_rules! enum_codec {
 enum_codec!(checker_id, checker_from, CheckerTexture {
     CheckerTexture::Greyscale => "greyscale",
     CheckerTexture::Color => "color",
+});
+
+enum_codec!(collider_id, collider_from, ColliderDisplay {
+    ColliderDisplay::Wireframe => "wireframe",
+    ColliderDisplay::Shaded => "shaded",
+    ColliderDisplay::Hidden => "hidden",
 });
 
 enum_codec!(vertex_color_id, vertex_color_from, VertexColorMode {
@@ -190,6 +196,29 @@ const ENTRIES: &[Entry] = &[
                 f32_in(v, range::WIREFRAME_WIDTH_MIN, range::WIREFRAME_WIDTH_MAX),
             )
         },
+    },
+    Entry {
+        key: "wireframe.colliders",
+        save: |s| collider_id(s.wireframe.colliders),
+        load: |s, v| set(&mut s.wireframe.colliders, collider_from(v)),
+    },
+    Entry {
+        key: "wireframe.collider_names",
+        save: |s| s.wireframe.collider_names.join(","),
+        load: |s, v| {
+            s.wireframe.collider_names = v
+                .split(',')
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+                .collect();
+            Some(())
+        },
+    },
+    Entry {
+        key: "wireframe.collider_color",
+        save: |s| color_text(s.wireframe.collider_color),
+        load: |s, v| set(&mut s.wireframe.collider_color, color_from(v)),
     },
     // Material Mode
     Entry {
@@ -554,6 +583,9 @@ mod tests {
         let mut state = UiState::default();
         state.wireframe.color = Color32::from_rgb(1, 2, 3);
         state.wireframe.width = 2.5;
+        state.wireframe.colliders = ColliderDisplay::Hidden;
+        state.wireframe.collider_names = vec!["COL_*".into(), "*_phys".into()];
+        state.wireframe.collider_color = Color32::from_rgb(19, 20, 21);
         state.debug.material_mode = MaterialMode::Unique;
         state.debug.buffer_view = BufferView::Tangent;
         state.bounding_box.color = Color32::from_rgb(4, 5, 6);
