@@ -56,6 +56,78 @@ fn text(path: &Path) -> &str {
     path.to_str().expect("a UTF-8 path")
 }
 
+/// A whole set of parts in one call: each line of a `--jobs` list is a model with
+/// its own target and folder, on top of the command line's options; and a line
+/// that cannot be followed stops the run before any model is read, naming it.
+#[test]
+fn a_jobs_list_runs_each_model_with_its_own_options() {
+    let Some(cube) = cube() else { return };
+    let folder = scratch("jobs");
+    let jobs = folder.join("jobs.txt");
+    let report_path = folder.join("report.json");
+    std::fs::write(
+        &jobs,
+        format!(
+            "# two jobs\n\n\"{cube}\" --suffix _a\n\"{cube}\" --suffix _b --out \"{}\"\n",
+            folder.join("b").display(),
+            cube = cube.display()
+        ),
+    )
+    .expect("a job list");
+    let output = run(&[
+        "optimize",
+        "--jobs",
+        text(&jobs),
+        "--out",
+        text(&folder.join("a")),
+        "--reduce",
+        "0.5",
+        "--report",
+        text(&report_path),
+    ]);
+    assert_eq!(
+        status(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        folder.join("a/meter_cube_a.fbx").is_file(),
+        "the command line's --out"
+    );
+    assert!(
+        folder.join("b/meter_cube_b.fbx").is_file(),
+        "the line's own --out"
+    );
+    let report = report(&report_path);
+    assert_eq!(
+        (report["models"].clone(), report["done"].clone()),
+        (2.into(), 2.into())
+    );
+
+    std::fs::write(
+        &jobs,
+        format!("\"{}\" --if-exists replace\n", cube.display()),
+    )
+    .expect("a bad list");
+    let output = run(&[
+        "optimize",
+        "--jobs",
+        text(&jobs),
+        "--out",
+        text(&folder.join("c")),
+        "--reduce",
+        "0.5",
+    ]);
+    assert_eq!(status(&output), 1);
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        said.contains("line 1") && said.contains("--if-exists"),
+        "{said}"
+    );
+    assert!(!folder.join("c").exists(), "nothing ran");
+}
+
 #[test]
 fn a_command_line_it_cannot_follow_exits_2_and_runs_nothing() {
     let folder = scratch("usage");

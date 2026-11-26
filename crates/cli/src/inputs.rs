@@ -106,18 +106,41 @@ struct Argument {
 fn read_list(list: &Path) -> Result<Vec<PathBuf>, String> {
     let bytes = std::fs::read(list)
         .map_err(|error| k::files_from_unreadable(list.display().to_string(), error.to_string()))?;
-    let text = match bytes.as_slice() {
-        [0xFF, 0xFE, rest @ ..] => utf16(rest, u16::from_le_bytes),
-        [0xFE, 0xFF, rest @ ..] => utf16(rest, u16::from_be_bytes),
-        [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8_lossy(rest).into_owned(),
-        all => String::from_utf8_lossy(all).into_owned(),
-    };
-    Ok(text
+    Ok(decode(&bytes)
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(PathBuf::from)
         .collect())
+}
+
+/// A list file's text: UTF-8, or UTF-16 when it starts with that byte-order mark
+/// (what Windows PowerShell 5's `Out-File` writes). A `--jobs` list is read the
+/// same way.
+pub(crate) fn decode(bytes: &[u8]) -> String {
+    match bytes {
+        [0xFF, 0xFE, rest @ ..] => utf16(rest, u16::from_le_bytes),
+        [0xFE, 0xFF, rest @ ..] => utf16(rest, u16::from_be_bytes),
+        [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8_lossy(rest).into_owned(),
+        all => String::from_utf8_lossy(all).into_owned(),
+    }
+}
+
+/// The one model a job's line names, vetted as an argument is (there, readable,
+/// not a Git LFS pointer), or why it is not one.
+pub(crate) fn job_model(path: &Path) -> Result<Model, String> {
+    let argument = Argument {
+        path: path.to_path_buf(),
+        listed: false,
+    };
+    let mut inputs = collect_arguments(&[argument], false);
+    if let Some(unusable) = inputs.unusable.pop() {
+        return Err(unusable.problem);
+    }
+    match inputs.models.len() {
+        1 => Ok(inputs.models.remove(0)),
+        _ => Err(review_localization::tr(k::JOBS_ONE_MODEL).into_owned()),
+    }
 }
 
 fn utf16(bytes: &[u8], unit: fn([u8; 2]) -> u16) -> String {

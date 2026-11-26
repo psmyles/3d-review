@@ -35,7 +35,8 @@ pub(crate) const PROGRAM: &str = "review3d-cli";
 pub(crate) enum Parsed {
     Version,
     Help(Option<CommandName>),
-    Run(Run),
+    /// Boxed: a run's options are much the largest of the three.
+    Run(Box<Run>),
     /// `rules check` or `rules explain`: about a `rules.json`, not about
     /// models, so none of a model command's options apply.
     Rules(RulesArgs),
@@ -150,6 +151,10 @@ pub(crate) struct OptimizeArgs {
     pub(crate) max_volume_change: Option<Option<f32>>,
     /// `--max-distance`: the same, for the distance limit.
     pub(crate) max_distance: Option<Option<f32>>,
+    /// `--jobs`: a list of models, each with options of its own.
+    pub(crate) jobs: Option<PathBuf>,
+    /// The command line's options as given, which a job's line is read on top of.
+    pub(crate) base: JobBase,
     pub(crate) packaging: Option<LodPackaging>,
     pub(crate) hierarchy: Option<HierarchyMode>,
     pub(crate) format: Option<FbxFormat>,
@@ -261,6 +266,24 @@ const SIMPLIFIER: &str = "--simplifier";
 const SIMPLIFY_FLAGS: &str = "--simplify-flags";
 const MAX_VOLUME_CHANGE: &str = "--max-volume-change";
 const MAX_DISTANCE: &str = "--max-distance";
+const JOBS: &str = "--jobs";
+/// What a job's line may set: everything about how one model is optimized and
+/// where it goes. The rest (`--report`, `--if-exists`, ...) is the run's.
+const JOB_OPTIONS: &[&str] = &[
+    OUT,
+    PRESET,
+    LODS,
+    REDUCE,
+    TARGET_ERROR,
+    SIMPLIFIER,
+    SIMPLIFY_FLAGS,
+    MAX_VOLUME_CHANGE,
+    MAX_DISTANCE,
+    PACKAGING,
+    HIERARCHY,
+    FORMAT,
+    SUFFIX,
+];
 const PACKAGING: &str = "--packaging";
 const HIERARCHY: &str = "--hierarchy";
 const FORMAT: &str = "--format";
@@ -333,6 +356,12 @@ const SPECS: &[Spec] = &[
         name: OUT,
         takes: Takes::Value(k::HELP_VALUE_FOLDER),
         help: k::HELP_OPTION_OUT,
+        on: OPTIMIZE,
+    },
+    Spec {
+        name: JOBS,
+        takes: Takes::Value(k::HELP_VALUE_FILE),
+        help: k::HELP_OPTION_JOBS,
         on: OPTIMIZE,
     },
     Spec {
@@ -520,7 +549,7 @@ pub(crate) fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, 
 
 /// The values an option was given, last one winning. A boolean is present or
 /// not; an empty value never arrives here.
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 struct Given {
     values: Vec<(&'static str, Option<OsString>)>,
     inputs: Vec<PathBuf>,
@@ -552,19 +581,9 @@ impl Given {
     }
 }
 
-fn parse_command(command: CommandName, args: Vec<OsString>) -> Result<Parsed, UsageError> {
-    // A help request anywhere wins over everything else on the line, mistakes
-    // included: it is what someone with a mistake on the line is looking for.
-    let asks_for_help = args
-        .iter()
-        .map(|arg| arg.to_string_lossy())
-        .take_while(|arg| arg != "--")
-        .any(|arg| arg == HELP || arg == "-h");
-    if asks_for_help {
-        return Ok(Parsed::Help(Some(command)));
-    }
-
-    let error = |message: String| UsageError::new(message, Some(command));
+/// The options and models of one command line, or of one job's line: each value
+/// as given, the last one of an option winning.
+fn read_options(command: CommandName, args: Vec<OsString>) -> Result<Given, String> {
     let mut given = Given::default();
     let mut args = args.into_iter();
     let mut positional_only = false;
@@ -589,12 +608,12 @@ fn parse_command(command: CommandName, args: Vec<OsString>) -> Result<Parsed, Us
             .iter()
             .find(|spec| spec.name == name && spec.on.contains(&command))
         else {
-            return Err(error(k::usage_unknown_option(name)));
+            return Err(k::usage_unknown_option(name));
         };
         match spec.takes {
             Takes::Nothing => {
                 if inline.is_some() {
-                    return Err(error(k::usage_takes_no_value(name)));
+                    return Err(k::usage_takes_no_value(name));
                 }
                 given.values.push((spec.name, None));
             }
@@ -606,7 +625,7 @@ fn parse_command(command: CommandName, args: Vec<OsString>) -> Result<Parsed, Us
                     // "--recurse" (that one is written `--out=--recurse`).
                     None => match args.next() {
                         Some(value) if !value.to_string_lossy().starts_with("--") => value,
-                        _ => return Err(error(k::usage_needs_value(name))),
+                        _ => return Err(k::usage_needs_value(name)),
                     },
                 };
                 if !value.to_string_lossy().trim().is_empty() {
@@ -615,6 +634,24 @@ fn parse_command(command: CommandName, args: Vec<OsString>) -> Result<Parsed, Us
             }
         }
     }
+
+    Ok(given)
+}
+
+fn parse_command(command: CommandName, args: Vec<OsString>) -> Result<Parsed, UsageError> {
+    // A help request anywhere wins over everything else on the line, mistakes
+    // included: it is what someone with a mistake on the line is looking for.
+    let asks_for_help = args
+        .iter()
+        .map(|arg| arg.to_string_lossy())
+        .take_while(|arg| arg != "--")
+        .any(|arg| arg == HELP || arg == "-h");
+    if asks_for_help {
+        return Ok(Parsed::Help(Some(command)));
+    }
+
+    let error = |message: String| UsageError::new(message, Some(command));
+    let mut given = read_options(command, args).map_err(error)?;
 
     if !command.takes_models() {
         return rules_args(&given).map(Parsed::Rules).map_err(error);
@@ -626,7 +663,9 @@ fn parse_command(command: CommandName, args: Vec<OsString>) -> Result<Parsed, Us
     if staged && (!given.inputs.is_empty() || files_from.is_some()) {
         return Err(error(tr(k::USAGE_STAGED_AND_MODELS).into_owned()));
     }
-    if given.inputs.is_empty() && !staged && files_from.is_none() {
+    // A job list names its models too, each on its line.
+    let jobs = matches!(command, CommandName::Optimize) && given.path(JOBS).is_some();
+    if given.inputs.is_empty() && !staged && files_from.is_none() && !jobs {
         return Err(error(tr(k::USAGE_NO_MODELS).into_owned()));
     }
 
@@ -647,7 +686,7 @@ fn parse_command(command: CommandName, args: Vec<OsString>) -> Result<Parsed, Us
         CommandName::Info => Command::Info,
         CommandName::Rules => unreachable!("handled above: it takes no models"),
     };
-    Ok(Parsed::Run(Run { common, command }))
+    Ok(Parsed::Run(Box::new(Run { common, command })))
 }
 
 /// `rules check <rules.json>`, `rules explain <files>... --rules <rules.json>`
@@ -790,7 +829,9 @@ fn optimize_args(given: &Given) -> Result<OptimizeArgs, String> {
         .transpose()?;
     let preset = given.path(PRESET);
     let makes_lods = matches!(lods, Some(Lods::Levels(_)));
-    if preset.is_none() && !makes_lods && reduce.is_none() {
+    let jobs = given.path(JOBS);
+    // With a job list, each job's line says what to do with its model.
+    if preset.is_none() && !makes_lods && reduce.is_none() && jobs.is_none() {
         return Err(tr(k::USAGE_NOTHING_TO_DO).into_owned());
     }
     Ok(OptimizeArgs {
@@ -803,6 +844,11 @@ fn optimize_args(given: &Given) -> Result<OptimizeArgs, String> {
         simplify_flags,
         max_volume_change,
         max_distance,
+        jobs,
+        base: JobBase(Given {
+            values: given.values.clone(),
+            inputs: Vec::new(),
+        }),
         packaging: choice(given, PACKAGING, PACKAGING_CHOICES)?.map(|word| match word {
             "file-per-lod" => LodPackaging::FilePerLod,
             _ => LodPackaging::SingleFileSuffixed,
@@ -914,6 +960,70 @@ fn target(name: &str, value: &str) -> Result<Target, String> {
         return Err(bad());
     }
     Ok(Target::Share(parsed))
+}
+
+/// The command line's options, kept for reading each job's line on top of.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct JobBase(Given);
+
+/// One line of a `--jobs` list: a model, then the options for it alone, read on
+/// top of the command line's — exactly as if they had been added to its end — so
+/// a job is checked by the same rules a command line is. Double quotes keep a
+/// path with spaces together.
+pub(crate) fn job_line(line: &str, base: &OptimizeArgs) -> Result<(PathBuf, OptimizeArgs), String> {
+    let mut words = split_words(line).into_iter();
+    let model = match words.next() {
+        Some(word) if !word.starts_with('-') => PathBuf::from(word),
+        _ => return Err(tr(k::JOBS_NEEDS_MODEL).into_owned()),
+    };
+    let own = read_options(CommandName::Optimize, words.map(OsString::from).collect())?;
+    if !own.inputs.is_empty() {
+        return Err(tr(k::JOBS_ONE_MODEL).into_owned());
+    }
+    if let Some((name, _)) = own
+        .values
+        .iter()
+        .find(|(name, _)| !JOB_OPTIONS.contains(name))
+    {
+        return Err(k::jobs_not_per_model((*name).to_owned()));
+    }
+    let mut merged = base.base.0.clone();
+    merged.values.extend(own.values);
+    merged.values.retain(|(name, _)| *name != JOBS);
+    merged.inputs = vec![model.clone()];
+    let mut args = optimize_args(&merged)?;
+    args.jobs = None;
+    Ok((model, args))
+}
+
+/// A line's words, split at spaces and tabs; a run between double quotes is one
+/// word, without its quotes.
+fn split_words(line: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let (mut quoted, mut started) = (false, false);
+    for character in line.chars() {
+        match character {
+            '"' => {
+                quoted = !quoted;
+                started = true;
+            }
+            ' ' | '\t' if !quoted => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            other => {
+                word.push(other);
+                started = true;
+            }
+        }
+    }
+    if started {
+        words.push(word);
+    }
+    words
 }
 
 /// An error limit, as the Inspector's slider takes it: `0` to `1`.
@@ -1093,7 +1203,7 @@ mod tests {
 
     fn run(line: &str) -> Run {
         match parse_line(line) {
-            Ok(Parsed::Run(run)) => run,
+            Ok(Parsed::Run(run)) => *run,
             other => panic!("{line}: {other:?}"),
         }
     }
@@ -1176,6 +1286,42 @@ mod tests {
                 .contains("lock-border|error-absolute"),
             "a wrong flag is answered with the flags there are"
         );
+    }
+
+    /// A job's line is read on top of the command line: what it gives replaces the
+    /// command line's for that model, what it leaves out comes from the command
+    /// line, a quoted path keeps its spaces, and what belongs to the whole run is
+    /// refused.
+    #[test]
+    fn a_jobs_line_is_read_on_top_of_the_command_line() {
+        let Command::Optimize(base) =
+            run("optimize --jobs jobs.txt --out out --reduce 0.5 --target-error 1 --suffix _low")
+                .command
+        else {
+            panic!("not optimize");
+        };
+        assert!(base.jobs.is_some());
+        let (model, job) = job_line(
+            r#""parts/my link.fbx" --reduce 1500t --out "build/my parts""#,
+            &base,
+        )
+        .expect("a job");
+        assert_eq!(model, PathBuf::from("parts/my link.fbx"));
+        assert_eq!(job.reduce, Some(Target::Triangles(1500)), "the line's own");
+        assert_eq!(job.out, PathBuf::from("build/my parts"));
+        assert_eq!(job.target_error, Some(1.0), "the command line's");
+        assert_eq!(job.suffix, "_low");
+        assert!(job.jobs.is_none(), "a job does not read the list again");
+
+        for (line, says) in [
+            ("--reduce 0.5", "starts with its model"),
+            ("a.fbx b.fbx --reduce 0.5", "one model"),
+            ("a.fbx --report r.json", "--report is for the whole run"),
+            ("a.fbx --reduce 2", "takes a share"),
+        ] {
+            let error = job_line(line, &base).expect_err(line);
+            assert!(error.contains(says), "{line}: {error}");
+        }
     }
 
     /// A quality limit is a percentage or a share, and `none` switches a preset's

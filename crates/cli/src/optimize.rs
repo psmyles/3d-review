@@ -11,7 +11,7 @@
 //! reading, but for a model replacing itself under `--replace-models`.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use review_labels::opt::{
     explain_export_note, explain_opt_error, explain_opt_warning, rebind_notes, repair_notes,
@@ -45,41 +45,87 @@ pub(crate) fn run(common: &Common, args: &OptimizeArgs) -> bool {
     report.finish(ok) && ok
 }
 
-fn work(common: &Common, args: &OptimizeArgs, bar: &Bar, report: &mut Report) {
-    let stack = match build_stack(args) {
-        Ok(stack) => stack,
-        Err(problem) => {
-            console::warn(&problem);
-            report.problem(problem);
-            return;
-        }
-    };
+/// One model's work: the model, and the stack and options it runs under — the
+/// command line's, or its `--jobs` line's on top of them.
+struct Job {
+    model: Model,
+    stack: OptStack,
+    args: Option<OptimizeArgs>,
+}
 
-    let models = inputs::gather(common, report);
-    if models.is_empty() {
+fn work(common: &Common, args: &OptimizeArgs, bar: &Bar, report: &mut Report) {
+    // A job list is read whole first: a line that cannot be followed stops the
+    // run before any model is read, as a preset that cannot be read does.
+    let listed = match &args.jobs {
+        Some(path) => match read_jobs(path, args) {
+            Ok(listed) => listed,
+            Err(problem) => {
+                console::warn(&problem);
+                report.problem(problem);
+                return;
+            }
+        },
+        None => Vec::new(),
+    };
+    let named = !common.inputs.is_empty() || common.files_from.is_some();
+    let mut jobs: Vec<Job> = Vec::new();
+    if named || listed.is_empty() {
+        let stack = match build_stack(args) {
+            Ok(stack) => stack,
+            Err(problem) => {
+                console::warn(&problem);
+                report.problem(problem);
+                return;
+            }
+        };
+        jobs.extend(inputs::gather(common, report).into_iter().map(|model| Job {
+            model,
+            stack: stack.clone(),
+            args: None,
+        }));
+    }
+    let expected = jobs.len() + report.failed() + listed.len();
+    for (path, job_args) in listed {
+        let made = inputs::job_model(&path)
+            .and_then(|model| build_stack(&job_args).map(|stack| (model, stack)));
+        match made {
+            Ok((model, stack)) => jobs.push(Job {
+                model,
+                stack,
+                args: Some(job_args),
+            }),
+            Err(problem) => {
+                let label = path.display().to_string();
+                console::warn(&k::optimize_failed(label.clone(), problem.clone()));
+                report.add(Status::Failed, Entry::new(&label), Some(problem));
+            }
+        }
+    }
+    report.expect(expected);
+    if jobs.is_empty() {
         return;
     }
 
-    let count = models.len();
+    let count = jobs.len();
     console::say(&k::optimize_start(
         count as f64,
         args.out.display().to_string(),
     ));
     let mut batch = Batch {
-        stack: &stack,
         args,
-        sources: models
+        sources: jobs
             .iter()
-            .map(|model| inputs::identity(&model.path))
+            .map(|job| inputs::identity(&job.model.path))
             .collect(),
         claimed: HashMap::new(),
     };
     let (mut done, mut skipped) = (0usize, 0usize);
     let mut outputs: Vec<String> = Vec::new();
-    for (index, model) in models.iter().enumerate() {
+    for (index, job) in jobs.iter().enumerate() {
+        let model = &job.model;
         console::heading(&format!("[{}/{count}] {}", index + 1, model.label()));
         let progress = |fraction: f32| bar.set((index as f32 + fraction) / count as f32);
-        let (status, entry, problem, written) = batch.optimize(model, &progress);
+        let (status, entry, problem, written) = batch.optimize(job, &progress);
         match status {
             Status::Done => done += 1,
             Status::Skipped => skipped += 1,
@@ -101,6 +147,38 @@ fn work(common: &Common, args: &OptimizeArgs, bar: &Bar, report: &mut Report) {
     console::say(&k::optimize_done(done as f64, failed, skipped as f64));
     report.total("written", json!(outputs.len()));
     report.total("outputs", json!(outputs));
+}
+
+/// Where `model`'s file goes under `args`' `--out` and `--suffix`, keeping its
+/// place below the argument that named it.
+fn destination(model: &Model, args: &OptimizeArgs) -> PathBuf {
+    let stem = model
+        .relative
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let name = format!("{stem}{}.fbx", args.suffix);
+    args.out.join(model.relative.with_file_name(name))
+}
+
+/// A `--jobs` list: each line a model and its own options (see
+/// [`crate::args::job_line`]). Blank lines and lines starting with `#` are skipped.
+/// The first line that cannot be followed is the problem, named by its number.
+fn read_jobs(path: &Path, args: &OptimizeArgs) -> Result<Vec<(PathBuf, OptimizeArgs)>, String> {
+    let bytes = std::fs::read(path)
+        .map_err(|error| k::jobs_unreadable(path.display().to_string(), error.to_string()))?;
+    let mut jobs = Vec::new();
+    for (number, line) in inputs::decode(&bytes).lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let job = crate::args::job_line(line, args).map_err(|problem| {
+            k::jobs_bad_line(path.display().to_string(), (number + 1) as f64, problem)
+        })?;
+        jobs.push(job);
+    }
+    Ok(jobs)
 }
 
 /// A share as the percentage a person reads (`0.05` as `5%`), at the precision it
@@ -293,7 +371,8 @@ fn level_count(stack: &OptStack) -> usize {
 
 /// What a whole run shares between its models.
 struct Batch<'a> {
-    stack: &'a OptStack,
+    /// The run's options: what a job's line cannot change (`--if-exists`,
+    /// `--replace-models`) is read from here.
     args: &'a OptimizeArgs,
     /// Every model being read, by [`inputs::identity`]: none of them may be
     /// written over, but by its own results under `--replace-models`.
@@ -308,12 +387,14 @@ impl Batch<'_> {
     /// files it wrote.
     fn optimize(
         &mut self,
-        model: &Model,
+        job: &Job,
         progress: &dyn Fn(f32),
     ) -> (Status, Entry, Option<String>, Vec<String>) {
+        let model = &job.model;
+        let job_args = job.args.as_ref().unwrap_or(self.args);
         let mut entry = Entry::new(&model.label());
-        let destination = self.destination(model);
-        let planned = planned_files(0..level_count(self.stack), &destination, &self.stack.export);
+        let destination = destination(model, job_args);
+        let planned = planned_files(0..level_count(&job.stack), &destination, &job.stack.export);
         if let Err((status, problem)) = self.claim(model, &planned) {
             return (status, entry, Some(problem), Vec::new());
         }
@@ -328,9 +409,9 @@ impl Batch<'_> {
 
         // The preset's per-object settings name objects of the model it was
         // saved from; rebind them to this one's by name, as Load preset does.
-        let mut stack = self.stack.clone();
+        let mut stack = job.stack.clone();
         let rebind = stack.rebind_to_model(&loaded.model.nodes);
-        if !self.stack.overrides.is_empty() {
+        if !job.stack.overrides.is_empty() {
             entry.set(
                 "overrides",
                 json!({
@@ -437,16 +518,6 @@ impl Batch<'_> {
 
     /// Where `model` is written: its place under `--out`, its name with the
     /// suffix, and the `.fbx` extension whatever the source's case.
-    fn destination(&self, model: &Model) -> PathBuf {
-        let stem = model
-            .relative
-            .file_stem()
-            .map(|stem| stem.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let name = format!("{stem}{}.fbx", self.args.suffix);
-        self.args.out.join(model.relative.with_file_name(name))
-    }
-
     /// Claim `files` for `model`, or say why it cannot have them: one is a
     /// model of this run, another model of this run is to write one, or one is
     /// already there and `--if-exists` does not say to replace it.
@@ -626,6 +697,8 @@ mod tests {
             simplify_flags: None,
             max_volume_change: None,
             max_distance: None,
+            jobs: None,
+            base: crate::args::JobBase::default(),
             packaging: None,
             hierarchy: None,
             format: None,

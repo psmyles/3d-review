@@ -125,6 +125,7 @@ workspace's Export does.
 | Option | |
 |---|---|
 | `--out <folder>` | Required. Where the models are written. A model found in a folder keeps its place below it: `props/crates/a.fbx` under `--out build` is written to `build/crates/a.fbx`. |
+| `--jobs <file>` | Also work on the models this file lists, each with options of its own (see [A job list](#a-job-list)). |
 | `--preset <file>` | A preset saved from the Opt workspace (**Save preset**). Its per-object settings are matched to each model's objects by name, as **Load preset** does. One that matches nothing is dropped, with a warning. |
 | `--lods <targets>\|none` | The LOD chain, at most 8 levels: shares of the triangles (`0.5,0.25` or `50%,25%`), numbers of triangles (`750t,375t`), or a mix. Replaces the preset's chain. A level the preset already has keeps its error limit, and a new one gets the one before it (0.01 by default, at every level). `none` turns the preset's chain off. |
 | `--reduce <target>` | Simplify the model itself to this share of its triangles (`0.5`, `50%`), or to this many (`1500t`), before any LODs are made. Sets the preset's Reduce, or adds one before the chain. |
@@ -154,6 +155,41 @@ the shape, and an object never gains triangles. `--packaging`, `--hierarchy` and
 override the preset's export settings. Added operations go in front of any reorder
 operation (vertex cache, overdraw, vertex fetch), which only pays off when nothing
 changes the triangles after it.
+
+### A job list
+
+A set of parts that each need their own budget - a robot's, say - runs in one call
+with `--jobs`. Each line is a model, then the options for it alone, written as on
+the command line:
+
+```text
+# machine: one line per part
+parts/link.fbx --reduce 1500t --lods 750t,375t
+parts/shell.fbx --reduce 1500t --lods 750t,375t
+parts/hinge_block.fbx --reduce 400t --lods 200t,100t --max-volume-change 5%
+"parts/hinge pin.fbx" --reduce 250t --lods 125t,63t --out build/rods
+```
+
+```text
+review3d-cli optimize --jobs machine.txt --out build --target-error 1 --simplify-flags regularize
+```
+
+A line is read on top of the command line, as if its options were added to the
+end of it: what the line gives replaces the command line's for that model, and
+what it leaves out comes from the command line. So the run's shared settings go
+on the command line once, and each line says only what differs. A line may set
+`--out`, `--preset`, `--lods`, `--reduce`, `--target-error`, `--simplifier`,
+`--simplify-flags`, `--max-volume-change`, `--max-distance`, `--packaging`,
+`--hierarchy`, `--format` and `--suffix`; the rest belong to the whole run.
+Paths are relative to the working folder, double quotes keep one with spaces
+together, and blank lines and lines starting with `#` are skipped. The file is
+read as `--files-from` reads one (UTF-8, or UTF-16 with a byte-order mark).
+
+The whole list is read before any model: a line that cannot be followed is a
+problem that stops the run (exit status 1), naming the file and the line. Models
+on the command line, or in a `--files-from` list, run under the command line's
+options as usual, beside the jobs. A job's model that is not there fails that
+model only, as an argument would.
 
 Two checks run before a model is loaded, whatever `--if-exists` says. A model
 never writes over a file another model of the same run is writing, and never over

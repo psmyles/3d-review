@@ -44,6 +44,7 @@ cli-help-option-lods = The LODs to make, as shares of the triangles (0.5,0.25 or
 cli-help-option-target-error = The error limit of the Reduce and of every LOD level: how far the surface may move, as a share of the model's size (0.01 by default), or in the model's own units with the error-absolute flag. A level stops short of its target rather than go past it.
 cli-help-option-simplifier = The simplifier the Reduce and the LOD chain use: preserve-attributes (the default), standard or sloppy.
 cli-help-option-simplify-flags = The simplifier's flags, the whole set, in place of the preset's: any of lock-border, error-absolute, prune, regularize, regularize-light, collapse-across-seams, preserve-folds and clamp-attribute-error, separated by commas, or none.
+cli-help-option-jobs = Also work on the models listed in this file, one per line, each followed by options for it alone (such as --reduce 1500t --lods 750t,375t), which take the place of the command line's for that model.
 cli-help-option-max-volume-change = The most any object's volume may change from the model as it came, as a share or a percentage (0.05 or 5%): a level stops above its target rather than pass it. none switches the preset's limit off. Off unless set.
 cli-help-option-max-distance = The farthest any object's surface may move from the model as it came, as a share of the object's size (0.01 or 1%): a level stops above its target rather than pass it. none switches the preset's limit off. Off unless set.
 cli-help-option-reduce = Simplify the model itself to this share of its triangles (0.5 or 50%), or to this many triangles (1500t), before any LODs are made.
@@ -106,6 +107,11 @@ cli-note = Note: { $text }
 cli-report-failed = Couldn't write the report { $file }: { $reason }
 cli-results-failed = Couldn't write the results { $file }: { $reason }
 cli-files-from-unreadable = Couldn't read the list { $file }: { $reason }
+cli-jobs-unreadable = Couldn't read the job list { $file }: { $reason }
+cli-jobs-bad-line = { $file }, line { $line }: { $problem }
+cli-jobs-needs-model = A job starts with its model, then its options.
+cli-jobs-one-model = A job is one model; give each its own line.
+cli-jobs-not-per-model = { $option } is for the whole run, so it goes on the command line rather than on a job's line.
 
 ## optimize
 
