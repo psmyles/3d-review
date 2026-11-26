@@ -67,6 +67,13 @@ preview and the real facts about the file - its type, size in pixels,
 channels, bit depth, size on disk and where it was read from - and which
 materials use it.
 
+A part from a glTF file (`.gltf` or `.glb`) also shows its **Extras**: the
+custom properties the file carries on it, such as the data a game reads from
+it, one row per property. **Mesh extras** are the ones on the mesh it shows;
+Blender writes an object's own custom properties to the part and its mesh
+data's to the mesh. A value too long for the panel is cut short; hover over it
+to read all of it.
+
 In the Opt workspace the Inspector changes job: it shows the settings of the
 operation you have selected, the export settings, or the per-object settings of
 the part you have selected. Per-object settings apply to one part, so with

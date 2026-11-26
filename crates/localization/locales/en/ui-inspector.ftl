@@ -86,6 +86,14 @@ ui-inspector-select-texture = select texture
 ui-inspector-texture-path = Path
     .description = Where the image was read from. The viewer watches this file, so when
         you save a change in your paint program it shows up here.
+ui-inspector-extras = Extras
+    .description = The custom properties a glTF file carries on this object, such as the data
+        a game reads from it. Each value is shown as the file wrote it.
+ui-inspector-mesh-extras = Mesh extras
+    .description = The custom properties a glTF file carries on the mesh this object shows.
+        Blender writes an object's own properties to the object and its mesh data's
+        properties here.
+ui-inspector-extras-empty = None.
 ui-inspector-texture-used-by = Used by
     .description = The materials that read this image in one of their texture slots.
 ui-inspector-texture-unused = No material uses this image yet.

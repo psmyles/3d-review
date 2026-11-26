@@ -692,6 +692,83 @@ fn node_inspector(ui: &mut egui::Ui, state: &mut UiState, model: &ModelData, ind
             }
         }
     });
+
+    // What a glTF file carries on the node, and on the mesh it instances: the
+    // custom properties a game reads its data from.
+    if let Some(gltf) = model.gltf.as_deref().and_then(|gltf| gltf.nodes.get(index)) {
+        if let Some(extras) = gltf.extras.as_deref() {
+            extras_section(
+                ui,
+                ("inspector_node_extras", index),
+                (
+                    keys::ui_inspector::EXTRAS,
+                    keys::ui_inspector::EXTRAS_DESCRIPTION,
+                ),
+                extras,
+            );
+        }
+        if let Some(extras) = gltf.mesh_extras.as_deref() {
+            extras_section(
+                ui,
+                ("inspector_mesh_extras", index),
+                (
+                    keys::ui_inspector::MESH_EXTRAS,
+                    keys::ui_inspector::MESH_EXTRAS_DESCRIPTION,
+                ),
+                extras,
+            );
+        }
+    }
+}
+
+/// A collapsible list of a glTF `extras` object, one row per key (in key
+/// order), each value as the file wrote it (a string without its quotes). A key
+/// or value too long for its column is cut short, with the whole of it on
+/// hover. Extras that are not an object, or not JSON, show as their text.
+fn extras_section(
+    ui: &mut egui::Ui,
+    salt: (&str, usize),
+    (title, description): (review_localization::Key, review_localization::Key),
+    text: &str,
+) {
+    let header = egui::CollapsingHeader::new(title)
+        .id_salt(salt)
+        .default_open(true)
+        .show(ui, |ui| {
+            let value: Option<serde_json::Value> = serde_json::from_str(text).ok();
+            let Some(serde_json::Value::Object(map)) = value else {
+                ui.add(egui::Label::new(text).wrap());
+                return;
+            };
+            if map.is_empty() {
+                ui.weak(keys::ui_inspector::EXTRAS_EMPTY);
+                return;
+            }
+            panel_grid(ui, salt.0, |ui| {
+                for (key, value) in &map {
+                    let full = match value {
+                        serde_json::Value::String(string) => string.clone(),
+                        other => other.to_string(),
+                    };
+                    ui.scope(|ui| {
+                        ui.set_width(size::PANEL_LABEL_COL_WIDTH);
+                        ui.add(egui::Label::new(key.as_str()).truncate())
+                            .on_hover_text(key.as_str());
+                    });
+                    crate::widgets::grid_control(ui, |ui| {
+                        ui.add(egui::Label::new(full.as_str()).truncate())
+                            .on_hover_text(full.as_str());
+                    });
+                    ui.end_row();
+                }
+            });
+        });
+    tip(
+        header.header_response,
+        Tip::new(title)
+            .describe(description)
+            .page(Page::OutlinerInspector),
+    );
 }
 
 /// The summary shown when several parts are selected at once: how many, what
