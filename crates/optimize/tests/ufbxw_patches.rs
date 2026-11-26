@@ -32,8 +32,7 @@ fn probe(dir: &Path, ascii: bool) -> Option<(PathBuf, ModelData)> {
     match review_import::load_model(&path) {
         Ok(model) => Some((path, model)),
         Err(review_import::ImportError::UfbxUnavailable) => {
-            skip("FBX import is unavailable in this build")?;
-            None
+            skip("FBX import is unavailable in this build")
         }
         Err(error) => panic!("could not read back {}: {error}", path.display()),
     }

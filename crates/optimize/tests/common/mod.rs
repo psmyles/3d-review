@@ -40,9 +40,10 @@ pub fn temp_dir(name: &str) -> PathBuf {
 
 /// Refuse to skip, or say why this run is skipping.
 ///
-/// Returns `None` so a caller can `let Some(..) = .. else { return }`; panics
-/// instead when `REVIEW_REQUIRE_FIXTURES` is set, naming the same reason.
-pub fn skip(reason: &str) -> Option<std::convert::Infallible> {
+/// Returns `None` so a caller can hand it straight back as its own "can't run"
+/// answer; panics instead when `REVIEW_REQUIRE_FIXTURES` is set, naming the same
+/// reason.
+pub fn skip<T>(reason: &str) -> Option<T> {
     if std::env::var_os("REVIEW_REQUIRE_FIXTURES").is_some_and(|value| value != "0") {
         panic!("REVIEW_REQUIRE_FIXTURES is set, so this run may not skip: {reason}");
     }
@@ -66,14 +67,12 @@ pub fn fixture_path(name: &str) -> PathBuf {
 pub fn fixture(name: &str) -> Option<ModelData> {
     let path = fixture_path(name);
     if !path.exists() {
-        skip(&format!("{name} is not present"))?;
-        return None;
+        return skip(&format!("{name} is not present"));
     }
     match review_import::load_model(&path) {
         Ok(model) => Some(model),
         Err(review_import::ImportError::UfbxUnavailable) => {
-            skip(&format!("{name}: FBX import is unavailable in this build"))?;
-            None
+            skip(&format!("{name}: FBX import is unavailable in this build"))
         }
         Err(error) => panic!("{name} is present but failed to load: {error}"),
     }
@@ -84,8 +83,7 @@ pub fn fixture(name: &str) -> Option<ModelData> {
 pub fn fixture_full(name: &str) -> Option<(ModelData, SourceExtras)> {
     let path = fixture_path(name);
     if !path.exists() {
-        skip(&format!("{name} is not present"))?;
-        return None;
+        return skip(&format!("{name} is not present"));
     }
     load_full(&path)
 }
@@ -94,13 +92,9 @@ pub fn fixture_full(name: &str) -> Option<(ModelData, SourceExtras)> {
 pub fn load_full(path: &Path) -> Option<(ModelData, SourceExtras)> {
     match review_import::load_model_full(path) {
         Ok((model, Some(extras))) => Some((model, extras)),
-        Ok((_, None)) => {
-            skip(&format!("{}: no capture in this build", path.display()))?;
-            None
-        }
+        Ok((_, None)) => skip(&format!("{}: no capture in this build", path.display())),
         Err(review_import::ImportError::UfbxUnavailable) => {
-            skip(&format!("{}: FBX import is unavailable", path.display()))?;
-            None
+            skip(&format!("{}: FBX import is unavailable", path.display()))
         }
         Err(error) => panic!("{} is present but failed to load: {error}", path.display()),
     }

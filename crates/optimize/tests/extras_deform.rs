@@ -15,7 +15,7 @@ use review_optimize::{
 mod common;
 
 use common::extras::{assert_matrix_close, export_result, node_by_name, round_trip};
-use common::{fixture_full as fixture, load_full as load, run_with_extras as run, temp_dir};
+use common::{load_full as load, run_with_extras as run, temp_dir};
 
 /// A cluster identified by the names of its bone and its mesh node.
 fn cluster_key(model: &ModelData, cluster: &review_model::SkinCluster) -> (String, String) {
@@ -25,19 +25,50 @@ fn cluster_key(model: &ModelData, cluster: &review_model::SkinCluster) -> (Strin
     )
 }
 
-/// The character's skin comes back with the same clusters — matched by bone and
-/// mesh — the same authored matrices, and the same rest pose, through a
-/// passthrough and a halving LOD alike. No skinned fixture is left in the
-/// repository; the writer probe's skin is checked by
-/// `dual_quaternion_weights_skin_layers_and_blend_shapes_survive` below.
+/// The writer probe's skin — written at a centimeter scale, so a cluster
+/// matrix scaled by the unit the wrong way shows — loaded as a skin, never as
+/// the writer described it.
+#[cfg(has_ufbxw_probe)]
+fn probe(dir: &std::path::Path) -> Option<(ModelData, review_model::SourceExtras)> {
+    let probe_path = dir.join("probe.fbx");
+    review_optimize::probe::write_patch_probe(&probe_path, false).expect("probe written");
+    load(&probe_path)
+}
+
+/// The writer probe's skin comes back with its authored cluster matrices. See
+/// [`skin_survives`].
+#[cfg(has_ufbxw_probe)]
 #[test]
-#[ignore = "needs a skinned fixture; SK_Player_01.fbx was removed in a9c6db3"]
 fn skin_survives_with_its_authored_cluster_matrices() {
-    let Some((model, extras)) = fixture("SK_Player_01.fbx") else {
+    let dir = temp_dir("extras_skin");
+    let Some((model, extras)) = probe(&dir) else {
         return;
     };
-    let source_skin = model.skin.as_ref().expect("the fixture is skinned");
-    let dir = temp_dir("extras_skin");
+    assert!(
+        (model.stats.source_unit_meters - 0.01).abs() < 1e-6,
+        "the probe is centimeters, so the unit scaling is exercised"
+    );
+    skin_survives(&model, &extras, &dir);
+}
+
+/// The same over a real character's skin: 139 bones authored in a DCC, in
+/// centimeters, over one mesh. (A real rig ran here as `SK_Player_01.fbx`
+/// until a9c6db3.)
+#[test]
+fn a_characters_skin_survives_with_its_authored_cluster_matrices() {
+    let Some((model, extras)) = common::fixture_full("Triceratops.fbx") else {
+        return;
+    };
+    let clusters = model.skin.as_ref().map_or(0, |skin| skin.clusters.len());
+    assert!(clusters > 100, "the rig has clusters to check: {clusters}");
+    skin_survives(&model, &extras, &temp_dir("extras_skin_rig"));
+}
+
+/// A skin comes back with the same clusters — matched by bone and mesh — the
+/// same authored matrices, and the same rest pose, through a passthrough and a
+/// halving LOD alike.
+fn skin_survives(model: &ModelData, extras: &review_model::SourceExtras, dir: &std::path::Path) {
+    let source_skin = model.skin.as_ref().expect("the source is skinned");
 
     let mut stacks: Vec<(&str, OptStack)> = Vec::new();
     let mut stack = OptStack::default();
@@ -55,13 +86,13 @@ fn skin_survives_with_its_authored_cluster_matrices() {
     stacks.push(("halved", stack));
 
     for (label, stack) in &stacks {
-        let result = run(&model, &extras, stack);
+        let result = run(model, extras, stack);
         assert!(
             result.lods[0].model.skin.is_some(),
             "{label}: the level keeps its skin"
         );
         let (loaded, loaded_extras) =
-            export_result(&result, &model, &extras, &dir.join(format!("{label}.fbx")));
+            export_result(&result, model, extras, &dir.join(format!("{label}.fbx")));
         let skin = loaded
             .skin
             .as_ref()
@@ -77,7 +108,7 @@ fn skin_survives_with_its_authored_cluster_matrices() {
             "{label}: deformer count"
         );
         for cluster in &source_skin.clusters {
-            let key = cluster_key(&model, cluster);
+            let key = cluster_key(model, cluster);
             let back = skin
                 .clusters
                 .iter()
@@ -138,22 +169,55 @@ fn skin_survives_with_its_authored_cluster_matrices() {
     }
 }
 
-/// Authored bind poses come back node for node. No fixture left in the
-/// repository carries one.
+/// Authored bind poses come back node for node, over the writer probe's two —
+/// one per skin deformer, which ufbx_write's `add_missing_bind_poses` made for
+/// the probe. The single-layer case runs on a real character in
+/// [`a_characters_bind_pose_survives`].
+///
+/// Ignored because it fails on a real export bug, not a fixture: only the
+/// primary skin is linked to a captured pose (`export/deform.rs` writes the
+/// extra skin layers with `bind_pose: -1`), so the writer synthesizes another
+/// for the layer and the file comes back with three poses where it had two.
+/// Every round trip of a layered skin grows one.
+#[cfg(has_ufbxw_probe)]
 #[test]
-#[ignore = "needs a fixture with bind poses; AN_ZombiedogLocomotion.fbx was removed in a9c6db3"]
+#[ignore = "export bug: an extra skin layer is written without its bind pose, so ufbx_write adds one"]
 fn bind_poses_survive() {
-    let Some((model, extras)) = fixture("AN_ZombiedogLocomotion.fbx") else {
+    let dir = temp_dir("extras_poses");
+    let Some((model, extras)) = probe(&dir) else {
         return;
     };
+    bind_poses_survive_round_trip(&model, &extras, &dir);
+}
+
+/// A single-layer skin's bind pose comes back node for node: the layered-skin
+/// bug above is about the *extra* layers, and the primary skin is linked to its
+/// captured pose, so a real character with one skin must round-trip exactly.
+#[test]
+fn a_characters_bind_pose_survives() {
+    let Some((model, extras)) = common::fixture_full("Triceratops.fbx") else {
+        return;
+    };
+    assert!(
+        extras.meshes.iter().all(|mesh| mesh.extra_skins.is_empty()),
+        "the character has one skin layer, so the layered-skin bug does not apply"
+    );
+    bind_poses_survive_round_trip(&model, &extras, &temp_dir("extras_poses_rig"));
+}
+
+/// Every bind pose in the source comes back, with every entry's matrix.
+fn bind_poses_survive_round_trip(
+    model: &ModelData,
+    extras: &review_model::SourceExtras,
+    dir: &std::path::Path,
+) {
     let bind_poses: Vec<_> = extras
         .poses
         .iter()
         .filter(|pose| pose.is_bind_pose)
         .collect();
-    assert!(!bind_poses.is_empty(), "the fixture carries bind poses");
-    let dir = temp_dir("extras_poses");
-    let (_, loaded, loaded_extras) = round_trip(&model, &extras, &dir, FbxFormat::Binary);
+    assert!(!bind_poses.is_empty(), "the source carries bind poses");
+    let (_, loaded, loaded_extras) = round_trip(model, extras, dir, FbxFormat::Binary);
     let back_poses: Vec<_> = loaded_extras
         .poses
         .iter()

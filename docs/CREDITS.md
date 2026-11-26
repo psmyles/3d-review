@@ -111,6 +111,16 @@ lists which parts are ported.
 - **[Poly Haven](https://polyhaven.com)** - the six HDR environments used for lighting and the
   skybox. CC0.
 
+## Test models
+
+Fixtures in `assets/test_models` that the test suites load; not shipped with 3D Review.
+
+- **noe-3d.at** - [Ehrengrab Johannes Benk](https://sketchfab.com/3d-models/ehrengrab-johannes-benk-d33712df3716461bba26a589711b8ec5)
+  (`Johannes_Benk_C.fbx`), a scanned grave monument. CC0.
+- **Zacxophone** - [Animated triceratops skeleton](https://sketchfab.com/3d-models/animated-triceratops-skeleton-06cb55f941d94dc8b95ac46f92d89e7c)
+  (`Triceratops.fbx` and its `default_*.png` textures), a skinned skeleton with six animations.
+  CC0.
+
 ## Localization
 
 - **[Project Fluent](https://projectfluent.org)** - Mozilla and the Fluent contributors, including

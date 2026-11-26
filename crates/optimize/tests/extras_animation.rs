@@ -128,16 +128,27 @@ fn assert_curves_equal(
 }
 
 /// The wall's break comes back as the same stack, layer and authored curves —
-/// ninety-four animated pieces — and bakes to the same tracks. (This ran on
-/// the dog's locomotion clips, `AN_ZombiedogLocomotion.fbx`, until that fixture
-/// was removed in a9c6db3.)
+/// ninety-four animated pieces — and bakes to the same tracks.
 #[test]
 fn animation_curves_and_baked_clips_survive() {
-    let Some((model, extras)) = fixture("SM_Wall_Break_4x3m.fbx") else {
+    curves_and_clips_survive("SM_Wall_Break_4x3m.fbx", "extras_animation");
+}
+
+/// The same over a skinned character's six clips: a stack per clip, over the
+/// curves of a hundred-odd bones, which is what a game rig is. (The rig case
+/// ran on `AN_ZombiedogLocomotion.fbx` until a9c6db3 removed it.)
+#[test]
+fn a_skinned_characters_curves_and_clips_survive() {
+    curves_and_clips_survive("Triceratops.fbx", "extras_animation_rig");
+}
+
+/// Round-trip `name`, then compare every stack, authored curve and baked track.
+fn curves_and_clips_survive(name: &str, dir: &str) {
+    let Some((model, extras)) = fixture(name) else {
         return;
     };
-    assert!(!model.animations.is_empty());
-    let dir = temp_dir("extras_animation");
+    assert!(!model.animations.is_empty(), "{name} is animated");
+    let dir = temp_dir(dir);
     let (_, loaded, loaded_extras) = round_trip(&model, &extras, &dir, FbxFormat::Binary);
 
     assert_eq!(
@@ -220,20 +231,22 @@ fn animation_curves_and_baked_clips_survive() {
     }
 }
 
-/// Display layers keep their members and colors. No fixture left in the
-/// repository carries one; the writer probe's layer is checked by
-/// `synthetic_animation_selection_and_layer_survive` below.
+/// Display layers keep their members, visibility, freeze and colors. No
+/// fixture left in the repository carries one (`AN_ZombiedogLocomotion.fbx`
+/// did until a9c6db3), so this runs on the writer probe's layer.
+#[cfg(has_ufbxw_probe)]
 #[test]
-#[ignore = "needs a fixture with display layers; AN_ZombiedogLocomotion.fbx was removed in a9c6db3"]
 fn display_layers_survive() {
-    let Some((model, extras)) = fixture("AN_ZombiedogLocomotion.fbx") else {
+    let dir = temp_dir("extras_display_layers");
+    let probe_path = dir.join("probe.fbx");
+    review_optimize::probe::write_patch_probe(&probe_path, false).expect("probe written");
+    let Some((model, extras)) = load(&probe_path) else {
         return;
     };
     assert!(
         !extras.display_layers.is_empty(),
-        "the fixture carries display layers"
+        "the probe carries a display layer"
     );
-    let dir = temp_dir("extras_display_layers");
     let (_, loaded, loaded_extras) = round_trip(&model, &extras, &dir, FbxFormat::Binary);
     assert_eq!(
         loaded_extras.display_layers.len(),

@@ -1,0 +1,3 @@
+Bind poses multiply on export. Each export round trip of a model with an extra skin layer adds a bind pose (2 in, 3 out). Extra layers are written without one (crates/optimize/src/export/deform.rs:302) and the FBX writer then adds one for each. bind_poses_survive stays ignored for that reason; single-layer skins like Triceratops are unaffected.
+
+Shrinkwrap output isn't closed. On the wall model the default Winding wrap leaves edges used twice in the same direction, and its output is very large: 7.6M triangles from a 1128-triangle input. The closed-shell test now runs on synthetic boxes, so it still checks that property.

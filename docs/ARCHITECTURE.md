@@ -274,7 +274,13 @@ internal flag and feeds the inflater zeroes, so it surfaces as `Bad DEFLATE data
 — indistinguishable from a genuinely corrupt file. Most binary FBX is
 deflate-compressed, so that is the common path, and reading `error.type` alone
 turned a load the user had superseded into an error toast. The bridge's progress
-context records our own answer and checks that first.
+context records our own answer and checks that first. The ufbx vendored today
+reports `UFBX_ERROR_CANCELLED` from inside the inflater as well (measured
+2026-11-26 by disabling our record: the cancel test still passed), so the record
+is now a guard against a ufbx update regressing rather than the only thing
+standing between a cancel and the toast. `a_superseded_load_is_cancelled_rather_
+than_parsed` cancels on the read (the wall fixture) and inside a deflate stream
+(a 4 MB binary FBX the test writes itself, almost all one compressed array).
 
 #### The staged import
 

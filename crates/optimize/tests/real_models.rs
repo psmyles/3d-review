@@ -1,24 +1,31 @@
-//! End-to-end checks over the repository's real FBX fixtures.
+//! End-to-end checks over the repository's FBX fixtures, and over a synthetic
+//! asset where no fixture has the property a test needs.
 //!
 //! The unit tests in `process.rs` use the synthetic demo cube, which is small
 //! enough to assert exact counts on but is not representative: it has one node,
 //! one material, twelve triangles and no seams worth speaking of. These run the
-//! same pipeline over actual scanned and modelled assets — hundreds of thousands
-//! of triangles, real UV seams, multi-node and multi-material scenes — where the
-//! interesting failures live.
+//! same pipeline over imported assets — real import, real UV seams, a
+//! many-node scene — where the interesting failures live.
+//!
+//! The fixtures: `monkey.fbx` (flat-shaded, so every edge is an attribute
+//! seam), `SM_Wall_Break_4x3m.fbx` (a game asset of 94 separate pieces),
+//! `Triceratops.fbx` (a skinned character, 139 bones and six clips) and
+//! `Johannes_Benk_C.fbx` (a 614k-triangle scan, for the cases where scale is
+//! the point; imported once per binary through [`scan`]). None of them is
+//! multi-material or multi-node in the way the tagging and exclusion tests
+//! need, so those run on [`smooth_torus`], built here exactly the way import
+//! lays a mesh out (every polygon corner its own vertex).
 //!
 //! Each test skips itself when its fixture or the vendored meshoptimizer sources
 //! are absent, so a checkout without them still passes.
-//!
-//! The skinned character several of these ran on, `SK_Player_01.fbx`, was
-//! removed in a9c6db3 with the other proprietary models. The tests that only
-//! needed *a game asset* or *several materials* run on the remaining fixtures
-//! now; the two that need a skin are kept, ignored, until a skinned fixture
-//! returns — the synthetic `process` tests cover the skin meanwhile.
 
 #![cfg(has_meshopt)]
 
-use review_model::ModelData;
+use glam::{Mat4, Vec2, Vec3, Vec4};
+use review_model::{
+    LocalTransform, MaterialImportDefaults, ModelData, ModelStats, NodeKind, SceneNode,
+    TopologyFace, TriangleData, Vertex,
+};
 use review_optimize::{
     AoQuality, AoTarget, BakeAoParams, LodLevel, LodParams, NormalParams, OpKind, OptStack,
     OptWarning, ReduceParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings, WeldParams,
@@ -31,19 +38,126 @@ use common::{fixture, fixture_path, run};
 /// Every fixture the tests below load. Asserted to exist by
 /// [`every_fixture_the_suite_loads_exists`], so a rename cannot quietly turn the
 /// whole suite green.
-///
-/// Not the ones only the ignored tests load: requiring a fixture the
-/// repository no longer has would fail every run for no test at all.
-const FIXTURES: [&str; 5] = [
-    "SM_column04.fbx",
-    "lucy.fbx",
-    "monkey.fbx",
-    "stylized_palm_plant_04.fbx",
-    "xyzrgb_dragon.fbx",
-];
+const FIXTURES: [&str; 4] = [FLAT_SHADED, GAME_ASSET, SKINNED, SCAN];
 
-/// The skinned character the ignored tests need.
-const SKINNED: &str = "SK_Player_01.fbx";
+/// The flat-shaded fixture: every corner carries its face's normal.
+const FLAT_SHADED: &str = "monkey.fbx";
+/// The game asset: many pieces, real crevices.
+const GAME_ASSET: &str = "SM_Wall_Break_4x3m.fbx";
+/// The skinned character: 139 bones over one mesh, six clips.
+const SKINNED: &str = "Triceratops.fbx";
+/// The scan: 614k triangles of photogrammetry, smooth-shaded with UV seams.
+const SCAN: &str = "Johannes_Benk_C.fbx";
+
+/// The scan, imported once for every test in this binary that wants it — it
+/// is several seconds of import in a debug build, and the tests only read it.
+fn scan() -> Option<&'static ModelData> {
+    static SCAN_MODEL: std::sync::OnceLock<Option<ModelData>> = std::sync::OnceLock::new();
+    SCAN_MODEL.get_or_init(|| fixture(SCAN)).as_ref()
+}
+
+/// A smooth-shaded torus laid out as import lays out a mesh: one vertex per
+/// polygon corner, `MAJOR` x `MINOR` quads, analytic normals and continuous UVs.
+///
+/// Split two ways so it stands in for a multi-node, multi-material asset: the
+/// two halves around the major circle are two nodes, the inner and outer halves
+/// of the tube two materials. Every (node, material) pair is a quarter of it.
+fn smooth_torus() -> ModelData {
+    const MAJOR: usize = 64;
+    const MINOR: usize = 32;
+    const R: f32 = 1.0;
+    const TUBE: f32 = 0.35;
+    let point = |i: usize, j: usize| {
+        let (u, v) = (
+            i as f32 / MAJOR as f32 * std::f32::consts::TAU,
+            j as f32 / MINOR as f32 * std::f32::consts::TAU,
+        );
+        let normal = Vec3::new(v.cos() * u.cos(), v.sin(), v.cos() * u.sin());
+        let centre = Vec3::new(R * u.cos(), 0.0, R * u.sin());
+        (centre + normal * TUBE, normal)
+    };
+
+    let mut vertices = Vec::with_capacity(MAJOR * MINOR * 4);
+    let mut indices = Vec::with_capacity(MAJOR * MINOR * 6);
+    let mut faces = Vec::with_capacity(MAJOR * MINOR);
+    let mut triangles = TriangleData::default();
+    for i in 0..MAJOR {
+        for j in 0..MINOR {
+            let base = vertices.len() as u32;
+            // Wound so the face normal agrees with the analytic one.
+            for (di, dj) in [(0, 0), (0, 1), (1, 1), (1, 0)] {
+                let (position, normal) = point(i + di, j + dj);
+                vertices.push(Vertex {
+                    position,
+                    normal,
+                    uv: Vec2::new(
+                        (i + di) as f32 / MAJOR as f32,
+                        (j + dj) as f32 / MINOR as f32,
+                    ),
+                    tangent: Vec4::new(1.0, 0.0, 0.0, 1.0),
+                    vertex_color: Vec4::ONE,
+                });
+            }
+            indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+            let face = faces.len() as u32;
+            faces.push(TopologyFace {
+                first_index: base,
+                index_count: 4,
+            });
+            let node = u32::from(i >= MAJOR / 2);
+            let material = u32::from((MINOR / 4..MINOR * 3 / 4).contains(&j));
+            for _ in 0..2 {
+                triangles.to_face.push(face);
+                triangles.node.push(node);
+                triangles.material.push(material);
+            }
+        }
+    }
+
+    let node = |name: &str| SceneNode {
+        name: name.to_owned(),
+        parent: None,
+        mesh_part: Some(0),
+        source_vertex_count: MAJOR * MINOR / 2,
+        transform: Mat4::IDENTITY,
+        rest_local: LocalTransform::IDENTITY,
+        kind: NodeKind::Mesh,
+        bone: None,
+    };
+    let material = |name: &str| MaterialImportDefaults {
+        name: name.to_owned(),
+        base_color: Vec3::ONE,
+        smoothness: 0.5,
+        metallic: 0.0,
+        emissive: Vec3::ZERO,
+        emission_factor: 1.0,
+        maps: [None; review_model::MaterialMap::COUNT],
+    };
+    let mut model = ModelData {
+        name: "Torus".to_owned(),
+        stats: ModelStats {
+            polygon_count: faces.len(),
+            triangle_count: indices.len() / 3,
+            vertex_count: MAJOR * MINOR,
+            uv_set_count: 1,
+            material_count: 2,
+            draw_count: 4,
+            source_unit_meters: 1.0,
+            ..ModelStats::default()
+        },
+        vertices,
+        indices,
+        faces,
+        triangles,
+        nodes: vec![node("Left"), node("Right")],
+        uv_set_names: vec!["UVMap".to_owned()],
+        materials: vec![material("Inner"), material("Outer")],
+        ..ModelData::default()
+    };
+    model.recompute_bounds();
+    model.stats.gpu_vertex_count = model.count_gpu_vertices();
+    model
+}
 
 /// Assert the structural guarantees every processed mesh must satisfy, whatever
 /// the stack did to it.
@@ -98,14 +212,12 @@ const POSITION_WELD: WeldParams = WeldParams {
     compare_uvs: false,
     compare_colors: false,
 };
-/// The default weld only removes *exact* duplicates, so on a game asset — whose
-/// interior corners share a normal and a UV — it collapses the import's corner
-/// expansion down to something near the authored vertex count.
+/// The default weld only removes *exact* duplicates, so on a smooth-shaded
+/// asset — whose interior corners share a normal and a UV — it collapses the
+/// import's corner expansion down to something near the authored vertex count.
 #[test]
-fn welding_a_game_asset_removes_most_of_the_duplicate_corners() {
-    let Some(model) = fixture("stylized_palm_plant_04.fbx") else {
-        return;
-    };
+fn welding_a_smooth_asset_removes_most_of_the_duplicate_corners() {
+    let model = smooth_torus();
     let before = model.vertices.len();
 
     let mut stack = OptStack::default();
@@ -122,17 +234,18 @@ fn welding_a_game_asset_removes_most_of_the_duplicate_corners() {
         model.indices.len(),
         "welding removes no triangles"
     );
-    assert_consistent(&result.lods[0].model, "welded palm");
+    assert_consistent(&result.lods[0].model, "welded torus");
 }
 
-/// A scanned mesh imported without authored normals gets per-face ones, so every
-/// corner's normal differs and the default (attribute-preserving) weld correctly
-/// merges nothing — the corners are genuinely distinct. Position welding is the
-/// option for that case, and it must both collapse the mesh *and* leave it with
-/// usable normals, since merging discards all but one of the originals.
+/// A flat-shaded mesh has a per-face normal at every corner, so the default
+/// (attribute-preserving) weld correctly merges nothing beyond the exact
+/// duplicates import already counted as one GPU vertex — the corners are
+/// genuinely distinct. Position welding is the option for that case, and it
+/// must both collapse the mesh *and* leave it with usable normals, since merging
+/// discards all but one of the originals.
 #[test]
-fn position_welding_a_scan_collapses_it_and_rebuilds_usable_normals() {
-    let Some(model) = fixture("lucy.fbx") else {
+fn position_welding_a_flat_shaded_mesh_collapses_it_and_rebuilds_usable_normals() {
+    let Some(model) = fixture(FLAT_SHADED) else {
         return;
     };
     let before = model.vertices.len();
@@ -141,8 +254,9 @@ fn position_welding_a_scan_collapses_it_and_rebuilds_usable_normals() {
     attribute_weld.push_op(OpKind::Weld(WeldParams::default()));
     assert_eq!(
         run(&model, &attribute_weld).lods[0].model.vertices.len(),
-        before,
-        "every corner of a flat-shaded scan has a distinct normal, so nothing merges"
+        model.stats.gpu_vertex_count,
+        "the corners of a flat-shaded mesh have distinct normals, so only exact \
+         duplicates merge"
     );
 
     let mut stack = OptStack::default();
@@ -155,7 +269,7 @@ fn position_welding_a_scan_collapses_it_and_rebuilds_usable_normals() {
         "position welding should more than halve the vertices: {before} -> {}",
         welded.vertices.len()
     );
-    assert_consistent(welded, "position-welded lucy");
+    assert_consistent(welded, "position-welded monkey");
 
     // The surviving normal after a merge is an arbitrary one of the originals, so
     // the mesh must have been given fresh ones — every normal unit length and
@@ -174,10 +288,8 @@ fn position_welding_a_scan_collapses_it_and_rebuilds_usable_normals() {
 /// mesh a later operation and the export see. On a real asset it has to hit the
 /// target as squarely as a LOD level does — the two share the code that aims it.
 #[test]
-fn a_reduce_over_a_game_asset_hits_its_target_in_place() {
-    let Some(model) = fixture("SM_column04.fbx") else {
-        return;
-    };
+fn a_reduce_over_a_smooth_asset_hits_its_target_in_place() {
+    let model = smooth_torus();
     let source_triangles = model.indices.len() / 3;
 
     let mut stack = OptStack::default();
@@ -222,13 +334,13 @@ fn a_reduce_over_a_game_asset_hits_its_target_in_place() {
     );
 }
 
-/// The scans block the topology-preserving simplifier: with per-face normals
-/// every edge is an attribute seam, and collapsing across one is exactly what the
-/// default settings forbid. Both documented ways out must work — position welding
-/// first, or letting the simplifier cross seams.
+/// A flat-shaded mesh blocks the topology-preserving simplifier: with per-face
+/// normals every edge is an attribute seam, and collapsing across one is exactly
+/// what the default settings forbid. Both documented ways out must work —
+/// position welding first, or letting the simplifier cross seams.
 #[test]
-fn a_flat_shaded_scan_simplifies_once_its_attribute_seams_are_dealt_with() {
-    let Some(model) = fixture("xyzrgb_dragon.fbx") else {
+fn a_flat_shaded_mesh_simplifies_once_its_attribute_seams_are_dealt_with() {
+    let Some(model) = fixture(FLAT_SHADED) else {
         return;
     };
     let source_triangles = model.indices.len() / 3;
@@ -290,13 +402,34 @@ fn a_flat_shaded_scan_simplifies_once_its_attribute_seams_are_dealt_with() {
     );
 }
 
-/// The headline case: a LOD chain over a real game asset should actually hit its
+/// The headline case: a LOD chain over a smooth asset should actually hit its
 /// targets, keep shrinking, and stay structurally sound at every level.
 #[test]
-fn a_lod_chain_over_a_game_asset_hits_its_targets() {
-    let Some(model) = fixture("SM_column04.fbx") else {
+fn a_lod_chain_over_a_smooth_asset_hits_its_targets() {
+    let _ = lod_chain_hits_its_targets(&smooth_torus(), "torus");
+}
+
+/// The same chain over a real scan at the scale scans come in: 614k
+/// triangles, with the UV seams photogrammetry unwraps into.
+#[test]
+fn a_lod_chain_over_a_scan_hits_its_targets() {
+    let Some(model) = scan() else {
         return;
     };
+    let counts = lod_chain_hits_its_targets(model, "scan");
+    // A dense smooth scan has room to collapse anywhere, so every level lands
+    // on its target, not merely under three quarters. Measured: 307180,
+    // 153590 and 61430 of 614362.
+    for (count, ratio) in counts[1..].iter().zip([0.5, 0.25, 0.1]) {
+        let target = counts[0] as f64 * ratio;
+        assert!(
+            (*count as f64 - target).abs() <= target * 0.02,
+            "scan: a level lands within 2% of its target: {count} for {target} ({counts:?})"
+        );
+    }
+}
+
+fn lod_chain_hits_its_targets(model: &ModelData, label: &str) -> Vec<usize> {
     let source_triangles = model.indices.len() / 3;
 
     let mut stack = OptStack::default();
@@ -322,35 +455,39 @@ fn a_lod_chain_over_a_game_asset_hits_its_targets() {
         ],
     }));
 
-    let result = run(&model, &stack);
-    assert_eq!(result.lods.len(), 4, "base plus three levels");
+    let result = run(model, &stack);
+    assert_eq!(result.lods.len(), 4, "{label}: base plus three levels");
 
     let counts: Vec<usize> = result
         .lods
         .iter()
         .map(|lod| lod.model.stats.triangle_count)
         .collect();
-    assert_eq!(counts[0], source_triangles, "level 0 is not simplified");
+    assert_eq!(
+        counts[0], source_triangles,
+        "{label}: level 0 is not simplified"
+    );
     assert!(
         counts.windows(2).all(|pair| pair[1] < pair[0]),
-        "each level is strictly smaller than the last: {counts:?}"
+        "{label}: each level is strictly smaller than the last: {counts:?}"
     );
-    // A clean closed surface with a generous error budget should get close to the
+    // A clean surface with a generous error budget should get close to the
     // requested ratio; allow slack for the topology constraints the simplifier
     // legitimately stops on.
     assert!(
         counts[1] < source_triangles * 3 / 4,
-        "the 50% level should get well under three quarters: {counts:?}"
+        "{label}: the 50% level should get well under three quarters: {counts:?}"
     );
 
     for lod in &result.lods {
-        assert_consistent(&lod.model, &format!("column LOD {}", lod.level));
+        assert_consistent(&lod.model, &format!("{label} LOD {}", lod.level));
         assert!(
             lod.metrics.acmr > 0.0 && lod.metrics.atvr > 0.0,
             "LOD {} carries measured cache figures",
             lod.level
         );
     }
+    counts
 }
 
 /// Vertex-cache optimization must improve (or at worst not worsen) ACMR on a real
@@ -389,7 +526,7 @@ fn vertex_cache_optimization_improves_acmr_without_touching_geometry() {
     );
 }
 
-/// The stack the tagging and skin tests run: a weld, then one halving level.
+/// The stack the tagging test runs: a weld, then one halving level.
 fn weld_and_halve() -> OptStack {
     let mut stack = OptStack::default();
     stack.push_op(OpKind::Weld(WeldParams::default()));
@@ -411,17 +548,17 @@ fn weld_and_halve() -> OptStack {
 /// processing to work per (node, material) submesh in the first place.
 #[test]
 fn a_multi_material_asset_keeps_every_triangle_tagged() {
-    let Some(model) = fixture("stylized_palm_plant_04.fbx") else {
-        return;
-    };
-    assert!(
-        model.materials.len() > 1,
-        "this fixture is expected to carry several materials"
-    );
+    let model = smooth_torus();
 
     let result = run(&model, &weld_and_halve());
+    assert!(
+        result.lods[1].model.stats.triangle_count < model.stats.triangle_count * 3 / 4,
+        "the level was really simplified, so the tags went through a collapse: {} of {}",
+        result.lods[1].model.stats.triangle_count,
+        model.stats.triangle_count
+    );
     for lod in &result.lods {
-        let label = format!("palm LOD {}", lod.level);
+        let label = format!("torus LOD {}", lod.level);
         assert_consistent(&lod.model, &label);
 
         let triangle_count = lod.model.indices.len() / 3;
@@ -450,14 +587,20 @@ fn a_multi_material_asset_keeps_every_triangle_tagged() {
 /// A skinned character: every level keeps a skin over its own vertices, valid
 /// by the same guard the import runs, with the clips beside it.
 #[test]
-#[ignore = "needs a skinned fixture; SK_Player_01.fbx was removed in a9c6db3"]
 fn a_skinned_character_keeps_its_skin_on_every_level() {
     let Some(model) = fixture(SKINNED) else {
         return;
     };
     let source_skin = model.skin.as_ref().expect("the fixture is skinned");
+    assert!(!model.animations.is_empty(), "the fixture carries clips");
 
     let result = run(&model, &weld_and_halve());
+    assert!(
+        result.lods[1].model.stats.triangle_count < model.stats.triangle_count * 3 / 4,
+        "the halving level really simplified the character: {} of {}",
+        result.lods[1].model.stats.triangle_count,
+        model.stats.triangle_count
+    );
     for lod in &result.lods {
         assert_consistent(&lod.model, &format!("character LOD {}", lod.level));
         let skin = lod
@@ -490,9 +633,7 @@ fn a_skinned_character_keeps_its_skin_on_every_level() {
 /// per face corner.
 #[test]
 fn excluding_a_node_leaves_its_geometry_untouched() {
-    let Some(model) = fixture("stylized_palm_plant_04.fbx") else {
-        return;
-    };
+    let model = smooth_torus();
     // Pick the node owning the most triangles, so the assertion has something
     // substantial to check.
     let Some(node) = most_common_node(&model) else {
@@ -598,9 +739,7 @@ fn every_fixture_the_suite_loads_exists() {
 /// meshoptimizer operation assumes.
 #[test]
 fn a_lod_operation_alone_simplifies_a_corner_split_import() {
-    let Some(model) = fixture("SM_column04.fbx") else {
-        return;
-    };
+    let model = smooth_torus();
     let source_triangles = model.indices.len() / 3;
 
     let mut stack = OptStack::default();
@@ -634,7 +773,7 @@ fn a_lod_operation_alone_simplifies_a_corner_split_import() {
         simplified <= source_triangles * 55 / 100,
         "a 50% target should be reached: {source_triangles} -> {simplified}"
     );
-    assert_consistent(&result.lods[1].model, "column LOD1");
+    assert_consistent(&result.lods[1].model, "torus LOD1");
 }
 
 /// Indexing changes what the mesh *is* made of, never what it looks like: the
@@ -642,13 +781,17 @@ fn a_lod_operation_alone_simplifies_a_corner_split_import() {
 /// positions it did before.
 #[test]
 fn indexing_preserves_every_triangle_of_the_source() {
-    let Some(model) = fixture("SM_column04.fbx") else {
-        return;
-    };
+    let model = smooth_torus();
 
     let mut stack = OptStack::default();
     stack.push_op(OpKind::VertexCache);
     let processed = &run(&model, &stack).lods[0].model;
+    assert!(
+        processed.vertices.len() < model.vertices.len() / 2,
+        "the index pass merged vertices, so there is something to preserve: {} -> {}",
+        model.vertices.len(),
+        processed.vertices.len()
+    );
 
     assert_eq!(
         processed.indices.len(),
@@ -689,10 +832,23 @@ fn indexing_preserves_every_triangle_of_the_source() {
 /// disagree has no way to know which to trust.
 #[test]
 fn the_import_gpu_vertex_count_matches_the_opt_baseline() {
-    let Some(model) = fixture("SM_column04.fbx") else {
+    let Some(model) = fixture(FLAT_SHADED) else {
         return;
     };
+    gpu_vertex_count_matches_the_opt_baseline(&model);
+}
 
+/// The same identity on a smooth-shaded scan, where the two figures are counted
+/// over 400k shared vertices rather than a few thousand split ones.
+#[test]
+fn the_import_gpu_vertex_count_matches_the_opt_baseline_on_a_scan() {
+    let Some(model) = scan() else {
+        return;
+    };
+    gpu_vertex_count_matches_the_opt_baseline(model);
+}
+
+fn gpu_vertex_count_matches_the_opt_baseline(model: &ModelData) {
     assert!(
         model.stats.gpu_vertex_count > 0 && model.stats.gpu_vertex_count < model.vertices.len(),
         "the GPU cost is measured and is below the corner-split count: {} of {}",
@@ -701,7 +857,7 @@ fn the_import_gpu_vertex_count_matches_the_opt_baseline() {
     );
 
     // An empty stack still measures: its baseline is the indexed mesh.
-    let result = run(&model, &OptStack::default());
+    let result = run(model, &OptStack::default());
     assert!(result.lods.is_empty());
     assert_eq!(
         result.source.vertices, model.stats.gpu_vertex_count,
@@ -722,7 +878,7 @@ fn the_import_gpu_vertex_count_matches_the_opt_baseline() {
 /// edit and stable across a preset round-trip.
 #[test]
 fn bake_ao_writes_bounded_deterministic_colors() {
-    let Some(model) = fixture("SM_column04.fbx") else {
+    let Some(model) = fixture(GAME_ASSET) else {
         return;
     };
 
@@ -753,7 +909,7 @@ fn bake_ao_writes_bounded_deterministic_colors() {
     }
     assert!(
         highest - lowest > 0.1,
-        "a column's crevices and open faces bake differently: {lowest}..{highest}"
+        "a broken wall's crevices and open faces bake differently: {lowest}..{highest}"
     );
 
     let again = run(&model, &stack);
@@ -791,17 +947,16 @@ fn recalculate_normals(model: &ModelData, label: &str) -> ModelData {
 
 #[test]
 fn recalculating_a_real_assets_normals_keeps_every_triangle() {
-    let Some(model) = fixture("SM_column04.fbx") else {
+    let Some(model) = fixture(GAME_ASSET) else {
         return;
     };
-    recalculate_normals(&model, "recalculated column");
+    recalculate_normals(&model, "recalculated wall");
 }
 
 /// Recalculating a skinned character's normals splits vertices at its hard
 /// edges, and every copy must keep the skin its original had — checked by the
 /// same guard import runs, over the level's own vertices.
 #[test]
-#[ignore = "needs a skinned fixture; SK_Player_01.fbx was removed in a9c6db3"]
 fn recalculating_a_skinned_characters_normals_keeps_its_skin() {
     let Some(model) = fixture(SKINNED) else {
         return;
@@ -818,7 +973,7 @@ fn recalculating_a_skinned_characters_normals_keeps_its_skin() {
 /// splitting on every tangent difference would show up here as a jump.
 #[test]
 fn the_tangent_rebuild_adds_only_a_few_vertices_on_a_real_asset() {
-    let Some(model) = fixture("stylized_palm_plant_04.fbx") else {
+    let Some(model) = fixture(GAME_ASSET) else {
         return;
     };
     let mut indexed = OptStack::default();

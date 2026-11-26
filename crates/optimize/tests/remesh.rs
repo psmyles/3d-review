@@ -1,13 +1,22 @@
-//! End-to-end checks over the Remesh operation, on real fixtures.
+//! End-to-end checks over the Remesh operation, on real fixtures and on the
+//! synthetic shapes in `shapes/`.
 //!
 //! The unit tests beside the implementation cover the pieces in isolation — the
 //! density split, the corner-run expansion, the projection's seam behaviour.
-//! These run the whole thing: a real asset in, a rebuilt quad mesh out, through
-//! the same `process` the workspace calls.
+//! These run the whole thing: a mesh in, a rebuilt mesh out, through the same
+//! `process` the workspace calls.
 //!
-//! Each test skips itself when its fixture or a vendored tree is absent, so a
-//! checkout without them still passes. `REVIEW_REQUIRE_FIXTURES=1` turns every
-//! skip into a failure.
+//! The proprietary assets these were first written against (a palm plant of
+//! thin shells, a creased column, a pedestal with pebbles) left the repository
+//! and are not coming back, so the properties they supplied - thin closed shells
+//! with rims, several objects, several materials, a broad flat face - are built
+//! synthetically instead, and the rest run on Suzanne. (The wall fixture is no
+//! use here: it is 95 pieces of about twelve triangles each, every one of them
+//! too small to rebuild, so a Remesh hands it back untouched.)
+//!
+//! Each fixture test skips itself when its fixture or a vendored tree is absent,
+//! so a checkout without them still passes. `REVIEW_REQUIRE_FIXTURES=1` turns
+//! every skip into a failure.
 
 #![cfg(has_meshopt)]
 
@@ -18,17 +27,15 @@ use review_optimize::{
 };
 
 mod common;
+mod shapes;
 
 use common::{fixture, run};
 
-/// Every fixture this suite loads. (An ammo crate was listed here too, though no
-/// test loaded it; it went with the other proprietary models in a9c6db3.)
-const FIXTURES: [&str; 4] = [
-    "monkey.fbx",
-    "SM_column04.fbx",
-    "cpg_pedestal_pebbles.fbx",
-    "stylized_palm_plant_04.fbx",
-];
+/// Every fixture this suite loads.
+const FIXTURES: [&str; 2] = ["monkey.fbx", SKINNED];
+
+/// The skinned character, which Remesh must leave alone.
+const SKINNED: &str = "Triceratops.fbx";
 
 fn remesh_stack(params: RemeshParams) -> OptStack {
     let mut stack = OptStack::default();
@@ -140,10 +147,11 @@ fn assert_no_skip_warning(result: &review_optimize::ProcessedResult) {
 fn every_fixture_the_suite_loads_exists() {
     for name in FIXTURES {
         let path = common::fixture_path(name);
-        if !path.exists() {
-            common::skip(&format!("{name} is not present"));
-            return;
-        }
+        assert!(
+            path.exists(),
+            "fixture {name} is missing; update FIXTURES or restore {}",
+            path.display()
+        );
     }
 }
 
@@ -327,47 +335,57 @@ fn mis_wound(uses: &std::collections::HashMap<(u32, u32), u32>) -> usize {
 /// fault was in the flip pass: rewriting the two triangles either side of an
 /// edge to a winding assumed rather than read from the mesh turned both of them
 /// over, and the more rounds of tidying, the more of the object went black.
+///
+/// Thin shells are where the fault showed, since a flip across a rim's tight
+/// bend is the one most likely to be guessed wrong, so the synthetic leaves are
+/// the main subject; Suzanne adds real authored topology.
 #[test]
 fn a_rebuild_is_wound_the_same_way_all_over() {
-    let Some(model) = fixture("stylized_palm_plant_04.fbx") else {
+    let Some(monkey) = fixture("monkey.fbx") else {
         return;
     };
-    for smoothing in [0, 2, 6] {
-        let result = run(
-            &model,
-            &remesh_stack(RemeshParams {
-                topology: RemeshTopology::Triangles,
-                density: RemeshDensity::Ratio,
-                ratio: 0.5,
-                smooth_iterations: smoothing,
-                ..RemeshParams::default()
-            }),
-        );
-        let level = result.lod(0).expect("the stack produced a level");
-        let mut checked = 0;
-        for node in 0..model.nodes.len() as u32 {
-            let before = welded_directed_uses(&model, node);
-            if before.is_empty() {
-                continue;
-            }
-            // The sources here are all consistently wound, so anything the
-            // rebuild produces is its own doing.
-            assert_eq!(
-                mis_wound(&before),
-                0,
-                "the fixture itself is inconsistently wound"
+    let subjects = [("leaves", shapes::leaves(24, 64), 6), ("monkey", monkey, 1)];
+    for (name, model, objects) in &subjects {
+        for smoothing in [0, 2, 6] {
+            let result = run(
+                model,
+                &remesh_stack(RemeshParams {
+                    topology: RemeshTopology::Triangles,
+                    density: RemeshDensity::Ratio,
+                    ratio: 0.5,
+                    smooth_iterations: smoothing,
+                    ..RemeshParams::default()
+                }),
             );
-            let after = welded_directed_uses(&level.model, node);
-            checked += 1;
-            assert_eq!(
-                mis_wound(&after),
-                0,
-                "'{}': the rebuild turned faces inside out at {} rounds of tidying",
-                model.nodes[node as usize].name,
-                smoothing
+            let level = result.lod(0).expect("the stack produced a level");
+            let mut checked = 0;
+            for node in 0..model.nodes.len() as u32 {
+                let before = welded_directed_uses(model, node);
+                if before.is_empty() {
+                    continue;
+                }
+                // The sources here are all consistently wound, so anything the
+                // rebuild produces is its own doing.
+                assert_eq!(
+                    mis_wound(&before),
+                    0,
+                    "{name}: the source itself is inconsistently wound"
+                );
+                let after = welded_directed_uses(&level.model, node);
+                checked += 1;
+                assert_eq!(
+                    mis_wound(&after),
+                    0,
+                    "{name} '{}': the rebuild turned faces inside out at {} rounds of tidying",
+                    model.nodes[node as usize].name,
+                    smoothing
+                );
+            }
+            assert!(
+                checked >= *objects,
+                "{name}: {checked} objects checked, expected {objects}"
             );
         }
-        assert!(checked > 3, "the plant has several objects to check");
     }
 }
 
@@ -379,14 +397,13 @@ fn a_rebuild_is_wound_the_same_way_all_over() {
 /// silhouettes in shreds.
 ///
 /// A collapse cannot do that — it only ever removes edges from a mesh that was
-/// already a surface — and this is what says so on the asset itself. Every
-/// object that arrived closed leaves closed, and no edge anywhere has gained a
-/// third face.
+/// already a surface — and this is what says so. Every object that arrived
+/// closed leaves closed, and no edge anywhere has gained a third face. The
+/// leaves are synthetic (`shapes::leaves`): six closed shells 2 % as thick as
+/// they are long, each with a bevelled rim and a material seam across it.
 #[test]
 fn a_plant_of_thin_shells_comes_back_without_holes() {
-    let Some(model) = fixture("stylized_palm_plant_04.fbx") else {
-        return;
-    };
+    let model = shapes::leaves(24, 64);
     let result = run(
         &model,
         &remesh_stack(RemeshParams {
@@ -399,7 +416,7 @@ fn a_plant_of_thin_shells_comes_back_without_holes() {
     );
     assert_no_skip_warning(&result);
     let level = result.lod(0).expect("the stack produced a level");
-    assert_consistent(&level.model, "palm plant, triangles");
+    assert_consistent(&level.model, "leaves, triangles");
     assert!(face_count(level) > 0, "the plant came back with no faces");
 
     // Per object, because a torn leaf would otherwise be averaged away by the
@@ -431,17 +448,18 @@ fn a_plant_of_thin_shells_comes_back_without_holes() {
             "'{name}': the rebuild opened {opened} border edges where the source had {was_open}"
         );
     }
-    assert!(checked > 3, "the plant has several objects to check");
+    assert_eq!(checked, 6, "every leaf is checked");
 }
 
+/// On synthetic stones and a pedestal, since none of the remaining fixtures
+/// authors a material: two materials, one of them split across the pedestal so
+/// a seam runs through an object.
 #[test]
 fn every_rebuilt_face_carries_a_material_the_source_authored() {
-    let Some(model) = fixture("SM_column04.fbx") else {
-        return;
-    };
+    let model = shapes::pedestal_and_stones(24, 48);
     let result = run(&model, &remesh_stack(absolute_params(3_000)));
     let level = result.lod(0).expect("the stack produced a level");
-    assert_consistent(&level.model, "column, mostly quads");
+    assert_consistent(&level.model, "pedestal and stones");
 
     let source_materials = model.materials.len();
     assert!(source_materials > 0, "the fixture has materials to keep");
@@ -462,6 +480,13 @@ fn every_rebuilt_face_carries_a_material_the_source_authored() {
             .any(|&material| material != u32::MAX),
         "the rebuilt mesh lost every material"
     );
+    // And not just one of them: both are on large areas of surface.
+    for material in 0..source_materials as u32 {
+        assert!(
+            level.model.triangles.material.contains(&material),
+            "the rebuilt mesh lost material {material}"
+        );
+    }
 }
 
 #[test]
@@ -488,13 +513,73 @@ fn two_deterministic_runs_produce_the_same_mesh() {
     // binary for this, since the engine sized its pool once per process.
 }
 
+/// The triangles of one node, as sorted corner-position triples, so two meshes
+/// can be compared whatever order their buffers hold them in.
+fn node_triangles(model: &ModelData, node: u32) -> Vec<[[u32; 3]; 3]> {
+    let mut out: Vec<[[u32; 3]; 3]> = model
+        .indices
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .enumerate()
+        .filter(|(triangle, _)| model.triangles.node.get(*triangle).copied() == Some(node))
+        .map(|(_, corners)| {
+            corners.map(|corner| {
+                model.vertices[corner as usize]
+                    .position
+                    .to_array()
+                    .map(f32::to_bits)
+            })
+        })
+        .collect();
+    out.sort_unstable();
+    out
+}
+
+/// A skinned character is left exactly as it was, skin and all, and the run
+/// says why: a rebuilt surface has no vertex a weight authored against the old
+/// ones could follow.
 #[test]
-fn an_excluded_object_is_left_exactly_as_it_was() {
-    let Some(model) = fixture("SM_column04.fbx") else {
+fn a_skinned_character_is_left_as_it_was_and_says_so() {
+    let Some(model) = fixture(SKINNED) else {
         return;
     };
-    // Exclude every node: the whole mesh must come back untouched, which is the
-    // only exclusion assertion that does not depend on which node is which.
+    assert!(model.skin.is_some(), "the fixture is skinned");
+    let result = run(&model, &remesh_stack(absolute_params(5_000)));
+    assert!(
+        result
+            .warnings
+            .iter()
+            .any(|warning| matches!(warning, OptWarning::RemeshKeptDeforming { .. })),
+        "leaving a skinned object alone is reported: {:?}",
+        result.warnings
+    );
+    let level = &result.lod(0).expect("the stack produced a level").model;
+    let nodes: std::collections::BTreeSet<u32> = model.triangles.node.iter().copied().collect();
+    for node in nodes {
+        assert_eq!(
+            node_triangles(level, node),
+            node_triangles(&model, node),
+            "node {node}: every triangle is where it was"
+        );
+    }
+    let skin = level.skin.as_ref().expect("the skin is kept");
+    assert_eq!(skin.logical_vertex_count(), level.vertices.len());
+    assert!(level.validate_deform().is_ok(), "the kept skin is valid");
+}
+
+#[test]
+fn an_excluded_object_is_left_exactly_as_it_was() {
+    // Exclude every node of a real asset: the whole mesh must come back
+    // untouched, where without the exclusion the same stack rebuilds it.
+    let Some(model) = fixture("monkey.fbx") else {
+        return;
+    };
+    let rebuilt = run(&model, &remesh_stack(absolute_params(500)));
+    assert!(
+        rebuilt.lod(0).expect("a level").model.stats.triangle_count < model.indices.len() / 3,
+        "without the exclusion the stack rebuilds the monkey"
+    );
     let mut stack = remesh_stack(absolute_params(500));
     stack.overrides = (0..model.nodes.len())
         .map(|node| NodeOverride {
@@ -515,6 +600,33 @@ fn an_excluded_object_is_left_exactly_as_it_was() {
         level.model.stats.triangle_count,
         model.indices.len() / 3,
         "an excluded object keeps every triangle"
+    );
+
+    // And one object excluded among several: it comes back triangle for
+    // triangle, while the others beside it are rebuilt.
+    let model = shapes::pedestal_and_stones(24, 48);
+    let excluded = 2u32;
+    let mut stack = remesh_stack(RemeshParams {
+        topology: RemeshTopology::Triangles,
+        density: RemeshDensity::Ratio,
+        ratio: 0.25,
+        ..RemeshParams::default()
+    });
+    stack.overrides = vec![NodeOverride {
+        node: excluded as usize,
+        exclude: true,
+        ..NodeOverride::default()
+    }];
+    let result = run(&model, &stack);
+    let level = result.lod(0).expect("the stack produced a level");
+    assert_eq!(
+        node_triangles(&level.model, excluded),
+        node_triangles(&model, excluded),
+        "the excluded stone changed"
+    );
+    assert!(
+        node_triangles(&level.model, 0).len() < node_triangles(&model, 0).len() / 2,
+        "the pedestal beside it was not rebuilt"
     );
 }
 
@@ -627,8 +739,8 @@ fn face_size_spread(level: &ProcessedLod, node: u32) -> f32 {
     at(0.9) / at(0.1).max(f32::MIN_POSITIVE)
 }
 
-/// The node with the most surface area, which on a pedestal-and-pebbles asset is
-/// the pedestal: one broad flat face with a rounded rim, i.e. the thing "vary
+/// The node with the most surface area, which on [`shapes::pedestal_and_stones`]
+/// is the pedestal: one broad flat face with a rounded rim, i.e. the thing "vary
 /// face size" exists for.
 fn widest_node(model: &ModelData) -> u32 {
     let mut area: std::collections::BTreeMap<u32, f32> = Default::default();
@@ -655,10 +767,9 @@ fn widest_node(model: &ModelData) -> u32 {
 /// the surface needs it.
 #[test]
 fn varying_face_size_spends_the_budget_on_the_curved_parts() {
-    let Some(model) = fixture("cpg_pedestal_pebbles.fbx") else {
-        return;
-    };
+    let model = shapes::pedestal_and_stones(24, 48);
     let node = widest_node(&model);
+    assert_eq!(node, 0, "the pedestal is the widest object");
     let params = |topology, strength: f32| RemeshParams {
         topology,
         density: RemeshDensity::Ratio,
@@ -706,6 +817,11 @@ fn varying_face_size_spends_the_budget_on_the_curved_parts() {
         // fixed the count on every fixture and ratio measured, and cost this:
         // the extra seeds land where there was room for them, which is by
         // definition not where the sampling first asked.
+        //
+        // Those figures are from the real pedestal-and-pebbles asset this was
+        // written against. On the synthetic pedestal that replaced it, whose
+        // input is already an even lattice, it measured 1.49x even and 2.14x
+        // varied.
         let flat = face_size_spread(even, node);
         let ceiling = 3.0;
         assert!(
@@ -731,9 +847,7 @@ fn varying_face_size_spends_the_budget_on_the_curved_parts() {
 ///
 #[test]
 fn the_face_count_is_the_one_that_was_asked_for() {
-    let Some(model) = fixture("cpg_pedestal_pebbles.fbx") else {
-        return;
-    };
+    let model = shapes::pedestal_and_stones(24, 48);
     let wanted = 3_000;
     for topology in RemeshTopology::ALL {
         for strength in [0.0, 1.0] {

@@ -4,16 +4,17 @@
 //! The stats overlay's scoped columns are sums of these per-node / per-draw-group
 //! numbers, so "the parts add up to the whole" is the property that makes them
 //! faithful (invariant 5). The demo cube cannot test it: it has one node, one
-//! material and no seams. These run over assets with real hierarchies — a
-//! twelve-part, three-material plant, a two-part prop, a single-mesh column and
-//! a scan — where a drifted attribution would actually show. (A skinned
-//! character and an animation file used to be in the set; both were proprietary
-//! and left the repository in a9c6db3, and nothing here depends on a skin.)
+//! material and no seams. These run over every fixture the repository keeps:
+//! the wall, a 94-part destructible where a drifted per-node attribution would
+//! actually show; the triceratops, a skinned mesh under a 139-bone skeleton,
+//! where most nodes carry no geometry at all; the 614k-triangle Benk scan; and
+//! the one-material cube and the seamed monkey. Each is loaded once per run and
+//! shared, since the scan alone takes seconds to import in a debug build.
 //!
 //! Each test skips itself when its fixture is absent or the build carries no
 //! vendored ufbx, so a bare checkout still passes.
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::OnceLock};
 
 use review_model::{ModelData, StatsScope};
 
@@ -30,11 +31,12 @@ fn skipping(reason: impl std::fmt::Display) {
 /// Every fixture the tests below load. Asserted to exist by
 /// [`every_fixture_the_suite_loads_exists`], so a rename cannot quietly turn the
 /// whole suite green.
-const FIXTURES: [&str; 4] = [
-    "stylized_palm_plant_04.fbx",
-    "SM_column04.fbx",
-    "lucy.fbx",
-    "crystal_cluster_02.fbx",
+const FIXTURES: [&str; 5] = [
+    "meter_cube.fbx",
+    "monkey.fbx",
+    "SM_Wall_Break_4x3m.fbx",
+    "Triceratops.fbx",
+    "Johannes_Benk_C.fbx",
 ];
 
 fn fixture_path(name: &str) -> PathBuf {
@@ -43,7 +45,18 @@ fn fixture_path(name: &str) -> PathBuf {
         .join(name)
 }
 
-fn fixture(name: &str) -> Option<ModelData> {
+/// A fixture, imported on first use and shared by every test after it.
+fn fixture(name: &str) -> Option<&'static ModelData> {
+    static LOADED: [OnceLock<Option<ModelData>>; FIXTURES.len()] =
+        [const { OnceLock::new() }; FIXTURES.len()];
+    let slot = FIXTURES
+        .iter()
+        .position(|fixture| *fixture == name)
+        .unwrap_or_else(|| panic!("{name} is not in FIXTURES"));
+    LOADED[slot].get_or_init(|| load(name)).as_ref()
+}
+
+fn load(name: &str) -> Option<ModelData> {
     let path = fixture_path(name);
     if !path.exists() {
         skipping(format!("{name}: the fixture is not present"));
@@ -172,8 +185,15 @@ fn the_per_node_scopes_partition_the_mesh() {
 /// material slot has no honest claim to.
 #[test]
 fn material_scopes_cover_their_own_triangles_only() {
+    let mut checked = 0;
     for name in FIXTURES {
         let Some(model) = fixture(name) else { continue };
+        // A file that declares no material has no slot to scope by (the cube,
+        // the triceratops and the scan have one; the monkey and the wall none).
+        if model.materials.is_empty() {
+            continue;
+        }
+        checked += 1;
         let groups = model.mesh_group_stats();
 
         let mut triangles = 0;
@@ -203,4 +223,5 @@ fn material_scopes_cover_their_own_triangles_only() {
             "{name}: every triangle carries exactly one of the file's materials"
         );
     }
+    assert!(checked > 0, "no fixture declares a material to scope by");
 }

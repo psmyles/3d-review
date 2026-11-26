@@ -141,7 +141,7 @@ fn nulls_lod_groups_cameras_and_user_properties_survive() {
 /// keeps triangles whole, and as triangles only after a simplify rebuilt them.
 #[test]
 fn polygons_survive_every_operation_that_keeps_triangles_whole() {
-    let Some((model, extras)) = fixture("rock_pillar_03.fbx") else {
+    let Some((model, extras)) = fixture("monkey.fbx") else {
         return;
     };
     assert!(

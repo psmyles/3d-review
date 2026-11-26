@@ -64,6 +64,11 @@ File commands use `Ctrl` on Windows and `Cmd` on macOS.
 This section is for people who want to build the viewer from its source code.
 If you just want to use it, download a release and skip ahead.
 
+**Every platform:** the 3D models and textures are stored in
+[Git LFS](https://git-lfs.com), so install it (`git lfs install`) before you
+clone. Without it you get small pointer files where the files should be, and
+the build fails, because it reads the UV checker textures.
+
 **Windows:** build from an **x64 Native Tools Command Prompt for VS 2022**, so
 the Microsoft C compiler (`cl`) is available and the bundled C code can
 compile.

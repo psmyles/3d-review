@@ -16,20 +16,80 @@ mod common;
 use common::extras::{assert_props_survive, node_by_name, passthrough, prop, round_trip};
 use common::{fixture_full as fixture, reload_full as reload, temp_dir};
 
-/// The palm: fourteen nodes, a hierarchy of mesh parts under groups. (This ran
-/// on the skinned `SK_Player_01.fbx`, bones and all, until that fixture was
-/// removed in a9c6db3.)
+/// The wall's ninety-four translated pieces, and the monkey's one node, rotated
+/// a quarter turn and scaled 100x under the root's centimeter scale. (This ran
+/// on the skinned `SK_Player_01.fbx`, bones and all, and then on the palm's
+/// groups of mesh parts, until those fixtures were removed.) The writer probe's
+/// bone, camera, null and LOD group are checked by
+/// `every_probe_node_survives_with_its_transform_and_kind` below.
 #[test]
 fn every_authored_node_survives_with_its_transform_and_kind() {
-    let Some((model, extras)) = fixture("stylized_palm_plant_04.fbx") else {
+    for name in ["SM_Wall_Break_4x3m.fbx", "monkey.fbx"] {
+        let Some((model, extras)) = fixture(name) else {
+            continue;
+        };
+        nodes_survive(&model, &extras, &temp_dir(&format!("extras_nodes_{name}")));
+    }
+    let Some((wall, _)) = fixture("SM_Wall_Break_4x3m.fbx") else {
+        return;
+    };
+    assert!(wall.nodes.len() > 10, "the wall has nodes to check");
+}
+
+/// A skinned character's 139 bones come back node for node and nothing else.
+/// "Nothing else" is the part a rig breaks: a bone whose `Lcl Scaling` the DCC
+/// wrote as a default-only curve node reads back with a scale helper under it if
+/// the writer emits an empty curve for it (patch P5), which this counts.
+#[test]
+fn a_skinned_characters_bones_survive_with_no_helpers_added() {
+    let Some((model, extras)) = fixture("Triceratops.fbx") else {
+        return;
+    };
+    let bones = model
+        .nodes
+        .iter()
+        .filter(|node| node.kind == review_model::NodeKind::Bone)
+        .count();
+    assert!(bones > 100, "the rig has bones to check: {bones}");
+    nodes_survive(&model, &extras, &temp_dir("extras_nodes_rig"));
+}
+
+/// The character's file textures — base colour, normal and AO beside the file —
+/// and the material they feed.
+#[test]
+fn a_characters_textures_survive_with_their_files_and_connections() {
+    let Some((model, extras)) = fixture("Triceratops.fbx") else {
         return;
     };
     assert!(
-        model.nodes.len() > 10,
-        "the fixture has a hierarchy to check"
+        !extras.textures.is_empty(),
+        "the character carries textures"
     );
-    let dir = temp_dir("extras_nodes");
-    let (_, loaded, loaded_extras) = round_trip(&model, &extras, &dir, FbxFormat::Binary);
+    materials_and_textures_survive(&model, &extras, &temp_dir("extras_textures_rig"), true);
+}
+
+/// The writer probe's node kinds — a bone, a camera, nulls and a LOD group with
+/// its levels — none of which a remaining fixture carries.
+#[cfg(has_ufbxw_probe)]
+#[test]
+fn every_probe_node_survives_with_its_transform_and_kind() {
+    let dir = temp_dir("extras_probe_nodes");
+    let probe_path = dir.join("probe.fbx");
+    review_optimize::probe::write_patch_probe(&probe_path, false).expect("probe written");
+    let Some((model, extras)) = common::load_full(&probe_path) else {
+        return;
+    };
+    nodes_survive(&model, &extras, &dir);
+}
+
+/// Every authored node comes back — and nothing else — with its kind, local and
+/// world transform, properties and rotation order.
+fn nodes_survive(
+    model: &review_model::ModelData,
+    extras: &review_model::SourceExtras,
+    dir: &std::path::Path,
+) {
+    let (_, loaded, loaded_extras) = round_trip(model, extras, dir, FbxFormat::Binary);
 
     let authored: Vec<usize> = (0..model.nodes.len())
         .filter(|&index| extras.nodes[index].synthetic == Synthetic::None)
@@ -90,17 +150,18 @@ fn every_authored_node_survives_with_its_transform_and_kind() {
     }
 }
 
-/// The palm's three materials. No fixture left in the repository carries a
-/// texture (the one that did, `SK_Player_01.fbx`, was removed in a9c6db3), so
-/// the textures are checked on the writer probe's below.
+/// The cube's Maya OpenPBR material, forty-odd authored properties of it. No
+/// fixture left in the repository carries a texture (the one that did,
+/// `SK_Player_01.fbx`, was removed in a9c6db3), so the textures are checked on
+/// the writer probe's below.
 #[test]
 fn material_properties_and_shading_models_survive() {
-    let Some((model, extras)) = fixture("stylized_palm_plant_04.fbx") else {
+    let Some((model, extras)) = fixture("meter_cube.fbx") else {
         return;
     };
     assert!(
-        model.materials.len() > 1,
-        "the fixture has materials to check"
+        !model.materials.is_empty() && extras.materials[0].props.len() > 10,
+        "the fixture has a material to check"
     );
     materials_and_textures_survive(&model, &extras, &temp_dir("extras_materials"), true);
 }
@@ -233,34 +294,91 @@ fn materials_and_textures_survive(
     }
 }
 
+/// The cube's material recast as an authored classic Phong with a `Shininess`
+/// of 20. No fixture left in the repository carries a Phong of its own (the
+/// pillar that did was removed), and this is what one captures as: a shading
+/// model and its properties, plus the smoothness the viewer reads off them.
+fn phong_cube() -> Option<(review_model::ModelData, review_model::SourceExtras)> {
+    use review_model::extras::{Prop, PropFlags, PropType, ShaderType};
+
+    let (mut model, mut extras) = fixture("meter_cube.fbx")?;
+    let authored = &mut extras.materials[0];
+    authored.shader_type = ShaderType::FbxPhong;
+    let real = |name: &str, value: f64| Prop {
+        name: name.to_owned(),
+        kind: PropType::Number,
+        flags: PropFlags(PropFlags::ANIMATABLE | PropFlags::VALUE_REAL),
+        value_int: value as i64,
+        value_real: [value, 0.0, 0.0, 0.0],
+        value_str: String::new(),
+        value_blob: Vec::new(),
+    };
+    authored.props = vec![
+        Prop {
+            name: "ShadingModel".to_owned(),
+            kind: PropType::Text,
+            flags: PropFlags(PropFlags::VALUE_STR),
+            value_int: 0,
+            value_real: [0.0; 4],
+            value_str: "Phong".to_owned(),
+            value_blob: Vec::new(),
+        },
+        real("Shininess", 20.0),
+    ];
+    // What import reads off that exponent: sqrt(20) / 10.
+    model.materials[0].smoothness = 0.447_213_6;
+    model.materials[0].metallic = 0.0;
+    Some((model, extras))
+}
+
 #[test]
 fn phong_figures_survive_with_and_without_the_capture() {
-    let Some((model, extras)) = fixture("rock_pillar_03.fbx") else {
+    let Some((model, extras)) = phong_cube() else {
         return;
     };
     let material = &model.materials[0];
     // A shininess exponent of 20 reads as this smoothness; both paths must
-    // bring it back. The fixture is a classic Phong, so it has no metalness to
-    // carry: its `ReflectionFactor` is Phong reflectivity, which import
-    // deliberately does not read (see `review_import_material_metallic`).
-    assert!((material.smoothness - 0.447_213_6).abs() < 1e-5);
-    assert_eq!(material.metallic, 0.0);
+    // bring it back. A classic Phong has no metalness to carry: its
+    // `ReflectionFactor` is Phong reflectivity, which import deliberately does
+    // not read (see `review_import_material_metallic`).
     let dir = temp_dir("extras_phong");
 
     let (_, with_capture, with_extras) = round_trip(&model, &extras, &dir, FbxFormat::Binary);
     assert!((with_capture.materials[0].smoothness - material.smoothness).abs() < 1e-5);
-    // The fixture authors the classic `Shininess` name; it comes back as such.
+    // The capture authors the classic `Shininess` name; it comes back as such,
+    // on a material that still reads as a Phong.
+    assert_eq!(
+        with_extras.materials[0].shader_type,
+        review_model::extras::ShaderType::FbxPhong
+    );
     let exponent = prop(&with_extras.materials[0].props, "Shininess");
     assert!((exponent.value_real[0] - 20.0).abs() < 1e-6, "{exponent:?}");
 
-    let result = passthrough(&model, &extras);
+    // Without the capture the writer falls back to a Phong of its own. Give the
+    // viewer's reading a metalness so the fallback has one to write — not 1.0,
+    // which is the Phong template's own `ReflectionFactor` and so is elided.
+    let mut metallic = model.clone();
+    metallic.materials[0].metallic = 0.75;
+    let result = passthrough(&metallic, &extras);
     let path = dir.join("viewer_path.fbx");
-    export_fbx(&result.lods, &model, None, &path, &ExportOptions::default()).expect("export");
-    let (without_capture, _) = reload(&path);
+    export_fbx(
+        &result.lods,
+        &metallic,
+        None,
+        &path,
+        &ExportOptions::default(),
+    )
+    .expect("export");
+    let (without_capture, without_extras) = reload(&path);
     assert!((without_capture.materials[0].smoothness - material.smoothness).abs() < 1e-5);
     // Metalness is one-way through the Phong fallback: the writer puts it on
     // `ReflectionFactor` as the closest slot the model has, and the reader does
-    // not take it back off. For this dielectric fixture the two agree anyway.
+    // not take it back off — a classic material always imports dielectric.
+    let reflection = prop(&without_extras.materials[0].props, "ReflectionFactor");
+    assert!(
+        (reflection.value_real[0] - 0.75).abs() < 1e-6,
+        "{reflection:?}"
+    );
     assert_eq!(without_capture.materials[0].metallic, 0.0);
 }
 
@@ -306,11 +424,11 @@ fn scene_settings_and_metadata_survive() {
     );
 }
 
-/// Tangents the import synthesized are not written: the pillar authors none,
+/// Tangents the import synthesized are not written: the monkey authors none,
 /// so none comes back.
 #[test]
 fn synthesized_tangents_are_not_written() {
-    let Some((model, extras)) = fixture("rock_pillar_03.fbx") else {
+    let Some((model, extras)) = fixture("monkey.fbx") else {
         return;
     };
     assert!(
@@ -321,13 +439,18 @@ fn synthesized_tangents_are_not_written() {
 }
 
 /// Authored tangents are written back. No fixture left in the repository
-/// authors any, so this waits on one.
+/// authors any, so the monkey's capture is marked as having authored the basis
+/// the import built for it — which is exactly what the capture would hold had
+/// the file carried that layer: the vertex buffer's tangents and the flag.
 #[test]
-#[ignore = "needs a fixture with an authored tangent layer; SK_Player_01.fbx was removed in a9c6db3"]
 fn authored_tangents_are_written() {
-    let Some((model, extras)) = fixture("SK_Player_01.fbx") else {
+    let Some((model, mut extras)) = fixture("monkey.fbx") else {
         return;
     };
+    for part in &mut extras.meshes {
+        part.tangents_authored = true;
+    }
+    assert!(extras.tangents_authored());
     tangents_survive_as_authored(&model, &extras, &temp_dir("extras_tangents"));
 }
 

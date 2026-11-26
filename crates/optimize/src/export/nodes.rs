@@ -46,8 +46,7 @@ pub(crate) fn group_by_node(model: &ModelData) -> Vec<NodeGroup> {
     // groups seen so far is triangles x nodes on a scene of many objects.
     let mut slot_of: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
     let mut groups: Vec<NodeGroup> = Vec::new();
-    for triangle in 0..triangle_count {
-        let node = model.triangles.node[triangle];
+    for (triangle, &node) in model.triangles.node.iter().enumerate() {
         let slot = *slot_of.entry(node).or_insert_with(|| {
             groups.push(NodeGroup {
                 source_node: Some(node as usize),

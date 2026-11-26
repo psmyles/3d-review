@@ -330,51 +330,93 @@ fn rebuilt_and_flat_hierarchies_place_the_geometry_identically() {
     // into the vertices — so a correctly written file puts the geometry in the
     // same world position either way. This is the check that catches un-baking
     // applied in the wrong direction, which is otherwise invisible until an
-    // artist opens the file. A twelve-object plant under a group node, so there
-    // is a hierarchy for the two modes to differ over.
-    let Some(model) = fixture("stylized_palm_plant_04.fbx") else {
-        return;
-    };
-    let result = run(&model, &passthrough());
-    let dir = temp_dir("round_trip_hierarchy");
+    // artist opens the file. Two shapes of transform for the modes to differ
+    // over: the monkey's one node is rotated a quarter turn and scaled 100x under
+    // the root's centimeter scale, and the wall is ninety-four pieces each
+    // translated off the origin, and the characters mesh sits under a rig
+    // a dozen levels deep, skinned, so its rest pose rides the bind matrices.
+    for name in ["monkey.fbx", "SM_Wall_Break_4x3m.fbx", "Triceratops.fbx"] {
+        let Some(model) = fixture(name) else {
+            continue;
+        };
+        let result = run(&model, &passthrough());
+        let dir = temp_dir(&format!("round_trip_hierarchy_{name}"));
 
-    let mut bounds = Vec::new();
-    for (label, hierarchy) in [
-        ("rebuild", HierarchyMode::Rebuild),
-        ("flat", HierarchyMode::FlatBaked),
-    ] {
-        let path = dir.join(format!("{label}.fbx"));
-        export_fbx(
-            &result.lods,
-            &model,
-            None,
-            &path,
-            &ExportOptions {
-                hierarchy,
-                ..ExportOptions::default()
-            },
-        )
-        .expect("export succeeds");
-        bounds.push((label, reimport(&path).bounds.expect("bounds")));
+        let level = &result.lods[0].model;
+        // A flat file carries no deform (the report says so), so a skinned
+        // mesh comes back in the pose its vertex buffer holds - the bind pose -
+        // where a rebuilt one is skinned back into the file's default pose,
+        // which is what `bounds` measures.
+        let deforms = model.skin.is_some() || model.morph.is_some();
+        let rest = level.bounds.expect("source bounds");
+        let bind = level
+            .vertices
+            .iter()
+            .fold(None::<(glam::Vec3, glam::Vec3)>, |span, vertex| {
+                let p = vertex.position;
+                Some(span.map_or((p, p), |(lo, hi)| (lo.min(p), hi.max(p))))
+            })
+            .expect("the level has vertices");
+        for (label, hierarchy) in [
+            ("rebuild", HierarchyMode::Rebuild),
+            ("flat", HierarchyMode::FlatBaked),
+        ] {
+            let path = dir.join(format!("{label}.fbx"));
+            let report = export_fbx(
+                &result.lods,
+                &model,
+                None,
+                &path,
+                &ExportOptions {
+                    hierarchy,
+                    ..ExportOptions::default()
+                },
+            )
+            .expect("export succeeds");
+            let written = reimport(&path).bounds.expect("bounds");
+            let (min, max) = if deforms && hierarchy == HierarchyMode::FlatBaked {
+                assert!(
+                    report.notes.iter().any(|note| matches!(
+                        note,
+                        review_optimize::ExportNote::DeformNotWrittenFlat
+                    )),
+                    "{name}: a flat export of a deforming mesh says it dropped the deform"
+                );
+                bind
+            } else {
+                (rest.min, rest.max)
+            };
+            let tolerance = (max - min).max_element() * 1.0e-2;
+            assert!(
+                min.abs_diff_eq(written.min, tolerance) && max.abs_diff_eq(written.max, tolerance),
+                "{name} {label}: geometry landed in the wrong place: {min:?}..{max:?} -> {written:?}"
+            );
+        }
     }
+}
 
-    let source = result.lods[0].model.bounds.expect("source bounds");
-    let tolerance = source.size().max_element() * 1.0e-2;
-    for (label, written) in &bounds {
-        assert!(
-            source.min.abs_diff_eq(written.min, tolerance)
-                && source.max.abs_diff_eq(written.max, tolerance),
-            "{label}: geometry landed in the wrong place: {source:?} -> {written:?}"
-        );
+/// The cube with a second material on half its faces. No fixture left in the
+/// repository has more than one material, and these tests are about the writer
+/// keeping several apart, which needs nothing more than two slots and faces
+/// assigned to each.
+fn two_material_cube() -> Option<ModelData> {
+    let mut model = fixture("meter_cube.fbx")?;
+    assert_eq!(model.materials.len(), 1, "the cube has one material");
+    let mut second = model.materials[0].clone();
+    second.name = format!("{}_second", second.name);
+    model.materials.push(second);
+    let triangles = model.triangles.material.len();
+    for material in &mut model.triangles.material[triangles / 2..] {
+        *material = 1;
     }
+    Some(model)
 }
 
 #[test]
 fn a_multi_material_mesh_keeps_its_materials() {
-    let Some(model) = fixture("stylized_palm_plant_04.fbx") else {
+    let Some(model) = two_material_cube() else {
         return;
     };
-    assert!(model.materials.len() > 1);
     let result = run(&model, &passthrough());
 
     let dir = temp_dir("round_trip_materials");
@@ -383,16 +425,25 @@ fn a_multi_material_mesh_keeps_its_materials() {
         .expect("export succeeds");
 
     let loaded = reimport(&path);
-    assert!(
-        loaded.materials.len() > 1,
-        "several materials survive, found {}",
-        loaded.materials.len()
-    );
-    let distinct: std::collections::HashSet<u32> =
-        loaded.triangles.material.iter().copied().collect();
-    assert!(
-        distinct.len() > 1,
-        "faces are still assigned to different materials: {distinct:?}"
+    let mut names: Vec<&str> = loaded.materials.iter().map(|m| m.name.as_str()).collect();
+    names.sort_unstable();
+    let mut source_names: Vec<&str> = model.materials.iter().map(|m| m.name.as_str()).collect();
+    source_names.sort_unstable();
+    assert_eq!(names, source_names, "both materials survive, by name");
+    // Each material keeps the faces it had: count the triangles per name.
+    let per_name = |mesh: &ModelData| {
+        let mut counts = std::collections::BTreeMap::<String, usize>::new();
+        for &material in &mesh.triangles.material {
+            *counts
+                .entry(mesh.materials[material as usize].name.clone())
+                .or_default() += 1;
+        }
+        counts
+    };
+    assert_eq!(
+        per_name(&loaded),
+        per_name(&model),
+        "faces are still assigned to the materials they had"
     );
 }
 
@@ -402,10 +453,9 @@ fn a_multi_material_mesh_keeps_its_materials() {
 /// one material where the file had several.
 #[test]
 fn materials_that_share_a_name_stay_separate() {
-    let Some(mut model) = fixture("stylized_palm_plant_04.fbx") else {
+    let Some(mut model) = two_material_cube() else {
         return;
     };
-    assert!(model.materials.len() > 1);
     let count = model.materials.len();
     for material in &mut model.materials {
         material.name = "lambert1".to_owned();
@@ -431,11 +481,15 @@ fn materials_that_share_a_name_stay_separate() {
             .iter()
             .all(|material| material.name == "lambert1")
     );
-    let distinct: std::collections::HashSet<u32> =
-        loaded.triangles.material.iter().copied().collect();
-    assert!(
-        distinct.len() > 1,
-        "faces stay assigned to different materials: {distinct:?}"
+    let mut per_slot = vec![0usize; loaded.materials.len()];
+    for &material in &loaded.triangles.material {
+        per_slot[material as usize] += 1;
+    }
+    let half = model.triangles.material.len() / 2;
+    assert_eq!(
+        per_slot,
+        [half, half],
+        "faces stay assigned to their own material"
     );
 }
 
@@ -529,12 +583,17 @@ fn ascii_export(name: &str, dir_name: &str) -> Option<String> {
 /// [`ascii_export`] after running `stack` rather than the passthrough.
 fn ascii_export_after(name: &str, dir_name: &str, stack: &OptStack) -> Option<String> {
     let model = fixture(name)?;
-    let result = run(&model, stack);
+    Some(ascii_export_of(&model, dir_name, stack))
+}
+
+/// [`ascii_export_after`] over a model already in hand.
+fn ascii_export_of(model: &ModelData, dir_name: &str, stack: &OptStack) -> String {
+    let result = run(model, stack);
     let dir = temp_dir(dir_name);
     let path = dir.join("out.fbx");
     export_fbx(
         &result.lods,
-        &model,
+        model,
         None,
         &path,
         &ExportOptions {
@@ -543,7 +602,7 @@ fn ascii_export_after(name: &str, dir_name: &str, stack: &OptStack) -> Option<St
         },
     )
     .expect("export succeeds");
-    Some(std::fs::read_to_string(&path).expect("ASCII output is text"))
+    std::fs::read_to_string(&path).expect("ASCII output is text")
 }
 
 #[test]
@@ -551,16 +610,24 @@ fn the_written_file_declares_the_sources_own_unit() {
     // FBX declares its unit rather than fixing one, and import normalizes every
     // file to meters — so an export has to say which unit its coordinates are
     // in. Writing the source's own unit is what keeps a centimeter asset a
-    // centimeter asset through the tool. Both fixtures are checked: a wrong
-    // hard-coded factor would still pass over one of them.
-    for (name, expected) in [("rock_pillar_03.fbx", "1"), ("SM_column04.fbx", "2.54")] {
-        let Some(text) = ascii_export(name, "round_trip_unit") else {
-            continue;
-        };
+    // centimeter asset through the tool. Every fixture left is centimeters, so
+    // the monkey is also declared inch and meter: a wrong hard-coded factor
+    // would still pass over any one unit.
+    let Some(model) = fixture("monkey.fbx") else {
+        return;
+    };
+    assert!(
+        (model.stats.source_unit_meters - 0.01).abs() < 1e-6,
+        "the fixture is authored in centimeters"
+    );
+    for (unit_meters, expected) in [(0.01, "1"), (0.0254, "2.54"), (1.0, "100")] {
+        let mut model = model.clone();
+        model.stats.source_unit_meters = unit_meters;
+        let text = ascii_export_of(&model, "round_trip_unit", &passthrough());
         assert_eq!(
             scene_property(&text, "UnitScaleFactor"),
             expected,
-            "{name} should be written in the unit it was authored in"
+            "a source in {unit_meters} m should be written in that unit"
         );
     }
     // The declared factor and the coordinates have to agree, which is what the
@@ -586,7 +653,7 @@ fn uv_and_color_layers_are_polygon_vertex_indexed() {
         target: AoTarget::Rgb,
         ..BakeAoParams::default()
     }));
-    let Some(text) = ascii_export_after("rock_pillar_03.fbx", "round_trip_layers", &stack) else {
+    let Some(text) = ascii_export_after("monkey.fbx", "round_trip_layers", &stack) else {
         return;
     };
 
@@ -710,7 +777,7 @@ fn baked_ao_survives_an_export_round_trip() {
 fn normals_survive_the_round_trip() {
     // A centimeter fixture: at a metric source the two factors are both 1 and
     // the bug cannot appear at all.
-    let Some(model) = fixture("rock_pillar_03.fbx") else {
+    let Some(model) = fixture("monkey.fbx") else {
         return;
     };
     let result = run(&model, &passthrough());
@@ -766,7 +833,7 @@ fn normals_survive_the_round_trip() {
 /// hold.
 #[test]
 fn no_animation_is_written_for_a_static_mesh() {
-    let Some(text) = ascii_export("rock_pillar_03.fbx", "round_trip_no_anim") else {
+    let Some(text) = ascii_export("monkey.fbx", "round_trip_no_anim") else {
         return;
     };
     assert!(

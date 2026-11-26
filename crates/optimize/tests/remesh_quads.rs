@@ -20,9 +20,17 @@
 //! suite pins the stronger form of this - that they are the *same* triangles -
 //! because it can compare them directly.
 
+//!
+//! The proprietary fixtures this was measured on (a palm plant, a rock pillar, a
+//! pedestal with pebbles, a creased column) left the repository and are not
+//! coming back. It runs on the synthetic shapes in `shapes/` and on Suzanne; the
+//! wall fixture is 95 pieces each too small to rebuild, so it has no quads to
+//! count.
+
 #![cfg(has_meshopt)]
 
 mod common;
+mod shapes;
 
 use common::fixture;
 use review_model::ModelData;
@@ -147,35 +155,45 @@ fn warp_of(corners: [glam::Vec3; 4]) -> Option<f32> {
     Some(first.dot(d - a).abs() / smaller / size)
 }
 
-/// The fixtures this suite reads, from a thin open shell to a chunky closed one.
-const FIXTURES: [&str; 4] = [
-    "stylized_palm_plant_04.fbx",
-    "rock_pillar_03.fbx",
-    "cpg_pedestal_pebbles.fbx",
-    "SM_column04.fbx",
-];
+/// The synthetic thin shells: [`shapes::leaves`].
+const LEAVES: &str = "synthetic leaves";
+/// The synthetic closed objects: [`shapes::pedestal_and_stones`].
+const STONES: &str = "synthetic pedestal and stones";
 
-/// The share of faces each fixture must come back as quads, at half density.
+/// The subjects this suite reads, from a thin closed shell to a chunky closed
+/// one, plus Suzanne.
+const SUBJECTS: [&str; 3] = [LEAVES, STONES, "monkey.fbx"];
+
+/// A subject by name: one of the synthetic shapes, or a fixture (`None` when
+/// this checkout cannot load it, per the usual skip policy).
+fn subject(name: &str) -> Option<ModelData> {
+    match name {
+        LEAVES => Some(shapes::leaves(24, 64)),
+        STONES => Some(shapes::pedestal_and_stones(24, 48)),
+        _ => fixture(name),
+    }
+}
+
+/// The share of faces each subject must come back as quads, at half density.
 ///
 /// One floor per object rather than one for all of them, because the spread is
 /// the finding. What a surface can be paired into quads at all depends on how
-/// faceted it is at the density asked for, and `SM_column04` is the end of that
-/// range: a hard-surface model whose rebuild is nearly all creases, where most
-/// pairs are a genuine angle and a quad across one would be a lie. The organic
-/// fixtures sit where a quadrangulation is normally expected to.
+/// faceted it is at the density asked for: on the proprietary fixtures this was
+/// first measured on, a creased hard-surface column paired only 47 % (most of
+/// its pairs were a genuine angle, and a quad across one would be a lie) where
+/// the organic ones reached 74-87 %.
+///
+/// On the subjects here the synthetic shapes, smooth and organic, pair 88.8 %
+/// (leaves) and 88.4 % (stones); Suzanne, coarse enough at half density that
+/// much of her is a real angle, pairs 46.0 %.
 ///
 /// Each floor is the measured figure less about a tenth.
-const QUAD_SHARE_FLOOR: [(&str, f32); 4] = [
-    ("stylized_palm_plant_04.fbx", 0.73),
-    ("rock_pillar_03.fbx", 0.67),
-    ("cpg_pedestal_pebbles.fbx", 0.78),
-    ("SM_column04.fbx", 0.42),
-];
+const QUAD_SHARE_FLOOR: [(&str, f32); 3] = [(LEAVES, 0.80), (STONES, 0.80), ("monkey.fbx", 0.41)];
 
 #[test]
 fn most_of_a_quad_rebuild_is_quads() {
     for (name, floor) in QUAD_SHARE_FLOOR {
-        let Some(model) = fixture(name) else { return };
+        let Some(model) = subject(name) else { return };
         let Some(measured) = measure(&model, &stack(RemeshTopology::Quads, 0.5)) else {
             panic!("{name} did not rebuild");
         };
@@ -193,8 +211,8 @@ fn most_of_a_quad_rebuild_is_quads() {
 
 #[test]
 fn a_quad_is_nearly_flat() {
-    for name in FIXTURES {
-        let Some(model) = fixture(name) else { return };
+    for name in SUBJECTS {
+        let Some(model) = subject(name) else { return };
         let Some(measured) = measure(&model, &stack(RemeshTopology::Quads, 0.5)) else {
             panic!("{name} did not rebuild");
         };
@@ -215,8 +233,8 @@ fn a_quad_is_still_two_triangles_to_the_renderer() {
     // The polygon table and the index buffer describe one mesh, and the whole
     // "a merge does not move anything" claim depends on them agreeing: two
     // triangles per quad, one per triangle, and nothing over.
-    for name in FIXTURES {
-        let Some(model) = fixture(name) else { return };
+    for name in SUBJECTS {
+        let Some(model) = subject(name) else { return };
         let Some(measured) = measure(&model, &stack(RemeshTopology::Quads, 0.5)) else {
             panic!("{name} did not rebuild");
         };
@@ -235,8 +253,8 @@ fn a_quad_is_still_two_triangles_to_the_renderer() {
 
 #[test]
 fn asking_for_triangles_still_gives_only_triangles() {
-    for name in FIXTURES {
-        let Some(model) = fixture(name) else { return };
+    for name in SUBJECTS {
+        let Some(model) = subject(name) else { return };
         let Some(measured) = measure(&model, &stack(RemeshTopology::Triangles, 0.5)) else {
             panic!("{name} did not rebuild");
         };
@@ -258,11 +276,13 @@ fn a_quad_rebuild_lands_near_the_face_count_asked_for() {
     // it is a measured constant rather than a derived one: a quad is two
     // triangles, less however many the merge leaves unpaired. That share is not
     // the same on every object, so the count cannot be exact the way the
-    // triangle path's is - and this bound is set by `SM_column04`, which pairs
-    // the fewest and so carries the most leftover triangles. The ignored report
-    // below prints the figure for every fixture and ratio.
-    for name in FIXTURES {
-        let Some(model) = fixture(name) else { return };
+    // triangle path's is - and this bound is set by the subject that pairs the
+    // fewest and so carries the most leftover triangles. That was a creased
+    // proprietary column; it is now Suzanne, at 33 % over (the synthetic shapes
+    // land within 2 %). The ignored report below prints the figure for every
+    // subject and ratio.
+    for name in SUBJECTS {
+        let Some(model) = subject(name) else { return };
         let source: usize = model.faces.len().max(model.indices.len() / 3);
         let Some(measured) = measure(&model, &stack(RemeshTopology::Quads, 0.5)) else {
             panic!("{name} did not rebuild");
@@ -288,8 +308,8 @@ fn how_well_a_rebuild_quadrangulates() {
         "{:<34} {:>6} {:>6} {:>6} {:>7} {:>8} {:>8}",
         "object", "ratio", "faces", "quads", "share", "mean warp", "worst warp"
     );
-    for name in FIXTURES {
-        let Some(model) = fixture(name) else { return };
+    for name in SUBJECTS {
+        let Some(model) = subject(name) else { return };
         for ratio in [0.25f32, 0.5, 1.0] {
             let Some(measured) = measure(&model, &stack(RemeshTopology::Quads, ratio)) else {
                 continue;
@@ -315,8 +335,8 @@ fn how_close_a_quad_budget_lands() {
         "{:<34} {:<9} {:>6} {:>8} {:>8} {:>8}",
         "object", "topology", "ratio", "asked", "got", "out"
     );
-    for name in FIXTURES {
-        let Some(model) = fixture(name) else { return };
+    for name in SUBJECTS {
+        let Some(model) = subject(name) else { return };
         let source = model.faces.len().max(model.indices.len() / 3);
         for ratio in [0.25f32, 0.5, 1.0] {
             for topology in RemeshTopology::ALL {
@@ -345,7 +365,7 @@ fn how_close_a_quad_budget_lands() {
 #[test]
 #[ignore = "a measurement, not a threshold"]
 fn how_close_an_absolute_budget_lands() {
-    let Some(model) = fixture("cpg_pedestal_pebbles.fbx") else {
+    let Some(model) = subject(STONES) else {
         return;
     };
     for faces in [3_000u32, 5_550] {

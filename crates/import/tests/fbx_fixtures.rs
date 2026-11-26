@@ -176,14 +176,13 @@ fn import_carries_nodes_and_per_triangle_material() {
 /// mapping: if it drifted, the per-vertex influence sums below would be wrong
 /// (or `SkinData::validate` at the funnel would already have failed the load).
 #[test]
-#[ignore = "needs a skinned character; SK_Player_01.fbx was proprietary and removed in a9c6db3"]
 fn import_carries_skeleton_and_skin() {
-    let path = fixture("SK_Player_01.fbx");
+    let path = fixture("Triceratops.fbx");
     if !path.exists() {
         skipping(format!("{} is not present", path.display()));
         return;
     }
-    let model = load_model(&path).expect("the skeletal fixture must import");
+    let model = load_model(&path).expect("the triceratops fixture must import");
 
     // ── Bones ───────────────────────────────────────────────────────────
     let bones: Vec<usize> = model
@@ -268,10 +267,30 @@ fn import_carries_skeleton_and_skin() {
         );
     }
 
-    // Per-vertex weight sums: a sane rig normalizes to ~1.0. This is the
-    // assertion that would catch a broken corner -> logical mapping, since a
-    // mis-mapped vertex reads another vertex's (or no) influences.
+    // The corner -> logical mapping, checked directly: every render corner of
+    // one DCC vertex is a copy of that vertex, so all of them carry the same
+    // bind-pose position bit for bit. A mapping that drifted by even one
+    // vertex would pair corners from different places.
+    {
+        let mut position_of: Vec<Option<glam::Vec3>> = vec![None; skin.logical_vertex_count()];
+        for (corner, &logical) in model.corner_to_logical.iter().enumerate() {
+            let position = model.vertices[corner].position;
+            let seen = position_of[logical as usize].get_or_insert(position);
+            assert_eq!(
+                *seen, position,
+                "corner {corner} maps to logical vertex {logical} but sits elsewhere"
+            );
+        }
+    }
+
+    // Per-vertex weight sums. These are the file's weights as authored, which
+    // Blender does not normalize: this rig has vertices at 1.0 + 0.75 on two
+    // bones and single-bone vertices at 0.93 (the viewer, like ufbx, divides
+    // by the sum). So the check is on the share that *does* sum to one,
+    // measured at 78 % (11235 of 14418 within 0.025), and on every vertex being
+    // skinned at all - a mis-mapped lookup reads another vertex's run, or none.
     let mut skinned_vertices = 0usize;
+    let mut normalized = 0usize;
     let mut sum_of_sums = 0.0_f64;
     let mut worst = 0.0_f32;
     for logical in 0..skin.logical_vertex_count() {
@@ -280,26 +299,42 @@ fn import_carries_skeleton_and_skin() {
             continue;
         }
         let total: f32 = skin.weights[range].iter().sum();
+        assert!(
+            total > 0.0 && total.is_finite(),
+            "vertex {logical} sums to {total}"
+        );
         skinned_vertices += 1;
+        normalized += usize::from((total - 1.0).abs() <= 0.025);
         sum_of_sums += f64::from(total);
         worst = worst.max((total - 1.0).abs());
     }
-    assert!(skinned_vertices > 0, "no vertex carried any influence");
+    assert_eq!(
+        skinned_vertices,
+        skin.logical_vertex_count(),
+        "every vertex of the triceratops is bound to the skeleton"
+    );
 
     let mean_influences = skin.influence_count() as f64 / skinned_vertices as f64;
     let mean_sum = sum_of_sums / skinned_vertices as f64;
+    let normalized_share = normalized as f64 / skinned_vertices as f64;
     println!(
-        "SK_Player_01: {} bones, {} nodes, {} logical verts ({} skinned),              {} influences, {mean_influences:.2} influences/vertex,              mean weight sum {mean_sum:.4} (worst deviation {worst:.4})",
+        "Triceratops: {} bones, {} nodes, {} logical verts ({} skinned), {} influences, \
+         {mean_influences:.2} influences/vertex, mean weight sum {mean_sum:.4} (worst \
+         deviation {worst:.4}), {:.1} % sum to one",
         model.stats.bone_count,
         model.nodes.len(),
         skin.logical_vertex_count(),
         skinned_vertices,
         skin.influence_count(),
+        normalized_share * 100.0,
     );
-
+    assert_eq!(model.stats.bone_count, 139);
+    assert_eq!(skin.influence_count(), 21554);
     assert!(
-        (0.99..=1.01).contains(&mean_sum),
-        "mean per-vertex weight sum {mean_sum} is not ~1.0 — the corner -> logical              mapping or the cluster walk is likely wrong"
+        normalized_share > 0.75,
+        "only {:.1} % of vertices sum to one - the cluster walk is likely reading the \
+         wrong weights",
+        normalized_share * 100.0
     );
     assert!(
         mean_influences > 1.0,
@@ -325,11 +360,15 @@ fn import_carries_skeleton_and_skin() {
                 .count();
             Some((model.nodes[node].name.clone(), count))
         };
-        let samples: Vec<(String, usize)> = ["Spine1", "Head", "Pinky3_L", "Hand_L"]
-            .iter()
-            .filter_map(|name| count_for(name))
-            .collect();
+        let names = ["neck", "headtop", "Tail.001", "hand.l.1"];
+        let samples: Vec<(String, usize)> =
+            names.iter().filter_map(|name| count_for(name)).collect();
         println!("per-bone influenced vertices: {samples:?}");
+        assert_eq!(
+            samples.len(),
+            names.len(),
+            "every sampled bone exists: {samples:?}"
+        );
         let counts: Vec<usize> = samples.iter().map(|(_, count)| *count).collect();
         assert!(
             counts.iter().any(|&count| count > 0),
@@ -389,21 +428,32 @@ fn assert_rest_locals_recompose(model: &review_model::ModelData) {
 /// playable range, every track names a real node, and the rest pose's
 /// skinning is consistent with the file's world transforms.
 #[test]
-#[ignore = "needs a skinned multi-clip file; AN_ZombiedogLocomotion.fbx was proprietary and \
-            removed in a9c6db3"]
 fn import_carries_animation_clips() {
-    let path = fixture("AN_ZombiedogLocomotion.fbx");
+    let path = fixture("Triceratops.fbx");
     if !path.exists() {
         skipping(format!("{} is not present", path.display()));
         return;
     }
-    let model = load_model(&path).expect("the locomotion fixture must import");
+    let model = load_model(&path).expect("the triceratops fixture must import");
 
-    assert!(model.skin.is_some(), "the dog is skinned");
-    assert!(
-        model.animations.len() > 1,
-        "the fixture carries several clips, got {}",
-        model.animations.len()
+    assert!(model.skin.is_some(), "the triceratops is skinned");
+    println!(
+        "clips: {:?}",
+        model
+            .animations
+            .iter()
+            .map(|clip| (
+                &clip.name,
+                clip.time_begin,
+                clip.time_end,
+                clip.tracks.len()
+            ))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        model.animations.len(),
+        6,
+        "the triceratops carries six clips"
     );
     assert_eq!(model.stats.clip_count, model.animations.len());
     assert!(model.frame_rate > 0.0, "the file declares a frame rate");
@@ -659,9 +709,8 @@ fn every_fixture_captures_valid_extras() {
 /// (mesh node → bone) and `TransformLink` (bind → world), which must be
 /// consistent with the palette matrix the viewer derives.
 #[test]
-#[ignore = "needs a skinned character; SK_Player_01.fbx was proprietary and removed in a9c6db3"]
 fn skin_clusters_carry_authored_matrices() {
-    let path = fixture("SK_Player_01.fbx");
+    let path = fixture("Triceratops.fbx");
     if !path.exists() {
         skipping(format!("{} is not present", path.display()));
         return;
@@ -686,14 +735,13 @@ fn skin_clusters_carry_authored_matrices() {
 /// transformed by that cluster's skinning matrix, and the recomposed rest
 /// pose reproduces every world transform.
 #[test]
-#[ignore = "needs a skinned character; SK_Player_01.fbx was proprietary and removed in a9c6db3"]
 fn rest_pose_skinning_matches_bind() {
-    let path = fixture("SK_Player_01.fbx");
+    let path = fixture("Triceratops.fbx");
     if !path.exists() {
         skipping(format!("{} is not present", path.display()));
         return;
     }
-    let model = load_model(&path).expect("the player fixture must import");
+    let model = load_model(&path).expect("the triceratops fixture must import");
     assert_rest_locals_recompose(&model);
 
     let skin = model.skin.as_ref().expect("skinned");
@@ -760,56 +808,105 @@ fn rest_pose_skinning_matches_bind() {
 /// draws as a mirror of the environment instead of a lit surface. So every
 /// classic material must arrive dielectric.
 ///
-/// The sweep is only worth anything if some fixture really does declare a
-/// non-zero factor, so that is asserted too: without it the test would keep
-/// passing against a fixture set that simply never exercises the slot.
+/// No remaining fixture declares the slot, so the scene is written here: a
+/// Phong at the FBX SDK's 1.0 and a Lambert at Maya's 0.5, one triangle each.
+/// The capture is read back too, so the test fails rather than passing
+/// vacuously if the factors or shading models ever stop arriving.
 #[test]
 fn a_classic_material_imports_as_a_dielectric() {
     use review_model::extras::ShaderType;
 
-    let dir = fixture("");
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        skipping(format!("{} is not present", dir.display()));
-        return;
-    };
-    let mut saw_a_reflection_factor = false;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("fbx"))
-        {
-            continue;
-        }
-        let (model, extras) = review_import::load_model_full(&path)
-            .unwrap_or_else(|error| panic!("{} must import: {error}", path.display()));
-        let Some(extras) = extras else { continue };
-        for (material, authored) in model.materials.iter().zip(&extras.materials) {
-            if !matches!(
-                authored.shader_type,
-                ShaderType::Unknown | ShaderType::FbxLambert | ShaderType::FbxPhong
-            ) {
-                continue;
-            }
-            let factor = authored
-                .props
-                .iter()
-                .find(|prop| prop.name == "ReflectionFactor")
-                .map_or(0.0, |prop| prop.value_real[0]);
-            saw_a_reflection_factor |= factor > 0.0;
-            assert_eq!(
-                material.metallic,
-                0.0,
-                "{} / {} is a classic material (ReflectionFactor {factor}) and must import \
-                 as a dielectric",
-                path.file_name().unwrap().to_string_lossy(),
-                material.name,
-            );
-        }
+    fn triangle(geometry: u64, model: u64, material: u64, name: &str) -> String {
+        format!(
+            r#"	Geometry: {geometry}, "Geometry::{name}", "Mesh" {{
+		Vertices: *9 {{
+			a: 0,0,0,1,0,0,0,1,0
+		}}
+		PolygonVertexIndex: *3 {{
+			a: 0,1,-3
+		}}
+		LayerElementMaterial: 0 {{
+			Version: 101
+			MappingInformationType: "AllSame"
+			ReferenceInformationType: "IndexToDirect"
+			Materials: *1 {{
+				a: 0
+			}}
+		}}
+		Layer: 0 {{
+			Version: 100
+			LayerElement:  {{
+				Type: "LayerElementMaterial"
+				TypedIndex: 0
+			}}
+		}}
+	}}
+	Model: {model}, "Model::{name}", "Mesh" {{
+		Version: 232
+	}}
+	Material: {material}, "Material::{name}", "" {{
+		Version: 102
+		ShadingModel: "{name}"
+		MultiLayer: 0
+		Properties70:  {{
+			P: "DiffuseColor", "Color", "", "A",0.5,0.5,0.5
+			P: "ReflectionFactor", "Number", "", "A",{factor}
+		}}
+	}}
+"#,
+            factor = if name == "phong" { "1" } else { "0.5" },
+        )
     }
+    let fbx = format!(
+        r#"; FBX 7.4.0 project file
+FBXHeaderExtension:  {{
+	FBXHeaderVersion: 1003
+	FBXVersion: 7400
+}}
+Objects:  {{
+{phong}{lambert}}}
+Connections:  {{
+	C: "OO",1000,2000
+	C: "OO",3000,2000
+	C: "OO",2000,0
+	C: "OO",1001,2001
+	C: "OO",3001,2001
+	C: "OO",2001,0
+}}
+"#,
+        phong = triangle(1000, 2000, 3000, "phong"),
+        lambert = triangle(1001, 2001, 3001, "lambert"),
+    );
+    let path = temp_fbx("classic-materials", fbx.as_bytes());
+    let (model, extras) = match review_import::load_model_full(&path) {
+        Ok((model, Some(extras))) => (model, extras),
+        Ok((_, None)) => return skipping("no capture in this build"),
+        Err(ImportError::UfbxUnavailable) => return skipping("FBX import is unavailable"),
+        Err(error) => panic!("the hand-written scene failed to load: {error}"),
+    };
+
+    let mut seen = Vec::new();
+    for (material, authored) in model.materials.iter().zip(&extras.materials) {
+        let factor = authored
+            .props
+            .iter()
+            .find(|prop| prop.name == "ReflectionFactor")
+            .map_or(0.0, |prop| prop.value_real[0]);
+        seen.push((authored.shader_type, factor));
+        assert_eq!(
+            material.metallic, 0.0,
+            "{} is a classic material (ReflectionFactor {factor}) and must import as a \
+             dielectric",
+            material.name,
+        );
+    }
+    seen.sort_by(|a, b| a.1.total_cmp(&b.1));
     assert!(
-        saw_a_reflection_factor,
-        "no fixture declares a non-zero ReflectionFactor, so this test proves nothing",
+        matches!(
+            seen.as_slice(),
+            [(ShaderType::FbxLambert, 0.5), (ShaderType::FbxPhong, 1.0)]
+        ),
+        "the scene's two classic materials must arrive with their factors: {seen:?}",
     );
 }
 
@@ -860,15 +957,17 @@ fn a_panicking_progress_sink_unwinds_without_taking_the_importer_with_it() {
 /// nobody will see. The check rides ufbx's own progress callback, so a token that
 /// is already stale stops the load at its first report.
 ///
-/// Two fixtures, because ufbx has two cancel paths and they do not report alike.
-/// Stopping the plain read fails with `UFBX_ERROR_CANCELLED`, but stopping inside
-/// the bit stream only feeds the inflater zeroes, so it surfaces as "Bad DEFLATE
-/// data" — an ordinary parse error. Which path a file takes depends on where its
-/// first progress report lands: the 2.4 MB ASCII fixture has no deflate stream
-/// at all and cancels on the read, the 26 MB binary one inside the deflate
-/// stream. The bridge records its own answer rather than reading `error.type`,
-/// and this is what holds it to that — the deflate case is the common one, since
-/// most binary FBX is compressed.
+/// Two files, because ufbx has two cancel paths and they have not always
+/// reported alike. Stopping the plain read fails with `UFBX_ERROR_CANCELLED`;
+/// stopping inside the bit stream only feeds the inflater zeroes, and in older
+/// ufbx surfaced as "Bad DEFLATE data" - an ordinary parse error. Which path a
+/// file takes depends on where its first progress report lands: the 2.4 MB
+/// ASCII fixture has no deflate stream at all and cancels on the read, and the
+/// scene `binary_fbx_with_a_deflated_array` writes is almost entirely one
+/// deflate stream, so its first report comes from the inflater. The bridge
+/// records its own answer rather than reading `error.type`, and this is what
+/// holds it to that - the deflate case is the common one, since most binary FBX
+/// is compressed.
 #[test]
 fn a_superseded_load_is_cancelled_rather_than_parsed() {
     use std::sync::Arc;
@@ -880,8 +979,11 @@ fn a_superseded_load_is_cancelled_rather_than_parsed() {
     let cancel = review_import::CancelToken::new(Arc::clone(&generation), 6);
     assert!(cancel.is_cancelled());
 
-    for name in ["SM_Wall_Break_4x3m.fbx", "stylized_tree_branch_01.fbx"] {
-        let path = fixture(name);
+    let deflated = temp_fbx("deflated", &binary_fbx_with_a_deflated_array(4 << 20));
+    for (name, path) in [
+        ("SM_Wall_Break_4x3m.fbx", fixture("SM_Wall_Break_4x3m.fbx")),
+        ("the deflated scene", deflated.clone()),
+    ] {
         if !path.exists() {
             skipping(format!("{name} is not present"));
             continue;
@@ -910,6 +1012,198 @@ fn a_superseded_load_is_cancelled_rather_than_parsed() {
     let staged = review_import::load_model_staged_cancellable(&small, &|_| {}, Some(&live))
         .expect("a current load still imports");
     assert!(staged.model.stats.triangle_count > 0);
+
+    // The deflated scene is a well-formed file, so its Cancelled above is the
+    // token's doing and not a parse that would have failed anyway.
+    let staged = review_import::load_model_staged_cancellable(&deflated, &|_| {}, Some(&live))
+        .expect("the deflated scene imports with a live token");
+    assert_eq!(staged.model.stats.triangle_count, 1);
+}
+
+/// A binary FBX 7.4 whose `Vertices` array is zlib-compressed and holds at
+/// least `bytes` of doubles - one triangle over the first three points, the
+/// rest unused - so nearly the whole file is one deflate stream and ufbx's
+/// first progress report (every 512 KB) lands inside the inflater.
+///
+/// The stream is one fixed-Huffman block of literals, which needs no
+/// compressor. Not *stored* blocks, which would be simpler still: ufbx copies
+/// those with `ufbxi_bit_copy_bytes`, which never reaches the progress check in
+/// `ufbxi_bit_refill` - the check this file exists to reach.
+fn binary_fbx_with_a_deflated_array(bytes: usize) -> Vec<u8> {
+    enum Prop<'a> {
+        I32(i32),
+        I64(i64),
+        Str(&'a [u8]),
+        DeflatedF64(&'a [f64]),
+        I32Array(&'a [i32]),
+    }
+    struct Node<'a> {
+        name: &'a str,
+        props: Vec<Prop<'a>>,
+        children: Vec<Node<'a>>,
+    }
+    /// zlib around one fixed-Huffman deflate block of literals only (RFC 1951
+    /// 3.2.6): no compressor needed, and unlike a stored block it is decoded
+    /// through the bit stream.
+    fn zlib_fixed_huffman(data: &[u8]) -> Vec<u8> {
+        let mut out = vec![0x78, 0x01];
+        let (mut acc, mut filled) = (0u64, 0u32);
+        let mut put = |value: u32, count: u32, out: &mut Vec<u8>| {
+            acc |= u64::from(value) << filled;
+            filled += count;
+            while filled >= 8 {
+                out.push(acc as u8);
+                acc >>= 8;
+                filled -= 8;
+            }
+        };
+        // A Huffman code goes out most significant bit first.
+        let code = |code: u32, count: u32| code.reverse_bits() >> (32 - count);
+        put(0b011, 3, &mut out); // BFINAL, then BTYPE 01 (fixed Huffman)
+        for &byte in data {
+            let byte = u32::from(byte);
+            if byte < 144 {
+                put(code(0x30 + byte, 8), 8, &mut out);
+            } else {
+                put(code(0x190 + byte - 144, 9), 9, &mut out);
+            }
+        }
+        put(0, 7, &mut out); // end of block
+        put(0, 7, &mut out); // flush the last partial byte
+        let (mut a, mut b) = (1u32, 0u32);
+        for &byte in data {
+            a = (a + u32::from(byte)) % 65521;
+            b = (b + a) % 65521;
+        }
+        out.extend_from_slice(&((b << 16) | a).to_be_bytes());
+        out
+    }
+    fn write_prop(prop: &Prop, out: &mut Vec<u8>) {
+        match prop {
+            Prop::I32(value) => {
+                out.push(b'I');
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+            Prop::I64(value) => {
+                out.push(b'L');
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+            Prop::Str(value) => {
+                out.push(b'S');
+                out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+                out.extend_from_slice(value);
+            }
+            Prop::DeflatedF64(values) => {
+                let raw: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+                let packed = zlib_fixed_huffman(&raw);
+                out.push(b'd');
+                out.extend_from_slice(&(values.len() as u32).to_le_bytes());
+                out.extend_from_slice(&1u32.to_le_bytes());
+                out.extend_from_slice(&(packed.len() as u32).to_le_bytes());
+                out.extend_from_slice(&packed);
+            }
+            Prop::I32Array(values) => {
+                out.push(b'i');
+                out.extend_from_slice(&(values.len() as u32).to_le_bytes());
+                out.extend_from_slice(&0u32.to_le_bytes());
+                out.extend_from_slice(&(values.len() as u32 * 4).to_le_bytes());
+                for value in *values {
+                    out.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+    }
+    fn write_node(node: &Node, out: &mut Vec<u8>) {
+        let start = out.len();
+        out.extend_from_slice(&[0; 12]);
+        out.push(node.name.len() as u8);
+        out.extend_from_slice(node.name.as_bytes());
+        let props_start = out.len();
+        for prop in &node.props {
+            write_prop(prop, out);
+        }
+        let props_len = (out.len() - props_start) as u32;
+        if !node.children.is_empty() {
+            for child in &node.children {
+                write_node(child, out);
+            }
+            out.extend_from_slice(&[0; 13]);
+        }
+        let end = out.len() as u32;
+        out[start..start + 4].copy_from_slice(&end.to_le_bytes());
+        out[start + 4..start + 8].copy_from_slice(&(node.props.len() as u32).to_le_bytes());
+        out[start + 8..start + 12].copy_from_slice(&props_len.to_le_bytes());
+    }
+    fn leaf<'a>(name: &'a str, props: Vec<Prop<'a>>) -> Node<'a> {
+        Node {
+            name,
+            props,
+            children: Vec::new(),
+        }
+    }
+
+    let vertices: Vec<f64> = (0..bytes.div_ceil(8 * 3) * 3)
+        .map(|index| match index {
+            3 | 7 => 1.0,
+            0..9 => 0.0,
+            _ => (index % 1000) as f64 * 0.001,
+        })
+        .collect();
+    let top = [
+        Node {
+            name: "FBXHeaderExtension",
+            props: Vec::new(),
+            children: vec![
+                leaf("FBXHeaderVersion", vec![Prop::I32(1003)]),
+                leaf("FBXVersion", vec![Prop::I32(7400)]),
+            ],
+        },
+        Node {
+            name: "Objects",
+            props: Vec::new(),
+            children: vec![
+                Node {
+                    name: "Geometry",
+                    props: vec![
+                        Prop::I64(1000),
+                        Prop::Str(b"Tri\x00\x01Geometry"),
+                        Prop::Str(b"Mesh"),
+                    ],
+                    children: vec![
+                        leaf("Vertices", vec![Prop::DeflatedF64(&vertices)]),
+                        leaf("PolygonVertexIndex", vec![Prop::I32Array(&[0, 1, -3])]),
+                    ],
+                },
+                Node {
+                    name: "Model",
+                    props: vec![
+                        Prop::I64(2000),
+                        Prop::Str(b"Tri\x00\x01Model"),
+                        Prop::Str(b"Mesh"),
+                    ],
+                    children: vec![leaf("Version", vec![Prop::I32(232)])],
+                },
+            ],
+        },
+        Node {
+            name: "Connections",
+            props: Vec::new(),
+            children: vec![
+                leaf(
+                    "C",
+                    vec![Prop::Str(b"OO"), Prop::I64(1000), Prop::I64(2000)],
+                ),
+                leaf("C", vec![Prop::Str(b"OO"), Prop::I64(2000), Prop::I64(0)]),
+            ],
+        },
+    ];
+    let mut out = b"Kaydara FBX Binary  \x00\x1a\x00".to_vec();
+    out.extend_from_slice(&7400u32.to_le_bytes());
+    for node in &top {
+        write_node(node, &mut out);
+    }
+    out.extend_from_slice(&[0; 13]);
+    out
 }
 
 /// A hand-written triangle with no normals, a fourth control point no face

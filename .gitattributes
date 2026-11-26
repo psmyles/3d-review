@@ -1,7 +1,6 @@
 # A patch must round-trip byte-exact: the files it applies to are LF, so letting
 # the working copy get CRLF line endings makes `git apply` reject it.
 *.patch -text
-
 # The generated shader sources are hashed into bytecode.manifest, so their bytes
 # must be the same on every host: `core.autocrlf` would otherwise hand a Windows
 # clone CRLF and the Mac LF, giving one committed source two digests and putting
@@ -18,3 +17,12 @@ crates/render/src/shaders/generated/review.glsl.sha256 text eol=lf
 crates/render/src/shaders/review.glsl text eol=lf
 crates/render/src/shaders/generated/*.dxbc binary
 crates/render/src/shaders/generated/*.metallib binary
+*.fbx filter=lfs diff=lfs merge=lfs -text
+*.psd filter=lfs diff=lfs merge=lfs -text
+*.hdr filter=lfs diff=lfs merge=lfs -text
+*.exr filter=lfs diff=lfs merge=lfs -text
+assets/test_textures/** filter=lfs diff=lfs merge=lfs -text
+assets/test_models/*.jpg filter=lfs diff=lfs merge=lfs -text
+*.tga filter=lfs diff=lfs merge=lfs -text
+assets/textures/** filter=lfs diff=lfs merge=lfs -text
+assets/test_models/*.png filter=lfs diff=lfs merge=lfs -text

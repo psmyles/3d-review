@@ -1,16 +1,24 @@
-//! Wall-clock for a rebuild, on the assets it is pointed at.
+//! Wall-clock for a rebuild, on shapes the size of real assets.
 //!
 //! Ignored by default: it is a measurement, not a check, and a timing assertion
 //! on a shared machine is a flake waiting to happen. Run it with
 //! `cargo test --release -p review-optimize --test remesh_timing -- --ignored
 //! --nocapture` when the question is "how long does this take now".
+//!
+//! The assets this used to time (a palm plant, scanned statues of a million
+//! triangles and more, a crystal cluster, a tree branch) left the repository and
+//! are not coming back, and the fixtures that remain are a thousand triangles at
+//! most - nothing to time. So it runs on the synthetic shapes in `shapes/`, at
+//! densities that put them in the same range, and on the two real assets that
+//! have since come in: a 614k-triangle scan. (The character fixture is skinned,
+//! which Remesh leaves alone by design, so there is nothing of it to time.)
 #![cfg(has_meshopt)]
 
 mod common;
+mod shapes;
 
 use std::time::Instant;
 
-use common::fixture;
 use review_optimize::{
     OpKind, OptStack, ProcessInput, RemeshDensity, RemeshParams, RemeshTopology, process,
 };
@@ -24,19 +32,23 @@ fn how_long_a_rebuild_takes() {
     let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     println!("cores: {cores}");
 
-    // The last two are many objects of very different sizes, which is where the
-    // threads an object is given have to follow the ones still running.
-    for name in [
-        "stylized_palm_plant_04.fbx",
-        "cpg_pedestal_pebbles.fbx",
-        "lucy.fbx",
-        "xyzrgb_dragon.fbx",
-        "crystal_cluster_02.fbx",
-        "stylized_tree_branch_01.fbx",
-    ] {
-        let Some(model) = fixture(name) else {
-            continue;
-        };
+    // The leaves are six objects of one size; the pedestal and stones are five
+    // of very different sizes (the pedestal is as big as the four stones
+    // together), which is where the threads an object is given have to follow
+    // the ones still running.
+    let mut subjects = vec![
+        ("leaves, 0.4M tris", shapes::leaves(128, 256)),
+        ("leaves, 1.6M tris", shapes::leaves(256, 512)),
+        (
+            "pedestal and stones, 0.5M tris",
+            shapes::pedestal_and_stones(128, 256),
+        ),
+    ];
+    // A real scan: one dense object, as photogrammetry delivers it.
+    if let Some(model) = common::fixture("Johannes_Benk_C.fbx") {
+        subjects.push(("scan (Johannes_Benk_C), 0.6M tris", model));
+    }
+    for (name, model) in subjects {
         let triangles = model.indices.len() / 3;
 
         // Both topologies, because quads are not free: they are the only thing

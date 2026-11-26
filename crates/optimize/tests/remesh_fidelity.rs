@@ -22,10 +22,20 @@
 //!
 //! Reported at P99 rather than max. A max is one stubborn sliver on one object
 //! and moves for reasons that have nothing to do with a change under test.
+//!
+//! **Subjects.** This was written against proprietary assets - a palm plant of
+//! thin shells, a pedestal with pebbles, a rock pillar, a creased column - that
+//! left the repository and are not coming back. The two kinds of surface the
+//! checks are about are built synthetically instead (`shapes/`): [`LEAVES`],
+//! thin closed shells whose silhouette is a bevelled fold, and [`STONES`],
+//! closed chunky objects that sit apart. Suzanne is the real authored mesh that
+//! remains; the wall fixture is 95 pieces each too small to rebuild, so a
+//! Remesh hands it back untouched and it measures nothing here.
 
 #![cfg(has_meshopt)]
 
 mod common;
+mod shapes;
 
 use common::fixture;
 use review_model::{ModelData, SceneBvh};
@@ -36,6 +46,22 @@ use review_optimize::{
 
 /// A stand-in for the renderer's `SceneVertex` size.
 const VERTEX_SIZE: usize = 80;
+
+/// The synthetic thin shells: [`shapes::leaves`].
+const LEAVES: &str = "synthetic leaves";
+/// The synthetic closed objects: [`shapes::pedestal_and_stones`].
+const STONES: &str = "synthetic pedestal and stones";
+const MONKEY: &str = "monkey.fbx";
+
+/// A subject by name: one of the synthetic shapes, or a fixture (`None` when
+/// this checkout cannot load it, per the usual skip policy).
+fn subject(name: &str) -> Option<ModelData> {
+    match name {
+        LEAVES => Some(shapes::leaves(24, 64)),
+        STONES => Some(shapes::pedestal_and_stones(24, 48)),
+        _ => fixture(name),
+    }
+}
 
 /// The spread of one set of distances, in units of `h`.
 #[derive(Debug, Clone, Copy, Default)]
@@ -278,7 +304,7 @@ struct Measured {
 
 /// Run one rebuild and print both directions for every object it touched.
 fn report(name: &str, ratio: f32, smoothing: u32) {
-    let Some(model) = fixture(name) else {
+    let Some(model) = subject(name) else {
         return;
     };
     let mut stack = OptStack::default();
@@ -338,7 +364,7 @@ fn report(name: &str, ratio: f32, smoothing: u32) {
 
 /// Run one rebuild and hand back the worst figures over every object.
 fn worst(name: &str, ratio: f32, smoothing: u32) -> Option<(f32, f32)> {
-    let model = fixture(name)?;
+    let model = subject(name)?;
     let mut stack = OptStack::default();
     stack.push_op(OpKind::Remesh(RemeshParams {
         topology: RemeshTopology::Triangles,
@@ -379,10 +405,12 @@ fn worst(name: &str, ratio: f32, smoothing: u32) -> Option<(f32, f32)> {
 /// A rebuilt object is still the shape it was.
 ///
 /// The thresholds are **measured, then given a margin** — not chosen and then
-/// argued for. At the time they were set the plant's worst object kept 96.9 %
-/// of its surface area with no tidying and 96.6 % with two rounds, and its rims
-/// sat 0.15 h from the rebuilt surface; the stones, which are closed and chunky
-/// and have no rims at all, kept 99.9 %.
+/// argued for. On the proprietary palm plant this was first pinned on, the worst
+/// object kept 96.9 % of its surface area with no tidying and 96.6 % with two
+/// rounds, and its rims sat 0.15 h from the rebuilt surface. On the synthetic
+/// leaves that replaced it the worst leaf keeps 99.86 % / 99.81 % with rims at
+/// 0.05 h, and the synthetic stones, closed and chunky with no rims at all,
+/// keep 99.75 % - so the bounds are tighter than the plant's were.
 ///
 /// Both figures matter and they fail differently. Area catches an object that
 /// came back *smaller* — a strip of bark narrowed until a gap opens against the
@@ -395,28 +423,24 @@ fn worst(name: &str, ratio: f32, smoothing: u32) -> Option<(f32, f32)> {
 fn a_rebuilt_object_keeps_its_shape() {
     // Thin shells with rims — the hard case, at the density it was reported at.
     for smoothing in [0, 2] {
-        let Some((area, rim)) = worst("stylized_palm_plant_04.fbx", 0.25, smoothing) else {
-            return;
-        };
+        let (area, rim) = worst(LEAVES, 0.25, smoothing).expect("the leaves rebuild");
         assert!(
-            area > 0.92,
-            "at {smoothing} rounds of tidying an object of the plant kept only {:.1}% of its \
-             surface area",
+            area > 0.98,
+            "at {smoothing} rounds of tidying a leaf kept only {:.1}% of its surface area",
             area * 100.0
         );
         assert!(
-            rim < 0.35,
-            "at {smoothing} rounds of tidying the plant's rims moved {rim:.2} h"
+            rim < 0.2,
+            "at {smoothing} rounds of tidying the leaves' rims moved {rim:.2} h"
         );
     }
 
     // Closed and chunky: nothing here should cost anything at all, and a change
-    // that buys the plant its shape back by blunting everything else fails here.
-    let Some((area, _)) = worst("cpg_pedestal_pebbles.fbx", 0.25, 2) else {
-        return;
-    };
+    // that buys the leaves their shape back by blunting everything else fails
+    // here.
+    let (area, _) = worst(STONES, 0.25, 2).expect("the stones rebuild");
     assert!(
-        area > 0.97,
+        area > 0.99,
         "a stone kept only {:.1}% of its surface area",
         area * 100.0
     );
@@ -572,27 +596,34 @@ fn worst_self_crossing(model: &ModelData) -> f32 {
 /// neighbours is closed, wound one way, within budget, and *adds* area, so an
 /// area ratio reads it as better than perfect. On screen it is a gash.
 ///
-/// The fixture is chosen for having none of its own — the stones are closed and
-/// sit apart, and the check below fails loudly if that ever stops being true,
-/// because every figure here is meaningless against a source that already
-/// passes through itself. Most real game assets do: measured at the time this
-/// was written, a crystal cluster 11.4 % of its triangles, an ammo crate 15.7 %,
-/// a tree branch 9.2 %. A rebuild carries that through rather than causing it,
-/// which is correct and is why this cannot be asserted across the board.
+/// The subjects are chosen for having none of their own — the synthetic stones
+/// and leaves are closed and sit apart, and the check below fails loudly if that
+/// ever stops being true, because every figure here is meaningless against a
+/// source that already passes through itself. Most real game assets do: measured
+/// at the time this was written, a crystal cluster 11.4 % of its triangles, an
+/// ammo crate 15.7 %, a tree branch 9.2 % - and Suzanne 8.7 %, where her eyes
+/// sit in her head, which is why she is not a subject here. A rebuild carries
+/// that through rather than causing it, which is correct and is why this cannot
+/// be asserted across the board.
 ///
 /// The thresholds are measured then given a margin. What prompted this was the
 /// final placement of each region's vertex going unchecked, which put 3.3 % of
-/// the stones' triangles through each other at ratio 0.25 and 5.4 % at 0.07 -
-/// visible as torn silhouettes on a flat slab. It is 0.0-0.1 % now.
+/// a real pedestal-and-pebbles asset's triangles through each other at ratio
+/// 0.25 and 5.4 % at 0.07 - visible as torn silhouettes on a flat slab. It was
+/// 0.0-0.1 % there after the fix, and is 0.0 % on both synthetic subjects.
 #[test]
 fn a_rebuild_does_not_fold_through_itself() {
-    let Some(model) = fixture("cpg_pedestal_pebbles.fbx") else {
-        return;
-    };
-    let source = worst_self_crossing(&model);
+    for name in [STONES, LEAVES] {
+        let model = subject(name).expect("a synthetic subject");
+        a_subject_does_not_fold_through_itself(name, &model);
+    }
+}
+
+fn a_subject_does_not_fold_through_itself(name: &str, model: &ModelData) {
+    let source = worst_self_crossing(model);
     assert!(
         source < 0.001,
-        "the fixture itself now self-intersects ({:.1}% of one object's triangles), so it can no \
+        "{name} itself now self-intersects ({:.1}% of one object's triangles), so it can no \
          longer say anything about what the rebuild adds",
         source * 100.0
     );
@@ -611,7 +642,7 @@ fn a_rebuild_does_not_fold_through_itself() {
                 ..RemeshParams::default()
             }));
             let result = process(ProcessInput {
-                model: &model,
+                model,
                 stack: &stack,
                 render_vertex_size: VERTEX_SIZE,
                 hidden_nodes: &[],
@@ -623,7 +654,7 @@ fn a_rebuild_does_not_fold_through_itself() {
             let crossing = worst_self_crossing(&level.model);
             assert!(
                 crossing < 0.01,
-                "{topology:?} at ratio {ratio}: {:.1}% of an object's triangles pass through \
+                "{name}, {topology:?} at ratio {ratio}: {:.1}% of an object's triangles pass through \
                  another of the same object",
                 crossing * 100.0
             );
@@ -719,27 +750,25 @@ fn matched_pair(ratio: f32, smoothing: u32) -> (OptStack, OptStack) {
 /// triangles must be markedly better than a simplify's. Measured when pinned,
 /// at the tenth percentile of a shape score that is 1 for equilateral:
 ///
-/// | fixture | reduce | remesh |
+/// | subject | reduce | remesh |
 /// |---|---|---|
-/// | rock pillar | 0.187 | 0.274 |
-/// | palm plant | 0.115 | 0.509 |
-/// | pedestal stones | 0.309 | 0.746 |
-/// | column | 0.103 | 0.204 |
+/// | rock pillar (proprietary, gone) | 0.187 | 0.274 |
+/// | palm plant (proprietary, gone) | 0.115 | 0.509 |
+/// | pedestal stones (proprietary, gone) | 0.309 | 0.746 |
+/// | column (proprietary, gone) | 0.103 | 0.204 |
+/// | synthetic leaves | 0.112 | 0.463 |
+/// | synthetic pedestal and stones | 0.336 | 0.738 |
+///
+/// (Suzanne cannot be a subject: at a 0.01 error limit Reduce removes two of
+/// her 968 triangles, so there is no matched count to compare at.)
 #[test]
 fn a_rebuild_beats_a_simplify_on_the_shape_of_its_triangles() {
-    for (name, ratio) in [
-        ("stylized_palm_plant_04.fbx", 0.5f32),
-        ("cpg_pedestal_pebbles.fbx", 0.5),
-    ] {
-        let Some(model) = fixture(name) else {
-            continue;
-        };
+    for (name, ratio) in [(LEAVES, 0.5f32), (STONES, 0.5)] {
+        let model = subject(name).expect("a synthetic subject");
         // At the default amount of tidying, which is what the operation ships
         // with and where the difference is meant to show.
         let (reduce, remesh) = matched_pair(ratio, 2);
-        let Some(simplified) = measure_stack(&model, &reduce) else {
-            continue;
-        };
+        let simplified = measure_stack(&model, &reduce).expect("the simplify runs");
         let rebuilt = measure_stack(&model, &remesh).expect("the rebuild runs");
 
         // The counts have to be close or the comparison means nothing.
@@ -784,13 +813,8 @@ fn a_rebuild_beats_a_simplify_on_the_shape_of_its_triangles() {
 #[test]
 #[ignore = "a measurement, not a check"]
 fn how_a_rebuild_compares_with_a_simplify() {
-    for (name, ratio) in [
-        ("rock_pillar_03.fbx", 0.6f32),
-        ("stylized_palm_plant_04.fbx", 0.5),
-        ("cpg_pedestal_pebbles.fbx", 0.5),
-        ("SM_column04.fbx", 0.5),
-    ] {
-        let Some(model) = fixture(name) else {
+    for (name, ratio) in [(LEAVES, 0.5f32), (STONES, 0.5), (MONKEY, 0.5)] {
+        let Some(model) = subject(name) else {
             continue;
         };
 
@@ -989,24 +1013,23 @@ fn normal_drift_from_source(source: &ModelData, level: &ModelData, bvh: &SceneBv
 /// smooth shading - so the line is a right angle, and only past it is a fault.
 #[test]
 fn no_rebuilt_vertex_is_lit_from_behind() {
-    for (name, ratio) in [
-        ("stylized_palm_plant_04.fbx", 0.5f32),
-        ("rock_pillar_03.fbx", 0.6),
-    ] {
-        let Some(model) = fixture(name) else {
-            continue;
+    // The thin shells are the case the fault lives in; the monkey is a real
+    // authored mesh with its eyes set into its head, so it has sheets close
+    // together of another kind.
+    for (name, ratio) in [(LEAVES, 0.5f32), (STONES, 0.6), (MONKEY, 0.6)] {
+        let Some(model) = subject(name) else {
+            return;
         };
         for smoothing in [0, 2] {
             let (_, remesh) = matched_pair(ratio, smoothing);
-            let Ok(result) = process(ProcessInput {
+            let result = process(ProcessInput {
                 model: &model,
                 stack: &remesh,
                 render_vertex_size: VERTEX_SIZE,
                 hidden_nodes: &[],
                 extras: None,
-            }) else {
-                continue;
-            };
+            })
+            .expect("the stack runs");
             let level = result.lod(0).expect("the stack produced a level");
             let (backwards, _, _) = shading_error(&level.model);
             assert_eq!(
@@ -1062,11 +1085,14 @@ fn crease_length(model: &ModelData, node: u32, degrees: f32) -> (f32, usize) {
 }
 
 /// Does a rebuild put its edges on the source's creases, or across them?
+///
+/// On Suzanne, the one remaining subject with authored creases (the brow, the
+/// ears, the eye sockets); the synthetic shapes are smooth by construction.
 #[test]
 #[ignore = "a measurement, not a check"]
 fn does_a_rebuild_land_on_the_creases() {
-    for (name, ratio) in [("rock_pillar_03.fbx", 0.6f32), ("SM_column04.fbx", 0.5)] {
-        let Some(model) = fixture(name) else {
+    for (name, ratio) in [(MONKEY, 0.5f32)] {
+        let Some(model) = subject(name) else {
             continue;
         };
         println!(
@@ -1119,12 +1145,8 @@ fn does_a_rebuild_land_on_the_creases() {
 #[test]
 #[ignore = "a measurement, not a check"]
 fn how_well_a_rebuild_shades() {
-    for (name, ratio) in [
-        ("rock_pillar_03.fbx", 0.6f32),
-        ("stylized_palm_plant_04.fbx", 0.5),
-        ("SM_column04.fbx", 0.5),
-    ] {
-        let Some(model) = fixture(name) else {
+    for (name, ratio) in [(LEAVES, 0.5f32), (STONES, 0.6), (MONKEY, 0.5)] {
+        let Some(model) = subject(name) else {
             continue;
         };
         println!("\n=== {name} @ {ratio} ===");
@@ -1186,16 +1208,14 @@ fn how_well_a_rebuild_shades() {
 #[test]
 #[ignore = "a measurement, not a check"]
 fn how_far_a_rebuild_moves_the_surface() {
-    for (ratio, smoothing) in [(0.25, 0), (0.3, 0), (0.25, 2)] {
-        report("stylized_palm_plant_04.fbx", ratio, smoothing);
+    for (ratio, smoothing) in [(0.25, 0), (0.3, 0), (0.25, 1), (0.25, 2), (0.25, 4)] {
+        report(LEAVES, ratio, smoothing);
     }
     for smoothing in [0, 1, 2, 4] {
-        report("SM_column04.fbx", 0.25, smoothing);
+        report(MONKEY, 0.25, smoothing);
     }
-    report("cpg_pedestal_pebbles.fbx", 0.25, 0);
-    report("cpg_pedestal_pebbles.fbx", 0.25, 2);
-    report("stylized_palm_plant_04.fbx", 0.25, 1);
-    report("stylized_palm_plant_04.fbx", 0.25, 4);
+    report(STONES, 0.25, 0);
+    report(STONES, 0.25, 2);
 }
 
 /// The share of one object's interior edges, welded by position, whose two
@@ -1257,7 +1277,7 @@ struct Setting {
 /// What every setting a user can reach does to the shape, the face count, the
 /// folds and the creases, over the fixtures each one is about.
 ///
-/// The figure to watch moves with the setting: the plant's area and rims for
+/// The figure to watch moves with the setting: the leaves' area and rims for
 /// the organic defaults, the folds for the relaxation, the face count for
 /// anything that changes what may merge, the crease length for **Keep sharp
 /// edges**, and the outline with **Align to boundaries** off.
@@ -1265,22 +1285,17 @@ struct Setting {
 #[ignore = "a measurement, not a check"]
 fn how_each_setting_holds_up() {
     let settings = [
-        ("stylized_palm_plant_04.fbx", 0.25, 0, false, true),
-        ("stylized_palm_plant_04.fbx", 0.25, 2, false, true),
-        ("stylized_palm_plant_04.fbx", 0.25, 4, false, true),
-        ("stylized_palm_plant_04.fbx", 0.25, 2, false, false),
-        ("stylized_palm_plant_04.fbx", 0.25, 2, true, true),
-        ("cpg_pedestal_pebbles.fbx", 0.25, 2, false, true),
-        ("cpg_pedestal_pebbles.fbx", 0.25, 2, true, true),
-        ("SM_column04.fbx", 0.5, 2, false, true),
-        ("SM_column04.fbx", 0.5, 2, true, true),
-        ("SM_column04.fbx", 0.25, 2, true, true),
-        ("rock_pillar_03.fbx", 0.6, 2, true, true),
-        ("crystal_cluster_02.fbx", 0.25, 2, true, true),
-        ("crystal_cluster_02.fbx", 0.5, 2, true, true),
-        ("SM_Blade.fbx", 0.25, 2, true, true),
-        ("monkey.fbx", 0.5, 2, false, false),
-        ("driftwood_05.fbx", 0.25, 2, false, false),
+        (LEAVES, 0.25, 0, false, true),
+        (LEAVES, 0.25, 2, false, true),
+        (LEAVES, 0.25, 4, false, true),
+        (LEAVES, 0.25, 2, false, false),
+        (LEAVES, 0.25, 2, true, true),
+        (STONES, 0.25, 2, false, true),
+        (STONES, 0.25, 2, true, true),
+        (MONKEY, 0.5, 2, false, true),
+        (MONKEY, 0.5, 2, true, true),
+        (MONKEY, 0.25, 2, true, true),
+        (MONKEY, 0.5, 2, false, false),
     ]
     .map(|(name, ratio, smoothing, sharp, borders)| Setting {
         name,
@@ -1307,7 +1322,7 @@ fn how_each_setting_holds_up() {
         "secs"
     );
     for setting in &settings {
-        let Some(model) = fixture(setting.name) else {
+        let Some(model) = subject(setting.name) else {
             continue;
         };
         let mut stack = OptStack::default();
@@ -1388,10 +1403,14 @@ fn how_each_setting_holds_up() {
 /// and shows up near -1; one bevelled over two or three rings turns 60 degrees at
 /// a time and never reads as a fold, in which case holding its silhouette is a
 /// job for the projection and the size field instead.
+///
+/// The palm this was written for is gone; the synthetic leaves are bevelled the
+/// same way by construction, so what is worth running it on now is whatever new
+/// asset is in question - point `subject` at it.
 #[test]
 #[ignore = "a measurement, not a check"]
 fn how_sharply_the_source_folds() {
-    let Some(model) = fixture("stylized_palm_plant_04.fbx") else {
+    let Some(model) = subject(LEAVES) else {
         return;
     };
     // Welded by position, because import splits every face corner and an
