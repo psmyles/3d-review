@@ -83,7 +83,7 @@ One `impl App` block per concern, one file each:
 | `texture_manager.rs` | Scene texture pool, off-thread decode, disk auto-reload |
 | `imported_textures.rs` | The model's own textures, once its source capture lands: planned and decoded on a worker (`render`'s `imported_textures`), pooled and bound in one message, one card listing the ones not found. Binding resets the undo history, since they are the file's, not an edit — an entry from the second before would otherwise undo the textures away |
 | `animation.rs` | The animation clock and pose evaluation, and the selected clip's motion paths while the transport's animation-curve toggle is on (sampled after the egui pass, so a click draws in its own frame; freed when the toggle goes off) |
-| `window_state.rs` | Window position/size restore (saved on exit, never in a gate run), monitor validation, refresh-rate query |
+| `window_state.rs` | Window position/size restore (saved on exit, never in a gate run), the startup window's first show, monitor validation, refresh-rate query |
 | `settings.rs` | The per-user `settings.cfg`: the locale, **Remember settings** and the option values it keeps, the recent-files list. A read error other than "not found" skips the next save rather than overwriting lines the viewer does not own |
 | `recent.rs` | File > Open Recent |
 | `update.rs` | Help > Check for Updates, over the OS `curl` on a worker |
@@ -213,7 +213,8 @@ vendored ufbx C plus the bridge, and `build.rs` (`cc`, `cfg(has_ufbx)`).
 
 Files: `src/lib.rs` (the public API — errors, the progress and stage types,
 the four `load_model*` entry points, `measure_clip_bounds`), `src/startup.rs`
-(the Windows `STARTUPINFO` launch hint, which is FFI but not FBX), and the
+(the Windows `STARTUPINFO` launch hint and the one-step show of the startup window
+it asks for, which are FFI but not FBX), and the
 `#[cfg(has_ufbx)]` `src/ffi/`, layered so the `unsafe` is a leaf rather than a
 theme: `ffi/raw_scene.rs` and `ffi/raw_extras.rs` are the `#[repr(C)]` mirrors
 (data only), `ffi/bridge.rs` the one call into C plus the `Drop` handles that
@@ -1242,7 +1243,7 @@ list of unsafe modules:
 
 - `import`: `ffi/bridge.rs` (the one call into C and the handles that free what
   it returns), `ffi/raw.rs` (pointer-to-slice leaves), `startup.rs` (the Windows
-  launch hint), `tracy_alloc.rs` (the `GlobalAlloc` wrapper). The marshallers are
+  launch hint and the startup window's show), `tracy_alloc.rs` (the `GlobalAlloc` wrapper). The marshallers are
   `deny`, and read only through `raw.rs`'s safe accessors.
 - `optimize`: `ffi.rs` + `meshopt/`, `export_ffi.rs` + `export/write.rs`, and the
   test-only `probe.rs`.
@@ -1532,5 +1533,5 @@ The structural rules the decisions add up to:
 | --- | --- |
 | **`rhi` owns the backend** | Nothing outside `render/src/rhi/` names an `sg::` type, a backend pixel format or a window handle. Every resource goes through a wrapper, every format is `Format`, every failure is a `GpuError`, and invalid input (a zero dimension, a refused drawable) is an error there rather than a sokol validation abort. |
 | **One swapchain pass** | Exactly one swapchain pass per frame — Metal presents inside `sg_end_pass`, so a second one would double-present. Everything a `Renderer::render_*` draws onscreen is therefore recorded as a deferred `SwapchainJob` and replayed when that pass opens; offscreen passes are issued directly. |
-| **Platform leaves** | The complete inventory of per-OS code: `rhi/backend/{d3d11,metal}.rs` (device, swapchain, GPU timer, bake readback), `crates/shell-macos` (open-file events, menu bar, CLI-on-PATH link), `crates/shell-windows` (Explorer's thumbnail provider and preview handler), `crates/shell-quicklook` (the Quick Look extensions' dylib and their Swift sources), and the packaging scripts. Elsewhere an OS is named only for a convention, never a capability: the primary modifier (`app/shortcuts.rs`, `ui/lib.rs`), where per-user files live and how paths compare (`app/logging.rs`, `window_state.rs`, `paths.rs`), and the file dialog's owner window on Windows (`app/dialog.rs`). |
+| **Platform leaves** | The complete inventory of per-OS code: `rhi/backend/{d3d11,metal}.rs` (device, swapchain, GPU timer, bake readback), `crates/shell-macos` (open-file events, menu bar, CLI-on-PATH link), `crates/shell-windows` (Explorer's thumbnail provider and preview handler), `crates/shell-quicklook` (the Quick Look extensions' dylib and their Swift sources), the startup window's show state (`import/src/startup.rs` reads the Windows launch hint and shows the window in one step; `app/window_state.rs`'s `FirstShow` / `reveal_startup_window` create it hidden on Windows and hand it over), and the packaging scripts. Elsewhere an OS is named only for a convention, never a capability: the primary modifier (`app/shortcuts.rs`, `ui/lib.rs`), where per-user files live and how paths compare (`app/logging.rs`, `window_state.rs`, `paths.rs`), and the file dialog's owner window on Windows (`app/dialog.rs`). |
 | **Toolchain** | `rust-toolchain.toml` tracks stable rather than pinning a version, and shader edits are the only thing that needs a platform shader compiler (D5): a checkout that does not touch `review.glsl` builds from the committed bytecode. |

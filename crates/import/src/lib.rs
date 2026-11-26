@@ -31,7 +31,9 @@ mod repair;
 mod startup;
 mod tracy_alloc;
 
-pub use startup::startup_show_maximized;
+pub use startup::{StartupShow, startup_show};
+#[cfg(windows)]
+pub use startup::{show_window_maximized, show_window_minimized};
 pub use tracy_alloc::TracyAllocator;
 
 #[derive(Debug, Error)]

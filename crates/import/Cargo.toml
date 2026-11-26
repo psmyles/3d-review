@@ -20,7 +20,8 @@ tracy-client.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
-    # `STARTUPINFOW` (used by `startup_show_maximized`) lives behind this feature;
+    # `STARTUPINFOW` (used by `startup_show`) and the `ShowWindow` / placement calls
+    # behind `show_window_*` live behind these features;
     # declare it explicitly so the crate builds/tests standalone, not only when
     # another workspace member happens to enable it via feature unification.
     "Win32_Foundation",

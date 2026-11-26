@@ -1280,6 +1280,29 @@ than `Response::scroll_to_me`.
 
 ---
 
+### On Windows the startup window is created hidden and shown once
+
+winit carries out a window's first state as a run of `ShowWindow` calls. A
+visible window is shown *before* its size and position are applied, at the OS's
+default rect, and `with_maximized` then maximizes it from there - so every launch
+flashed the window in the wrong place, and a maximized one grew to full screen in
+front of the user. Asking for the state on a *hidden* window is no cure:
+`SW_MAXIMIZE` and `SW_MINIMIZE` both show it. So `FirstShow::CREATE_VISIBLE`
+(`app/window_state.rs`) is false on Windows: the window is created hidden and
+normal, sized and placed while hidden, and `reveal_startup_window` shows it in one
+call - `ShowWindow(SW_SHOWMAXIMIZED)`, or for *Run: Minimized* a
+`SetWindowPlacement` with `SW_SHOWMINNOACTIVE`, plus `WPF_RESTORETOMAXIMIZED`,
+which only a placement can carry. winit is then told what happened, and in order:
+`set_minimized(true)` *before* `set_visible(true)`, or the style refresh that comes
+with the show strips `WS_MINIMIZE` and the window can never be restored.
+
+Two neighbours of the same trap. The process's first plain `SW_SHOW` is swapped
+for the launcher's `STARTUPINFO.wShowWindow` (the `SW_SHOWNORMAL` every shell
+launch carries); an explicit `SW_SHOWMAXIMIZED` is not. And a minimized window is
+neither maximized nor not - winit's flag reads false - so the saved placement
+keeps the maximized state last sampled outside a minimize, or a maximized window
+closed from the taskbar reopens normal.
+
 ## Loading, undo and the Opt run
 
 ### The undo baseline is taken last

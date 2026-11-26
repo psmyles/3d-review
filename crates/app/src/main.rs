@@ -53,6 +53,7 @@ use std::time::Instant;
 
 use anyhow::Context;
 use glam::Vec2;
+use review_import::StartupShow;
 use review_model::{ModelData, PosedScene, SceneBvh};
 use review_render::{CameraProjection, EguiRenderer, Gpu, GpuBringUp, Renderer, RendererConfig};
 use review_ui::{MsaaSamples, Notifications, UiState, ViewportTool, init_style};
@@ -72,8 +73,8 @@ use texture_manager::TextureSubsystem;
 use undo::UndoStack;
 use window_state::PlacementTracker;
 use window_state::{
-    default_windowed_placement, monitor_refresh_interval, placement_fills_monitor,
-    placement_is_visible,
+    FirstShow, default_windowed_placement, monitor_refresh_interval, placement_fills_monitor,
+    placement_is_visible, reveal_startup_window,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -623,17 +624,17 @@ impl App {
         Ok(())
     }
 
-    /// Startup phase 1: create the application window, honoring the OS maximize
-    /// hint and restoring the persisted placement (dropped when it lands on a
-    /// disconnected monitor, so the window can't open off-screen).
+    /// Startup phase 1: create the application window, honoring the OS show hint
+    /// and restoring the persisted placement (dropped when it lands on a
+    /// disconnected monitor, so the window can't open off-screen), then show it.
     fn create_startup_window(
         &mut self,
         event_loop: &ActiveEventLoop,
     ) -> anyhow::Result<Arc<Window>> {
-        // Honor the OS launch hint (e.g. a shortcut set to "Run: Maximized").
-        // winit never consults `STARTUPINFO.wShowWindow`, so we query it and set
-        // the initial state ourselves.
-        self.placement.start_maximized = review_import::startup_show_maximized();
+        // Honor the OS launch hint (e.g. a shortcut set to "Run: Maximized" or
+        // "Run: Minimized"). winit never consults `STARTUPINFO.wShowWindow`, so we
+        // query it and set the initial state ourselves.
+        let launch = review_import::startup_show();
 
         // A gate run opens at a fixed size and ignores the saved placement: the two
         // builds have to render the same number of pixels for their frame times to
@@ -642,8 +643,15 @@ impl App {
             .then(window_state::load)
             .flatten()
             .filter(|placement| placement_is_visible(event_loop, placement));
-        let maximized =
-            self.placement.start_maximized || saved.is_some_and(|placement| placement.maximized);
+        let first = FirstShow {
+            maximized: self.gate.is_none()
+                && (launch == Some(StartupShow::Maximized)
+                    || saved.is_some_and(|placement| placement.maximized)),
+            // Says how to *show* the window, not what it is once it comes back:
+            // restoring it from the taskbar gives back the saved maximized state.
+            minimized: self.gate.is_none() && launch == Some(StartupShow::Minimized),
+        };
+        self.placement.maximized = first.maximized;
 
         // The position/size in a maximized placement are meant to be the *restored*
         // (pre-maximize) bounds, used as the un-maximize target. Pre-fix builds could
@@ -659,6 +667,8 @@ impl App {
             }
         });
 
+        // Visible and maximized from creation only where that shows the window once,
+        // in its final state; otherwise `reveal_startup_window` below applies it.
         let mut attributes = WindowAttributes::default()
             .with_title(APP_NAME)
             .with_window_icon(load_window_icon())
@@ -666,7 +676,8 @@ impl App {
                 MIN_WINDOW_WIDTH,
                 MIN_WINDOW_HEIGHT,
             ))
-            .with_maximized(maximized && self.gate.is_none());
+            .with_visible(FirstShow::CREATE_VISIBLE)
+            .with_maximized(first.create_maximized());
         if self.gate.is_some() {
             attributes = attributes.with_inner_size(winit::dpi::PhysicalSize::new(
                 gate::WINDOW_SIZE.0,
@@ -688,11 +699,25 @@ impl App {
             ));
         }
 
-        Ok(Arc::new(
+        let window = Arc::new(
             event_loop
                 .create_window(attributes)
                 .context("failed to create the application window")?,
-        ))
+        );
+        // A window created normal is the better source for the restored bounds: it
+        // is what un-maximize returns to, after any clamping to the minimum size, and
+        // it gives a launch with no saved placement bounds to save at all.
+        if !first.create_maximized()
+            && let Ok(position) = window.outer_position()
+        {
+            let size = window.inner_size();
+            if size.width > 0 && size.height > 0 {
+                self.placement.last_windowed_bounds =
+                    Some(((position.x, position.y), (size.width, size.height)));
+            }
+        }
+        reveal_startup_window(&window, first);
+        Ok(window)
     }
 
     /// Startup phase 3: join the GPU bring-up, put a swapchain on the window, and

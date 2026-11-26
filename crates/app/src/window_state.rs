@@ -146,15 +146,22 @@ pub fn save(placement: WindowPlacement) {
 }
 
 impl App {
-    /// Snapshot the window's current outer position + inner size while it isn't
-    /// maximized, so the persisted placement describes a real window. Skipped
-    /// while maximized (the bounds then cover the whole monitor) and when winit
-    /// can't report the outer position.
+    /// Snapshot the window's maximized state, and its current outer position +
+    /// inner size while it isn't maximized, so the persisted placement describes a
+    /// real window. The bounds are skipped while maximized (they then cover the
+    /// whole monitor) and when winit can't report the outer position. Nothing is
+    /// sampled while minimized: that is neither state, and the window keeps the
+    /// one restoring it gives back — so a maximized window closed from the taskbar
+    /// still reopens maximized.
     pub(crate) fn record_windowed_bounds(&mut self) {
         let Some(window) = self.window.as_ref() else {
             return;
         };
-        if window.is_maximized() {
+        if window.is_minimized() == Some(true) {
+            return;
+        }
+        self.placement.maximized = window.is_maximized();
+        if self.placement.maximized {
             return;
         }
         let Ok(position) = window.outer_position() else {
@@ -170,20 +177,17 @@ impl App {
 
     /// Persist the current window placement on exit. Uses the last
     /// recorded non-maximized bounds (so un-maximize restores correctly) together
-    /// with the live maximized state.
+    /// with the maximized state as last sampled outside a minimize.
     pub(crate) fn save_window_placement(&mut self) {
         // A gate run sizes the window itself, to the same figure every time; that
         // is not a placement the user chose, and it must not replace one.
-        if self.gate.is_some() {
+        if self.gate.is_some() || self.window.is_none() {
             return;
         }
         // Refresh from the live window first in case the latest move/resize hasn't
         // been recorded yet.
         self.record_windowed_bounds();
 
-        let Some(window) = self.window.as_ref() else {
-            return;
-        };
         let Some(((x, y), (width, height))) = self.placement.last_windowed_bounds else {
             return;
         };
@@ -193,9 +197,73 @@ impl App {
             y,
             width,
             height,
-            maximized: window.is_maximized(),
+            maximized: self.placement.maximized,
         });
     }
+}
+
+/// How the startup window first appears: the saved state, or the one the launcher
+/// asked for (`review_import::startup_show`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FirstShow {
+    /// Maximized. Together with `minimized`, the state restoring it from the
+    /// taskbar gives back.
+    pub(crate) maximized: bool,
+    /// On the taskbar without ever appearing on screen (*Run: Minimized*).
+    pub(crate) minimized: bool,
+}
+
+impl FirstShow {
+    /// Whether the window is created visible, with its first state applied by
+    /// winit at creation — or created hidden and normal and left to
+    /// [`reveal_startup_window`].
+    ///
+    /// Not on Windows. There winit shows a visible window *before* it applies the
+    /// size and position, at the OS's default rect, and carries out a maximize as a
+    /// `ShowWindow` that animates from there — so every launch flashed the window
+    /// in the wrong place, and a maximized one grew to full screen in front of the
+    /// user. A minimize would be a `ShowWindow` too, and on a hidden window both
+    /// would show it. So on Windows the window is sized and placed while hidden,
+    /// and the reveal *is* the state change. Elsewhere the window is created as
+    /// winit expects.
+    pub(crate) const CREATE_VISIBLE: bool = !cfg!(windows);
+
+    /// Whether to create the window maximized (winit's `with_maximized`): only
+    /// where it is created visible, see [`Self::CREATE_VISIBLE`].
+    pub(crate) fn create_maximized(self) -> bool {
+        self.maximized && Self::CREATE_VISIBLE
+    }
+}
+
+/// Show the startup window, created hidden on Windows, in its first state — in
+/// one step, so it never appears in any other state first (see
+/// [`FirstShow::CREATE_VISIBLE`]). Elsewhere the window is already up.
+pub(crate) fn reveal_startup_window(window: &Window, first: FirstShow) {
+    #[cfg(windows)]
+    {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        // Always `Win32` for a winit window on Windows.
+        if let Ok(RawWindowHandle::Win32(handle)) =
+            window.window_handle().map(|handle| handle.as_raw())
+        {
+            if first.minimized {
+                review_import::show_window_minimized(handle.hwnd, first.maximized);
+                // Before winit hears of the show below. It reads `IsIconic` and has
+                // nothing left to do, but now knows the window is minimized:
+                // otherwise the style refresh that comes with the show strips
+                // `WS_MINIMIZE`, leaving a window that cannot be restored.
+                window.set_minimized(true);
+            } else if first.maximized {
+                review_import::show_window_maximized(handle.hwnd);
+            }
+        }
+        // winit keeps its own record of visibility, and without this would hide the
+        // window again on its next style change. For a window that is already up,
+        // the `SW_SHOW` (and `SW_MAXIMIZE`) it sends change nothing.
+        window.set_visible(true);
+    }
+    #[cfg(not(windows))]
+    let _ = (window, first);
 }
 
 /// Whether a saved placement still lands on a connected monitor. Guards against
@@ -448,14 +516,14 @@ mod tests {
     }
 }
 
-/// The window-placement tracker: the startup maximize hint plus the windowed
-/// bounds sampled for session persistence, grouped out of [`App`].
+/// The window-placement tracker: the maximized state and the windowed bounds
+/// sampled for session persistence, grouped out of [`App`].
 #[derive(Default)]
 pub(crate) struct PlacementTracker {
-    /// The process was launched with a request to start maximized (e.g. a
-    /// shortcut set to **Run: Maximized**). Set in `resumed` and applied at
-    /// window creation, since winit doesn't honor the OS hint on its own.
-    pub(crate) start_maximized: bool,
+    /// Whether the window is maximized, as of the last sample taken while it was
+    /// not minimized — what the saved placement records. Starts as the startup
+    /// window's first state (the saved one, or a **Run: Maximized** launch).
+    pub(crate) maximized: bool,
     /// The most recent *non-maximized* window placement (outer position + inner
     /// size), tracked from `Moved`/`Resized` events so it's available to persist
     /// on exit. Recorded only while the window isn't maximized, so un-maximizing
