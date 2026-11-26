@@ -84,8 +84,9 @@ everything after it is a model. Relative paths resolve against the working folde
 
 ## Models and folders
 
-Any mix of files and folders. A file is taken as given. A folder stands for the
-`.fbx` files in it, in name order, and with `--recurse` for those in the folders
+Any mix of files and folders. A model is an FBX (`.fbx`) or a glTF (`.gltf`, or
+the binary `.glb`). A file is taken as given. A folder stands for the models in
+it, in name order, and with `--recurse` for those in the folders
 inside it too, skipping folders whose names start with `.` and never following a
 symlinked folder. A model reached twice is worked on once. A model that is a Git
 LFS pointer rather than the model itself is reported as one, with the command that
@@ -107,7 +108,7 @@ characters, which the models of a big commit or import can pass. Each line is a
 model or a folder, relative to the working folder as an argument is; blank lines
 are skipped, and the file is read as UTF-8, or as UTF-16 when it starts with that
 byte-order mark (what Windows PowerShell 5's `Out-File` writes). A file in the
-list that is not `.fbx` is left out, as one in a folder is, since a list is often
+list that is not a model is left out, as one in a folder is, since a list is often
 everything an import or a commit touched. It may stand in for models on the line,
 or add to them. A list that names no models is a run with nothing to do: exit
 status 0, where models and folders on the line that hold none are a problem.
@@ -225,7 +226,7 @@ Checks each model against an engine profile, as the Aud workspace does.
 | `--rules <rules.json>` | Asset Check's rules instead: each model's profile and stage come from its name, its folder and the branch. Not with `--profile` (exit status 2). |
 | `--fail-on error\|warning\|info\|never` | The least severe finding that fails the run (exit status 1). `error` is the default, and `warning` with `--rules`. A model with such a finding is still checked, and its entry is `done` and `flagged`. |
 | `--results <file>` | Write Asset Check's results to this JSON file. |
-| `--staged` | Check the `.fbx` models staged for the next commit in the working folder's repository, as staged, instead of models named on the line. |
+| `--staged` | Check the models (`.fbx`, `.gltf`, `.glb`) staged for the next commit in the working folder's repository, as staged, instead of models named on the line. |
 
 Each model's lines are the Aud workspace's **Copy summary**: the counts, then
 one line per failing check, worst first. With `--rules`, the line before them
@@ -431,8 +432,12 @@ review3d-cli info hero.fbx --report stats.json
 
 What each model holds, as the Model Stats panel shows it: polygons, triangles and
 vertices as the modelling program counts them, GPU vertices as an engine would
-build them, draws, materials, UV sets, bones, animations and the file's unit; and
-its size in metres.
+build them, draws, materials, UV sets, bones, animations, the file's unit and up
+axis; and its size in metres.
+
+A glTF file's unit is always the metre and its up axis +Y: the format fixes both.
+Its vertex count is the sum of its primitives' vertices, which is what an engine
+uploads, and the same as its GPU vertex count unless the file repeats a vertex.
 
 ## The report
 
@@ -530,7 +535,8 @@ Each entry, when `done`: `counts` (`polygons`, `triangles`, `vertices`,
 `unit_meters` (the file's unit in meters, `0` when it declares none, written as the
 shortest number that is it: `0.01` for centimeters) and `up_axis` (`positive_x`,
 `negative_x`, `positive_y`, `negative_y`, `positive_z` or `negative_z`, the words
-an audit profile's up-axis target uses, or `null` when the file names none),
+an audit profile's up-axis target uses, or `null` when the file names none; a
+glTF file's is always `positive_y`),
 `bounds_m` (the model's box: `min`, `max` and `size`, each `[x, y, z]` in metres and
 in the file's own axes, which `up_axis` names; `null` for a model with no
 geometry) and `node_bounds` (the same box for each object that owns triangles, with

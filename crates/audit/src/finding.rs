@@ -65,6 +65,19 @@ impl Axis {
             CoordinateAxis::Unknown | CoordinateAxis::Unnamed(_) => return None,
         })
     }
+
+    /// The same axis as the model crate names it (`ModelStats::source_axes`),
+    /// which is where a format with fixed axes, glTF, says what they are.
+    pub fn from_model(axis: review_model::Axis) -> Self {
+        match axis {
+            review_model::Axis::PositiveX => Axis::PositiveX,
+            review_model::Axis::NegativeX => Axis::NegativeX,
+            review_model::Axis::PositiveY => Axis::PositiveY,
+            review_model::Axis::NegativeY => Axis::NegativeY,
+            review_model::Axis::PositiveZ => Axis::PositiveZ,
+            review_model::Axis::NegativeZ => Axis::NegativeZ,
+        }
+    }
 }
 
 /// A measured figure, with its unit carried in the variant.

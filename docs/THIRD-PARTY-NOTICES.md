@@ -16,7 +16,7 @@ document, together with the [`../licenses/`](../licenses/) directory, is how the
   binary, the typefaces embedded in it, the shader code ported from other projects, and the
   embedded image assets. Read the typeface note - the font licenses are the only terms in the
   distribution that say anything about *modifying* a component.
-* **Section 2** covers the Rust crates (349 of them). One, `option-ext`, is MPL-2.0; the note
+* **Section 2** covers the Rust crates (351 of them). One, `option-ext`, is MPL-2.0; the note
   under the table says what that does and does not require.
 * **Section 3** notes what is *not* here, and why.
 
@@ -263,7 +263,7 @@ licenses apply to those parts. Each ported function says so in a comment beside 
 
 ## 2. Rust crates
 
-349 crates are linked into the 3D Review binary (the union of the three shipped targets: Windows, macOS and Linux). Where a crate
+351 crates are linked into the 3D Review binary (the union of the three shipped targets: Windows, macOS and Linux). Where a crate
 offers a choice of licenses, the column below records **the license 3D Review elects**, not the
 full SPDX expression - 3D Review elects MIT wherever MIT is offered, then the most permissive of
 what is left. A crate whose license is a conjunction (`AND`) lists every term. Full texts:
@@ -403,6 +403,8 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `gethostname` | 1.1.0 | Apache-2.0 | (no notice in crate; authors: Sebastian Wiesner <sebastian@swsnr.de>) |
 | `getrandom` | 0.3.4 | MIT | Copyright (c) 2018-2025 The rust-random Project Developers |
 | `glam` | 0.30.10 | MIT | (no notice in crate; authors: Cameron Hart <cameron.hart@gmail.com>) |
+| `gltf` | 1.4.1 | MIT | Copyright (c) 2017 The gltf Library Developers |
+| `gltf-json` | 1.4.1 | MIT | Copyright (c) 2017 The gltf Library Developers |
 | `guillotiere` | 0.7.0 | MIT | Copyright (c) 2019 Nicolas Silva |
 | `half` | 2.7.1 | MIT | (no notice in crate; authors: Kathryn Long <squeeself@gmail.com>) |
 | `harfrust` | 0.12.0 | MIT | Copyright (c) HarfBuzz developers; Copyright (c) 2020 Yevhenii Reizner |

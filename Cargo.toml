@@ -97,6 +97,9 @@ fluent-bundle = "0.16"
 # "it built" means "it loads".
 fluent-syntax = "0.12"
 glam = "0.30"
+# glTF 2.0 reading (`review-import`). Without `import`, which decodes every image
+# with the `image` crate: buffers are resolved by hand and images are not read.
+gltf = { version = "1.4", default-features = false, features = ["utils", "names", "extras", "extensions", "KHR_materials_emissive_strength"] }
 # Pure-Rust maths functions: the same bits on every OS (review_model::exact).
 libm = "0.2"
 # The standard logging facade. Already in the graph (winit, egui and notify log

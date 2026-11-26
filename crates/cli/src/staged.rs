@@ -11,7 +11,7 @@ use std::path::Path;
 
 use asset_rules::git::{Repo, StagedFile};
 
-use crate::inputs::is_fbx;
+use crate::inputs::is_model;
 use crate::keys::cli as k;
 
 /// The repository the current folder is in, and its staged models.
@@ -33,7 +33,7 @@ pub(crate) fn gather() -> Result<Staged, String> {
         .staged()
         .map_err(failed)?
         .into_iter()
-        .filter(|file| is_fbx(Path::new(&file.path)))
+        .filter(|file| is_model(Path::new(&file.path)))
         .collect();
     Ok(Staged { repo, models })
 }

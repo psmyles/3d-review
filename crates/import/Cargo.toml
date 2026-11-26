@@ -8,6 +8,8 @@ build = "build.rs"
 
 [dependencies]
 glam.workspace = true
+gltf.workspace = true
+serde_json.workspace = true
 review-model = { path = "../model" }
 # The shared guarded Tracy helpers, for the FBX-import CPU zones (Load FBX /
 # Build ModelData); the C-side ufbx parse stays un-instrumented.

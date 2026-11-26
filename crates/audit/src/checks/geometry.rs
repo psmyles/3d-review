@@ -159,7 +159,27 @@ pub(super) fn duplicate_vertices(ctx: &Context<'_>, config: &RuleConfig) -> Outc
                 }
             }
         }
-        flag_close_points(&points, tolerance)
+        // A glTF vertex is split wherever any attribute changes — that is how
+        // the format stores a hard edge or a UV seam, there being no shared
+        // control points — so only points that also agree on every attribute
+        // are ones that should have been welded.
+        if model.gltf.is_none() {
+            return flag_close_points(&points, tolerance);
+        }
+        let mut groups: std::collections::BTreeMap<Vec<u32>, Vec<(u32, Vec3)>> =
+            std::collections::BTreeMap::new();
+        for &(corner, position) in &points {
+            groups
+                .entry(attribute_key(model, corner as usize))
+                .or_default()
+                .push((corner, position));
+        }
+        let mut flagged: Vec<u32> = groups
+            .values()
+            .flat_map(|group| flag_close_points(group, tolerance))
+            .collect();
+        flagged.sort_unstable();
+        flagged
     }) else {
         return Outcome::skip(Skip::Cancelled);
     };
@@ -173,6 +193,28 @@ pub(super) fn duplicate_vertices(ctx: &Context<'_>, config: &RuleConfig) -> Outc
         offenders,
         Threshold::Max(Measured::Meters(f64::from(tolerance))),
     )
+}
+
+/// Everything about a corner but its position, as bits: what two glTF vertices
+/// must share to be the same vertex.
+fn attribute_key(model: &review_model::ModelData, corner: usize) -> Vec<u32> {
+    let mut key = Vec::new();
+    if let Some(vertex) = model.vertices.get(corner) {
+        key.extend(vertex.normal.to_array().map(f32::to_bits));
+        key.extend(vertex.uv.to_array().map(f32::to_bits));
+        key.extend(vertex.vertex_color.to_array().map(f32::to_bits));
+    }
+    for channel in &model.uv_channels {
+        if let Some(uv) = channel.get(corner) {
+            key.extend(uv.to_array().map(f32::to_bits));
+        }
+    }
+    for attribute in &model.custom_attributes {
+        if attribute.vertex_count() == model.vertices.len() {
+            key.extend_from_slice(attribute.value(corner));
+        }
+    }
+    key
 }
 
 /// The corners of every point within `tolerance` of another, via a uniform

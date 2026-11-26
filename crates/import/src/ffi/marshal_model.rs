@@ -470,6 +470,8 @@ pub(super) fn model_from_bridge_scene(
         morph,
         animations,
         frame_rate: scene.frames_per_second,
+        custom_attributes: Vec::new(),
+        gltf: None,
     };
 
     // Every index must address a real vertex. The bridge derives each one by

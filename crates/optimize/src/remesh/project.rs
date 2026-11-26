@@ -64,7 +64,7 @@ use review_model::{Bvh, ModelData, Vertex, closest_point_on_triangle, triangle_p
 
 use crate::OptError;
 use crate::cancel::{CancelToken, cancelled};
-use crate::submesh::{NO_MATERIAL, Submesh};
+use crate::submesh::{CustomWords, NO_MATERIAL, Submesh};
 
 use super::RemeshOutput;
 use super::union_find::UnionFind;
@@ -91,6 +91,9 @@ pub(crate) struct ProjectionSource {
     color_channels: Vec<Vec<Vec4>>,
     /// Per triangle, the material slot of the piece it came from.
     triangle_material: Vec<u32>,
+    /// Per triangle, the custom attribute words of its first corner — the
+    /// triangle's own value, since an id is constant across the face it labels.
+    triangle_custom: CustomWords,
     /// Per triangle, the neighbour across each of its three edges, or
     /// [`u32::MAX`]. Built from shared *index-buffer* edges, so it stops at
     /// every seam the source authored.
@@ -139,12 +142,23 @@ impl ProjectionSource {
         let mut uv_channels: Vec<Vec<Vec2>> = vec![Vec::new(); uv_channel_count];
         let mut color_channels: Vec<Vec<Vec4>> = vec![Vec::new(); color_channel_count];
         let mut triangle_material: Vec<u32> = Vec::new();
+        let custom_width = pieces
+            .iter()
+            .map(|piece| piece.custom.width())
+            .max()
+            .unwrap_or(0);
+        let mut triangle_custom = CustomWords::with_width(custom_width);
 
         for piece in pieces {
             let base = vertices.len() as u32;
             vertices.extend_from_slice(&piece.vertices);
             indices.extend(piece.indices.iter().map(|&index| index + base));
             triangle_material.extend(std::iter::repeat_n(piece.material, piece.triangle_count()));
+            if custom_width > 0 {
+                for triangle in piece.indices.as_chunks::<3>().0 {
+                    triangle_custom.push_row(piece.custom.row(triangle[0] as usize));
+                }
+            }
             for (channel, destination) in uv_channels.iter_mut().enumerate() {
                 match piece.uv_channels.get(channel) {
                     Some(source) => destination.extend_from_slice(source),
@@ -181,6 +195,7 @@ impl ProjectionSource {
             uv_channels,
             color_channels,
             triangle_material,
+            triangle_custom,
             adjacency,
             region,
             bvh,
@@ -377,6 +392,9 @@ pub(crate) struct CornerSample {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct FaceSample {
     pub material: u32,
+    /// The custom attribute words the whole face takes: those of the source
+    /// triangle nearest its centre, like its material.
+    pub custom: Vec<u32>,
     pub corners: Vec<CornerSample>,
 }
 
@@ -469,6 +487,10 @@ fn project_face(
         .bvh
         .closest_point(&source.model, centroid, UNBOUNDED)?;
     let material = source.material_of(anchor.triangle);
+    let custom = source
+        .triangle_custom
+        .row(anchor.triangle as usize)
+        .to_vec();
 
     let sampled = positions
         .into_iter()
@@ -480,6 +502,7 @@ fn project_face(
 
     Some(FaceSample {
         material,
+        custom,
         corners: sampled,
     })
 }

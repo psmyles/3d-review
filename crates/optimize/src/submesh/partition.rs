@@ -67,6 +67,17 @@ pub fn partition(model: &ModelData, extras: Option<&SourceExtras>) -> (Vec<Subme
     // than to the whole model per submesh.
     let mut local_of_global = vec![u32::MAX; model.vertices.len()];
     let mut touched: Vec<u32> = Vec::new();
+    // Custom attributes that cover the whole model, side by side; one that does
+    // not (a malformed hand-built model) is left out rather than read short.
+    let custom_attributes: Vec<&review_model::CustomAttribute> = model
+        .custom_attributes
+        .iter()
+        .filter(|attribute| attribute.vertex_count() == model.vertices.len())
+        .collect();
+    let custom_width: usize = custom_attributes
+        .iter()
+        .map(|attribute| attribute.width())
+        .sum();
 
     let mut submeshes = Vec::with_capacity(order.len());
     for (slot, &(node, material)) in order.iter().enumerate() {
@@ -97,6 +108,8 @@ pub fn partition(model: &ModelData, extras: Option<&SourceExtras>) -> (Vec<Subme
         let has_crease = part.is_some_and(|part| !part.vertex_crease.is_empty());
         let mut vertex_crease = Vec::new();
         let mut source_corner: Vec<u32> = Vec::new();
+        let mut custom = CustomWords::with_width(custom_width);
+        let mut custom_row: Vec<u32> = Vec::with_capacity(custom_width);
         let mut indices = Vec::with_capacity(source_triangles.len() * 3);
         let mut kept_triangles: Vec<usize> = Vec::with_capacity(source_triangles.len());
         let corner_map = (model.corner_to_logical.len() == model.vertices.len())
@@ -139,6 +152,13 @@ pub fn partition(model: &ModelData, extras: Option<&SourceExtras>) -> (Vec<Subme
                     touched.push(global);
                     vertices.push(model.vertices[global as usize]);
                     source_corner.push(global);
+                    if custom_width > 0 {
+                        custom_row.clear();
+                        for attribute in &custom_attributes {
+                            custom_row.extend_from_slice(attribute.value(global as usize));
+                        }
+                        custom.push_row(&custom_row);
+                    }
                     for (channel, destination) in uv_channels.iter_mut().enumerate() {
                         destination.push(
                             model
@@ -255,6 +275,7 @@ pub fn partition(model: &ModelData, extras: Option<&SourceExtras>) -> (Vec<Subme
             extra_skins: extra_rows,
             dq_weight: dq_rows,
             morph: morph_rows,
+            custom,
             source_corner,
             normals_stale: false,
         });

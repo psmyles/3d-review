@@ -173,8 +173,8 @@ fn collect_arguments(arguments: &[Argument], recurse: bool) -> Inputs {
             Ok(meta) if meta.is_dir() => walk(argument, Path::new(""), recurse, &mut inputs),
             // A list is often every file an import or a commit touched, so a
             // file in it is taken only if it is a model, as one in a folder is.
-            Ok(_) if *listed && !is_fbx(argument) => {}
-            Err(_) if *listed && !is_fbx(argument) => {}
+            Ok(_) if *listed && !is_model(argument) => {}
+            Err(_) if *listed && !is_model(argument) => {}
             Ok(_) => inputs.models.push(Model {
                 path: argument.clone(),
                 relative: argument
@@ -220,7 +220,7 @@ fn walk(folder: &Path, relative: &Path, recurse: bool, inputs: &mut Inputs) {
             if recurse && !name.to_string_lossy().starts_with('.') {
                 walk(&path, &relative.join(&name), recurse, inputs);
             }
-        } else if is_fbx(&path) && path.is_file() {
+        } else if is_model(&path) && path.is_file() {
             inputs.models.push(Model {
                 relative: relative.join(&name),
                 path,
@@ -229,9 +229,11 @@ fn walk(folder: &Path, relative: &Path, recurse: bool, inputs: &mut Inputs) {
     }
 }
 
-pub(crate) fn is_fbx(path: &Path) -> bool {
+/// Whether `path` names a model `review-import` reads: FBX, glTF or glb.
+pub(crate) fn is_model(path: &Path) -> bool {
     path.extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("fbx"))
+        .and_then(|extension| extension.to_str())
+        .is_some_and(review_import::is_supported_extension)
 }
 
 /// The one spelling of `path` two spellings of a file are told apart by -

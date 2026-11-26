@@ -45,6 +45,9 @@ pub struct Submesh {
     pub dq_weight: VertexRows<f32>,
     /// Blend-shape offsets per vertex.
     pub morph: VertexRows<MorphEntry>,
+    /// The source's custom attributes (`ModelData::custom_attributes`), exact,
+    /// per vertex.
+    pub custom: CustomWords,
     /// Per vertex, a source corner (`ModelData::vertices` of the source) it
     /// came from — the representative one after a weld. Empty when unknown.
     pub source_corner: Vec<u32>,
@@ -73,13 +76,15 @@ impl Submesh {
     }
 
     /// One id per vertex naming its whole deform row (skin, extra skins,
-    /// dual-quaternion weight, blend-shape offsets): vertices with identical
-    /// rows share an id. A weld or a filter compares this beside the geometry,
-    /// so two vertices that only *deform* differently are never merged or
-    /// treated as duplicates — which is what keeps a gathered row exact.
-    /// Empty when the submesh carries no rows.
+    /// dual-quaternion weight, blend-shape offsets) and its custom attributes:
+    /// vertices with identical rows share an id. A weld or a filter compares
+    /// this beside the geometry, so two vertices that only *deform* differently,
+    /// or differ in a custom attribute, are never merged or treated as
+    /// duplicates — which is what keeps a gathered row exact, and makes a
+    /// change of custom value a seam the simplifier keeps. Empty when the
+    /// submesh carries neither.
     pub fn row_ids(&self) -> Vec<u32> {
-        if !self.has_rows() {
+        if !self.has_rows() && self.custom.is_empty() {
             return Vec::new();
         }
         let mut ids: HashMap<Vec<u8>, u32> = HashMap::new();
@@ -113,6 +118,10 @@ impl Submesh {
                     {
                         key.extend_from_slice(&value.to_bits().to_ne_bytes());
                     }
+                }
+                key.push(0xFC);
+                for &word in self.custom.row(vertex) {
+                    key.extend_from_slice(&word.to_ne_bytes());
                 }
                 let next = ids.len() as u32;
                 *ids.entry(key.clone()).or_insert(next)
@@ -221,6 +230,7 @@ impl Submesh {
         }
         self.dq_weight = self.dq_weight.gather(representative);
         self.morph = self.morph.gather(representative);
+        self.custom = self.custom.gather(representative);
     }
 
     /// Append a copy of `lender`'s vertex `vertex` — with everything that rides
@@ -267,6 +277,9 @@ impl Submesh {
         }
         lend(&mut self.dq_weight, Some(&lender.dq_weight), vertex);
         lend(&mut self.morph, Some(&lender.morph), vertex);
+        if !self.custom.is_empty() {
+            self.custom.push_row(lender.custom.row(vertex));
+        }
         index
     }
 

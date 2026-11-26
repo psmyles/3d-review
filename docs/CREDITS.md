@@ -10,6 +10,12 @@ notices, see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 - **[ufbx_write](https://github.com/ufbx/ufbx-write)** - Samuli Raivio. FBX export from the Opt
   workspace. 3D Review's patches are listed in `third_party/ufbx-write/NOTICE.txt`.
 
+## glTF
+
+- **[gltf](https://github.com/gltf-rs/gltf)** - David Harvey-Macaulay and the gltf library
+  developers. glTF 2.0 import: the document, its validation, and the scene graph the reader
+  walks (with **gltf-json**).
+
 ## Mesh optimization
 
 - **[meshoptimizer](https://github.com/zeux/meshoptimizer)** - Arseny Kapoulkine. Welding,

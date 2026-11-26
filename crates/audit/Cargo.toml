@@ -10,7 +10,7 @@ glam.workspace = true
 review-model = { path = "../model" }
 # The shared guarded Tracy helpers, for the per-check CPU zones.
 review-prof.workspace = true
-# Profiles and reports are JSON. `review-model` stays glam-only (invariant 10):
+# Profiles and reports are JSON. `review-model` stays glam and libm only (invariant 10):
 # nothing here adds a derive to a `review-model` type.
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

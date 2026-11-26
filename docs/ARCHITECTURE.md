@@ -147,8 +147,9 @@ at once (a load and an Opt rebuild, say) never write into each other's card.
 
 ### `model` — `review-model`
 
-Host-agnostic data only. Depends on `glam` and nothing else: no GPU API, no
-`egui`, no `winit`, no importer types.
+Host-agnostic data only. Depends on `glam` and `libm` and nothing else: no GPU
+API, no `egui`, no `winit`, no importer types. (`libm` is pure maths: the
+pure-Rust sine and power behind `exact`, which round the same on every OS - D27.)
 
 - `lib.rs` — `Vertex`, `Bounds`, `MaterialImportDefaults`, `TopologyFace`,
   `ModelStats`, `TriangleData` (grouped per-triangle face/material/node arrays
@@ -209,7 +210,26 @@ is on screen and lives in `UiState::clip_bounds` — see
 
 `load_model` / `load_model_with_progress` / `load_fbx`, `ImportError`, the unsafe
 FFI (`repr(C)` mirror structs, `checked_slice`, `model_from_bridge_scene`), the
-vendored ufbx C plus the bridge, and `build.rs` (`cc`, `cfg(has_ufbx)`).
+vendored ufbx C plus the bridge, and `build.rs` (`cc`, `cfg(has_ufbx)`). Beside
+it, the glTF reader (`src/gltf/`), dispatched by extension (`gltf`, `glb`) or, for
+bytes, by content (`gltf::sniff`).
+
+`src/gltf/mod.rs` walks the default scene parents first and bakes each triangle
+primitive into world space one vertex per corner, as the FBX path does, with
+`corner_to_logical` naming the glTF vertex; a node whose transform mirrors has its
+triangles' winding reversed (the glTF rule for a negative determinant). V is
+flipped once, into `ModelData`'s V-up. It reads every attribute through its own
+accessor reader (`src/gltf/accessor.rs`), not the crate's typed ones, which assume
+`f32` and would misread a quantized mesh: every component type, normalized or
+not, sparse or not. Custom attributes (`_`-prefixed) land in
+`ModelData::custom_attributes` as raw words; `COLOR_0`'s stored format, the
+`extras` on the asset, scene, nodes and meshes, the materials, textures, samplers
+and images as JSON text, and each vertex's values *as stored* go in
+`ModelData::gltf` (`GltfSource`) for the glb writer. Buffers are resolved by
+hand (`src/gltf/buffers.rs`: the GLB chunk, `data:` URIs, files beside a
+`.gltf`), since the crate's own resolver also decodes every image. Then the same
+funnel checks as `model_from_bridge_scene`. Skins, animations, morph targets and
+colour sets past `COLOR_0` are not read yet, each said in a warning.
 
 Files: `src/lib.rs` (the public API — errors, the progress and stage types,
 the four `load_model*` entry points, `measure_clip_bounds`), `src/startup.rs`
@@ -1321,8 +1341,11 @@ The sanctioned exceptions:
 Every unsafe in `render` touches only GPU plumbing — never model geometry, camera
 math or material logic, which stay safe.
 
-**10. `model` is host-agnostic.** It depends only on `glam` — no GPU API, `egui`,
-`winit` or importer types. This is what kept the renderer swappable (wgpu → D3D11
+**10. `model` is host-agnostic.** It depends only on `glam` and `libm` (pure
+maths, for `exact`'s same-bits-everywhere functions) — no GPU API, `egui`,
+`winit` or importer types. A format's own data it must carry (glTF's `extras`
+and materials, in `GltfSource`) is kept as plain text and numbers, never as the
+parser's types. This is what kept the renderer swappable (wgpu → D3D11
 → sokol_gfx); do not add rendering or UI dependencies to `model`.
 
 **11. GPU structs are `#[repr(C)]` plus `bytemuck` `Pod`/`Zeroable`.** Match the
@@ -1448,9 +1471,12 @@ numeric value boxes (`DragValue`) render in monospace while everything else is
 proportional.
 
 **The internal format is our own `ModelData` superset** — flat parallel buffers
-plus original face topology plus source stats. FBX is the only import format,
-parsed by vendored ufbx through a single C bridge. Do not round-trip through glTF:
-it drops quad topology and changes vertex counts.
+plus original face topology plus source stats. Two formats are read, each into
+`ModelData` directly: FBX by vendored ufbx through a single C bridge, and glTF
+(`.gltf`, `.glb`) by the `gltf` crate in safe Rust (`import/src/gltf/`, D29). Do
+not convert one into the other on the way in: a glTF detour drops an FBX's quad
+topology and changes its vertex counts, and an FBX one would drop glTF's extras
+and custom attributes.
 
 **Shading is one scene program** (`@program mesh`) covering the shaded, unlit,
 wireframe, uv-checker and vertex-colour paths; tone mapping and sRGB encoding live
@@ -1547,6 +1573,7 @@ one settled.
 | D26 | Linux (x86_64) is a third host, added beside Windows and macOS and never in place of either: Windows stays first (D13), and every change still builds and passes there. The console tool builds on Linux unchanged, since the Windows-only code on its path was already behind `cfg` for macOS. `scripts/build-linux.sh` packages it and the viewer as a tarball with no installer (unpack anywhere; both binaries are at the folder's top, and the manual's pictures, once it has any, in `docs/` beside them), reproducible to the byte. glibc and `libstdc++` are the system's, so the binary runs on distributions at least as new as the build machine's (the script prints the glibc floor); a build for older ones is made on an older one. The viewer runs on a Vulkan leaf beside `d3d11.rs` and `metal.rs` (D28). Its settings are under `~/.config/3D Review` and its logs under `~/.local/share/3D Review/logs`, where `dirs` puts them. |
 | D27 | The same input and settings write the same bytes: on every run, at any thread count and on every OS. Nothing written may depend on the clock (the FBX export pins every date to the Unix epoch), on `HashMap` order, or on how work fell across threads (`parallel.rs`'s fixed chunks), and nothing on the platform's maths library: a sine, arccosine, power or logarithm whose value reaches a file or a report goes through `review_model::exact` (the pure-Rust `libm` crate) rather than `f32::sin` and its kin, which call glibc, the Windows CRT or Apple's libm, free to round the last bit differently. The vendored C and C++ (ufbx, ufbx_write, meshoptimizer) build with `-ffp-contract=off` (MSVC: `/fp:precise`), so no compiler fuses `a * b + c` into one FMA - Clang's default on Apple Silicon - where another does not. Rust never fuses on its own. `review-cli`'s `tests/determinism.rs` runs `optimize` over the CAD kit and the fixtures and checks every file's SHA-256 against `tests/determinism.sha256`, recorded on one OS and checked on the others; a mismatch there is a rounding difference between two compilers or maths libraries, to be found and removed, not re-recorded. |
 | D28 | The renderer on Linux is sokol_gfx's **Vulkan** backend (1.3, plus `VK_EXT_descriptor_buffer`), on a third leaf, `rhi/backend/vulkan.rs` (over `ash`), twin of the other two — not GL. Its SPIR-V is compiled by glslang inside sokol-shdc when `scripts/gen-shaders` runs, into a reflection of its own (`generated/review_vk.rs`, the only one Linux compiles, so no other OS carries it), which keeps D4/D5's promises — a broken shader fails before the build and nothing compiles one at run time — with no blob for `build.rs` to make. The vendored sokol-rust's build script gains the backend (vendor/NOTICE.txt), since upstream's has none. A device is picked the way D3D11 falls back to WARP: discrete GPU, integrated, then a software rasterizer such as Mesa's lavapipe, which is also what renders on a machine with no GPU at all. sokol names no native image here, so the IBL bake's readback (D19) is unavailable and the bake stays a Windows job; the windowless backbuffer is an image of the leaf's own. HEIC / HEIF / AVIF decode only where fire-decode vendors libheif (Windows, macOS), and are reported unsupported on Linux until it vendors a Linux stack. |
+| D29 | **glTF is a first-class format, read in safe Rust** (`gltf` crate, `import/src/gltf/`) beside ufbx, into the same `ModelData`. Its application attributes (names starting `_`, any component type) are carried exactly as raw 32-bit words (`ModelData::custom_attributes`), never blended: the optimizer keeps them as a fixed-width table on every `Submesh` and in `row_ids`, so vertices that differ in one are never merged and the line between them is a seam the simplifier keeps; Remesh and Shrinkwrap give each new face the words of the source triangle nearest its centre, as they do its material. What glTF says that `ModelData` has no field for - `COLOR_0`'s stored type, extras, materials with their textures, each vertex as stored - is kept verbatim in `GltfSource` as text and numbers (invariant 10), for the glb writer to write back unchanged. |
 
 The structural rules the decisions add up to:
 

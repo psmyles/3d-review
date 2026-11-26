@@ -191,6 +191,13 @@ impl ModelData {
             .then_some(self.triangles.material.as_slice());
         let face_tags = (self.triangles.to_face.len() == triangle_count)
             .then_some(self.triangles.to_face.as_slice());
+        // A custom attribute splits a vertex wherever its value changes, as it
+        // would in any engine's buffer that kept it.
+        let custom: Vec<&crate::CustomAttribute> = self
+            .custom_attributes
+            .iter()
+            .filter(|attribute| attribute.vertex_count() == self.vertices.len())
+            .collect();
 
         // Fold a component to the canonical bit pattern (`-0.0` -> `+0.0`, any
         // NaN -> the one `f32::NAN`), so equality is by value, not encoding.
@@ -278,6 +285,11 @@ impl ModelData {
                 // The tangent's handedness, not its direction - see
                 // `count_gpu_vertices`.
                 key.push(u8::from(vertex.tangent.w < 0.0));
+                for attribute in &custom {
+                    for word in attribute.value(index as usize) {
+                        key.extend_from_slice(&word.to_ne_bytes());
+                    }
+                }
                 if unique.insert((node, material, key)) {
                     group.gpu_vertex_count += 1;
                 }

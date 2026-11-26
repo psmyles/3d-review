@@ -194,6 +194,7 @@ cli-rules-check-problems = { $file }: { $errors ->
 cli-info-counts = Polygons: { $polygons }, triangles: { $triangles }, vertices: { $vertices }, GPU vertices: { $gpu_vertices }
 cli-info-parts = Draws: { $draws }, materials: { $materials }, UV sets: { $uv_sets }, bones: { $bones }, animations: { $clips }
 cli-info-unit = Unit: { $unit }
+cli-info-up = Up: { $axis }
 cli-info-size = Size: { $x } x { $y } x { $z } m
 cli-info-failed = Couldn't read { $file }: { $problem }
 cli-info-done = Done: { $done } read, { $failed } didn't work.

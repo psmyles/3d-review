@@ -14,7 +14,7 @@ review-model = { path = "../model" }
 # no direct dependency on it.
 review-prof.workspace = true
 # Presets are persisted as JSON, so the stack types derive Serialize/Deserialize
-# here. `review-model` stays glam-only (invariant 10) — nothing in this crate
+# here. `review-model` stays glam and libm only (invariant 10) — nothing in this crate
 # adds a derive to a `review-model` type.
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

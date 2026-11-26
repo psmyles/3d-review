@@ -23,6 +23,7 @@ use thiserror::Error;
 
 #[cfg(has_ufbx)]
 mod ffi;
+pub mod gltf;
 mod prof;
 // The funnel's repair step is ordinary safe Rust over `ModelData`, so it builds
 // (and its tests run) without the vendored ufbx; only `ffi` calls it.
@@ -190,6 +191,15 @@ pub struct PendingExtras {
 }
 
 impl PendingExtras {
+    /// Nothing captured, but these warnings to pass on: a glTF import, which
+    /// has no FBX property capture and keeps what it needs on the model.
+    pub fn with_warnings(warnings: Vec<String>) -> Self {
+        Self {
+            warnings,
+            ..Self::none()
+        }
+    }
+
     /// Nothing captured (a build without vendored ufbx, or a caller that
     /// declined the capture).
     pub fn none() -> Self {
@@ -271,6 +281,13 @@ pub fn load_model_staged_cancellable(
         Some(extension) if extension.eq_ignore_ascii_case("fbx") => {
             load_fbx_staged(path, progress, cancel)
         }
+        Some(extension) if is_gltf_extension(extension) => {
+            let (model, warnings) = gltf::load_path(path, progress, cancel)?;
+            Ok(StagedImport {
+                model,
+                extras: PendingExtras::with_warnings(warnings),
+            })
+        }
         Some(extension) => Err(ImportError::UnsupportedExtension(extension.to_owned())),
         None => Err(ImportError::UnsupportedExtension("<none>".to_owned())),
     }
@@ -302,6 +319,9 @@ pub fn load_model_with_progress(
     let path = path.as_ref();
     match path.extension().and_then(|extension| extension.to_str()) {
         Some(extension) if extension.eq_ignore_ascii_case("fbx") => load_fbx(path, progress),
+        Some(extension) if is_gltf_extension(extension) => {
+            gltf::load_path(path, progress, None).map(|(model, _)| model)
+        }
         Some(extension) => Err(ImportError::UnsupportedExtension(extension.to_owned())),
         None => Err(ImportError::UnsupportedExtension("<none>".to_owned())),
     }
@@ -311,11 +331,20 @@ pub fn load_model_with_progress(
 /// is handed, which gets the file's bytes as a stream rather than its path.
 /// `name` is the file's own path when the caller knows it, or just its name:
 /// the model is named after it, and relative texture paths resolve against
-/// its directory. The bytes are always FBX; there is no extension to check.
+/// its directory. The bytes are glTF when they look it (a GLB header, or JSON),
+/// and FBX otherwise; there is no extension to trust.
 pub fn load_model_full_from_bytes(
     bytes: &[u8],
     name: &Path,
 ) -> Result<(ModelData, Option<SourceExtras>), ImportError> {
+    if gltf::sniff(bytes) {
+        let directory = name
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty());
+        let (mut model, _) = gltf::load_bytes(bytes, name, directory, &|_| {}, None)?;
+        model.stats.gpu_vertex_count = model.count_gpu_vertices();
+        return Ok((model, None));
+    }
     #[cfg(has_ufbx)]
     {
         let StagedImport { mut model, extras } =
@@ -330,6 +359,17 @@ pub fn load_model_full_from_bytes(
         let _ = (bytes, name);
         Err(ImportError::UfbxUnavailable)
     }
+}
+
+/// Whether `extension` names a format this crate reads: `fbx`, `gltf` or
+/// `glb`, in any case.
+pub fn is_supported_extension(extension: &str) -> bool {
+    extension.eq_ignore_ascii_case("fbx") || is_gltf_extension(extension)
+}
+
+/// `gltf` or `glb`, in any case.
+pub fn is_gltf_extension(extension: &str) -> bool {
+    extension.eq_ignore_ascii_case("gltf") || extension.eq_ignore_ascii_case("glb")
 }
 
 pub fn load_fbx(_path: &Path, _progress: ProgressSink<'_>) -> Result<ModelData, ImportError> {

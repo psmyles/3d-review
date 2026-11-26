@@ -172,6 +172,7 @@ pub fn explain_export_note(note: &ExportNote) -> String {
     let count = |value: usize| value as f64;
     match note {
         ExportNote::CaptureNotLoaded => tr(k::NOTE_CAPTURE_NOT_LOADED).into_owned(),
+        ExportNote::GltfIntoFbx => tr(k::NOTE_GLTF_INTO_FBX).into_owned(),
         ExportNote::DeformNotWrittenFlat => tr(k::NOTE_DEFORM_NOT_WRITTEN_FLAT).into_owned(),
         ExportNote::AnimationNotWrittenFlat => tr(k::NOTE_ANIMATION_NOT_WRITTEN_FLAT).into_owned(),
         ExportNote::OrphanedAnimationLayers { count: layers } => {

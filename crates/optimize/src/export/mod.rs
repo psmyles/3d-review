@@ -117,7 +117,9 @@ pub fn export_fbx(
         triangle_count: 0,
         notes: Vec::new(),
     };
-    if extras.is_none() {
+    if source.gltf.is_some() {
+        report.notes.push(ExportNote::GltfIntoFbx);
+    } else if extras.is_none() {
         report.notes.push(ExportNote::CaptureNotLoaded);
     }
 

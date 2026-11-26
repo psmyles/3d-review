@@ -7,6 +7,7 @@ use glam::{Vec2, Vec3};
 
 pub mod anim;
 pub mod attach;
+mod attributes;
 mod bvh;
 pub mod cancel;
 mod clip;
@@ -30,6 +31,9 @@ pub mod uv_islands;
 // path other crates use resolves exactly as it did when this was one file.
 pub use anim::{AnimContext, DeformPose, NodePath, Pose};
 pub use attach::{AttachedAnimation, Binding, BindingReport, ClipId, Clips};
+pub use attributes::{
+    AttributeFormat, ComponentType, CustomAttribute, GltfImage, GltfNode, GltfSource, GltfVertices,
+};
 pub use bvh::{
     Bvh, ClosestPoint, Hit, SceneBvh, SceneHit, closest_point_on_triangle, ray_triangle_t,
     triangle_positions,
@@ -95,6 +99,13 @@ pub struct ModelData {
     /// The file's declared frame rate; `0.0` when it declared none (see
     /// [`ModelData::frame_rate_or_default`]).
     pub frame_rate: f64,
+    /// Application attributes per render vertex (each parallel to
+    /// [`ModelData::vertices`]), exact and unblended — see [`CustomAttribute`].
+    /// Empty for a source that carried none, which is every FBX.
+    pub custom_attributes: Vec<CustomAttribute>,
+    /// What a glTF source carried beyond the geometry, for a glb export to write
+    /// back. `None` for anything not read from glTF.
+    pub gltf: Option<Box<GltfSource>>,
 }
 
 impl ModelData {
@@ -613,6 +624,8 @@ mod tests {
             morph: None,
             animations: Vec::new(),
             frame_rate: 0.0,
+            custom_attributes: Vec::new(),
+            gltf: None,
         };
 
         assert!(model.has_degenerate_tangents(), "seeded with zero tangents");

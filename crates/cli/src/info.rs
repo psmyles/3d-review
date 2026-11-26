@@ -81,6 +81,16 @@ fn work(common: &Common, bar: &Bar, report: &mut Report) {
             };
             console::say(&format!("  {}", k::info_unit(unit)));
         }
+        // The file's up axis: what its capture declares (FBX), or what its
+        // format fixes (glTF's +Y). A file that says nothing has no row.
+        let up_axis = loaded
+            .extras
+            .as_ref()
+            .and_then(|extras| Axis::from_coordinate(extras.scene.axes[1]))
+            .or_else(|| stats.source_axes.map(|axes| Axis::from_model(axes.up)));
+        if let Some(axis) = stats.source_axes.map(|axes| axes.up) {
+            console::say(&format!("  {}", k::info_up(axis.label().to_owned())));
+        }
 
         entry.set(
             "counts",
@@ -141,15 +151,7 @@ fn work(common: &Common, bar: &Bar, report: &mut Report) {
         entry.set("unit_meters", figure(meters));
         // Spelled as the audit report and its profiles spell an axis
         // (`positive_y`); `null` when the file names none.
-        entry.set(
-            "up_axis",
-            json!(
-                loaded
-                    .extras
-                    .as_ref()
-                    .and_then(|extras| Axis::from_coordinate(extras.scene.axes[1]))
-            ),
-        );
+        entry.set("up_axis", json!(up_axis));
         report.add(Status::Done, entry, None);
         done += 1;
         for (total, value) in totals.iter_mut().zip([

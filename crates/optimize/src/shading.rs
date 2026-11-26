@@ -372,6 +372,7 @@ mod tests {
             extra_skins: Vec::new(),
             dq_weight: VertexRows::default(),
             morph: VertexRows::default(),
+            custom: Default::default(),
             source_corner: Vec::new(),
             normals_stale: false,
         }

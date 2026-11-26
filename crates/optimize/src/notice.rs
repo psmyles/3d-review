@@ -249,6 +249,8 @@ impl fmt::Display for OptWarning {
 pub enum ExportNote {
     /// The viewer's source-property capture had not landed when the export ran.
     CaptureNotLoaded,
+    /// A glTF source written as FBX: what FBX has no place for stays behind.
+    GltfIntoFbx,
     /// A flat hierarchy has no bones for skins and blend shapes to bind to.
     DeformNotWrittenFlat,
     /// A flat hierarchy has no nodes for animation curves to drive.
@@ -280,6 +282,11 @@ impl fmt::Display for ExportNote {
                 "The source's properties had not finished loading: node transforms, materials \
                  and scene settings were written from what the viewer shows, without textures \
                  or user properties.",
+            ),
+            Self::GltfIntoFbx => f.write_str(
+                "The source is glTF: its nodes and material factors were written, its extras \
+                 and textures were not, since FBX has no place for them. Export as glb to keep \
+                 them.",
             ),
             Self::DeformNotWrittenFlat => f.write_str(
                 "Skinning and blend shapes were not written: a flat hierarchy bakes the \

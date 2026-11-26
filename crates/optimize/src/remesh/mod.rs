@@ -53,7 +53,7 @@ use crate::notice::OptWarning;
 use crate::stack::{
     NormalParams, OpInstance, OpKind, RemeshDensity, RemeshParams, RemeshTopology, WeldParams,
 };
-use crate::submesh::{NO_FACE, PolygonCarry, Submesh};
+use crate::submesh::{CustomWords, NO_FACE, PolygonCarry, Submesh};
 use crate::{OptError, Warnings, ops};
 
 use nodes::{NodeOutcome, Outcomes, ThreadBudget};
@@ -604,6 +604,11 @@ pub(crate) fn build_pieces_from(
         .map(|piece| piece.color_channels.len())
         .max()
         .unwrap_or(0);
+    let custom_width = pieces
+        .iter()
+        .map(|piece| piece.custom.width())
+        .max()
+        .unwrap_or(0);
 
     let samples = project::project_faces(
         output,
@@ -674,6 +679,7 @@ pub(crate) fn build_pieces_from(
             extra_skins: Vec::new(),
             dq_weight: Default::default(),
             morph: Default::default(),
+            custom: CustomWords::with_width(custom_width),
             source_corner: Vec::new(),
             normals_stale: false,
         };
@@ -708,6 +714,7 @@ pub(crate) fn build_pieces_from(
                 for (channel, destination) in piece.color_channels.iter_mut().enumerate() {
                     destination.push(corner.colors.get(channel).copied().unwrap_or(Vec4::ONE));
                 }
+                piece.custom.push_row(&face.custom);
             }
             let degree = face.corners.len() as u32;
             carry

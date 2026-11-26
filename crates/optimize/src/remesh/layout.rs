@@ -365,6 +365,7 @@ mod tests {
             extra_skins: Vec::new(),
             dq_weight: Default::default(),
             morph: Default::default(),
+            custom: Default::default(),
             source_corner: Vec::new(),
             normals_stale: false,
         }

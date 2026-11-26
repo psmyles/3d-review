@@ -156,6 +156,9 @@ labels-opt-warning-remesh-few-quads =
 labels-opt-note-capture-not-loaded =
     The source's properties had not finished loading: node transforms, materials and scene
     settings were written from what the viewer shows, without textures or user properties.
+labels-opt-note-gltf-into-fbx =
+    The source is glTF: its nodes and material factors were written, its extras and textures
+    were not, since FBX has no place for them. Export as glb to keep them.
 labels-opt-note-deform-not-written-flat =
     Skinning and blend shapes were not written: a flat hierarchy bakes the geometry into
     world space, which has no bones to bind to.

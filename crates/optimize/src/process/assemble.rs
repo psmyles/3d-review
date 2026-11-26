@@ -65,6 +65,23 @@ pub(crate) fn assemble(
     let any_crease = submeshes
         .iter()
         .any(|piece| !piece.vertex_crease.is_empty());
+    // The attributes the partition carried (`submesh::partition`'s filter), in
+    // its order; a level carries them when any of its pieces still does — a
+    // rebuild drops them, and says so.
+    let custom_sources: Vec<&review_model::CustomAttribute> = source
+        .custom_attributes
+        .iter()
+        .filter(|attribute| attribute.vertex_count() == source.vertices.len())
+        .collect();
+    let any_custom = submeshes.iter().any(|piece| !piece.custom.is_empty());
+    let mut custom_values: Vec<Vec<u32>> = if any_custom {
+        custom_sources
+            .iter()
+            .map(|attribute| Vec::with_capacity(total_vertices * attribute.width()))
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let mut vertices: Vec<Vertex> = Vec::with_capacity(total_vertices);
     let mut indices: Vec<u32> = Vec::with_capacity(total_indices);
@@ -156,6 +173,27 @@ pub(crate) fn assemble(
                     destination.extend_from_slice(colors)
                 }
                 _ => destination.resize(vertices.len(), glam::Vec4::ONE),
+            }
+        }
+        if any_custom {
+            // In the corner-run layout a corner takes its indexed vertex's words.
+            let slots = piece_vertices.len();
+            for slot in 0..slots {
+                let vertex = run
+                    .as_ref()
+                    .and_then(|run| run.control_point.get(slot))
+                    .map_or(slot, |&vertex| vertex as usize);
+                let mut words = piece.custom.row(vertex);
+                for (attribute, values) in custom_sources.iter().zip(&mut custom_values) {
+                    let width = attribute.width();
+                    match words.split_at_checked(width) {
+                        Some((own, rest)) => {
+                            values.extend_from_slice(own);
+                            words = rest;
+                        }
+                        None => values.resize(values.len() + width, 0),
+                    }
+                }
             }
         }
         if any_crease {
@@ -469,6 +507,18 @@ pub(crate) fn assemble(
         // The clips address nodes and channels, both carried unchanged.
         animations: source.animations.clone(),
         frame_rate: source.frame_rate,
+        custom_attributes: custom_sources
+            .iter()
+            .zip(custom_values)
+            .map(|(attribute, values)| review_model::CustomAttribute {
+                name: attribute.name.clone(),
+                format: attribute.format,
+                values,
+            })
+            .collect(),
+        // Its nodes and materials are the source's, so what glTF said about
+        // them still applies.
+        gltf: source.gltf.clone(),
     };
 
     // The stats first: `validate_deform` reads the logical count off them.
