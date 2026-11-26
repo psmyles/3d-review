@@ -20,7 +20,8 @@ use review_localization::tr;
 use review_model::ENGINE_VERTEX_BYTES;
 use review_optimize::{
     LodLevel, LodParams, OpKind, OptProgress, OptStack, OptStage, ProcessInput, ProcessedResult,
-    ReduceParams, TargetMode, export::planned_files, export_fbx, preset, process_with_progress,
+    ReduceParams, SimplifySettings, TargetMode, export::planned_files, export_fbx, preset,
+    process_with_progress,
 };
 use serde_json::{Value, json};
 
@@ -135,6 +136,29 @@ fn build_stack(args: &OptimizeArgs) -> Result<OptStack, String> {
     }
     if let Some(target) = args.reduce {
         set_reduce(&mut stack, target);
+    }
+    // `--target-error`, `--simplifier`, `--simplify-flags`: the Reduce's and the
+    // chain's own settings. A per-object override keeps its own, as it does in the
+    // Inspector: it is a deliberate exception to them.
+    for op in &mut stack.ops {
+        let (simplify, targets): (&mut SimplifySettings, Vec<&mut LodLevel>) = match &mut op.kind {
+            OpKind::Reduce(params) => (&mut params.simplify, vec![&mut params.target]),
+            OpKind::SimplifyLod(params) => {
+                (&mut params.simplify, params.levels.iter_mut().collect())
+            }
+            _ => continue,
+        };
+        if let Some(algorithm) = args.simplifier {
+            simplify.algorithm = algorithm;
+        }
+        if let Some(flags) = args.simplify_flags {
+            simplify.flags = flags;
+        }
+        if let Some(limit) = args.target_error {
+            for target in targets {
+                target.target_error = limit;
+            }
+        }
     }
     if let Some(packaging) = args.packaging {
         stack.export.packaging = packaging;
@@ -541,6 +565,8 @@ fn record_levels(entry: &mut Entry, result: &ProcessedResult) {
 
 #[cfg(test)]
 mod tests {
+    use review_optimize::{SimplifyAlgorithm, SimplifyFlags};
+
     use super::*;
 
     fn args(lods: Option<Lods>, reduce: Option<Target>) -> OptimizeArgs {
@@ -549,6 +575,9 @@ mod tests {
             preset: None,
             lods,
             reduce,
+            target_error: None,
+            simplifier: None,
+            simplify_flags: None,
             packaging: None,
             hierarchy: None,
             format: None,
@@ -629,6 +658,85 @@ mod tests {
             .expect("a Reduce");
         assert_eq!(reduce.target.target_mode, TargetMode::Triangles);
         assert_eq!(reduce.target.target_triangles, 1500);
+    }
+
+    /// `--target-error`, `--simplifier` and `--simplify-flags` set the Reduce's and
+    /// the chain's own settings, every level's limit included, and replace the
+    /// preset's flags as a set; a per-object override keeps what it had.
+    #[test]
+    fn the_simplifier_options_reach_the_reduce_and_every_level() {
+        let mut stack = OptStack::default();
+        let with_lock = SimplifySettings {
+            flags: SimplifyFlags {
+                lock_border: true,
+                ..SimplifyFlags::default()
+            },
+            ..SimplifySettings::default()
+        };
+        let reduce = stack.push_op(OpKind::Reduce(ReduceParams {
+            simplify: with_lock,
+            ..ReduceParams::default()
+        }));
+        stack.push_op(OpKind::SimplifyLod(LodParams {
+            simplify: with_lock,
+            ..LodParams::default()
+        }));
+        stack
+            .node_override_mut(0)
+            .ops
+            .push(review_optimize::OpInstance {
+                id: reduce,
+                enabled: true,
+                kind: OpKind::Reduce(ReduceParams {
+                    simplify: with_lock,
+                    ..ReduceParams::default()
+                }),
+            });
+        let path = std::env::temp_dir().join(format!(
+            "review3d-cli-simplifier-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, preset::to_json(&stack).expect("serializes")).expect("written");
+        let mut line = args(None, None);
+        line.preset = Some(path.clone());
+        line.target_error = Some(1.0);
+        line.simplifier = Some(SimplifyAlgorithm::Sloppy);
+        line.simplify_flags = Some(SimplifyFlags {
+            regularize: true,
+            ..SimplifyFlags::default()
+        });
+        let built = build_stack(&line).expect("a stack");
+        let _ = std::fs::remove_file(path);
+
+        let regularized = SimplifyFlags {
+            regularize: true,
+            ..SimplifyFlags::default()
+        };
+        for op in &built.ops {
+            let (simplify, limits): (SimplifySettings, Vec<f32>) = match &op.kind {
+                OpKind::Reduce(params) => (params.simplify, vec![params.target.target_error]),
+                OpKind::SimplifyLod(params) => (
+                    params.simplify,
+                    params
+                        .levels
+                        .iter()
+                        .map(|level| level.target_error)
+                        .collect(),
+                ),
+                _ => continue,
+            };
+            assert_eq!(simplify.algorithm, SimplifyAlgorithm::Sloppy);
+            assert_eq!(simplify.flags, regularized, "the set replaces the preset's");
+            assert!(limits.iter().all(|&limit| limit == 1.0), "{limits:?}");
+        }
+        let kept = &built.overrides[0].ops[0].kind;
+        let OpKind::Reduce(kept) = kept else {
+            panic!("the override is still a Reduce");
+        };
+        assert!(
+            kept.simplify.flags.lock_border,
+            "the override keeps its own"
+        );
     }
 
     #[test]

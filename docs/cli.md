@@ -128,6 +128,9 @@ workspace's Export does.
 | `--preset <file>` | A preset saved from the Opt workspace (**Save preset**). Its per-object settings are matched to each model's objects by name, as **Load preset** does. One that matches nothing is dropped, with a warning. |
 | `--lods <targets>\|none` | The LOD chain, at most 8 levels: shares of the triangles (`0.5,0.25` or `50%,25%`), numbers of triangles (`750t,375t`), or a mix. Replaces the preset's chain. A level the preset already has keeps its error limit, and a new one gets the one before it (0.01 by default, at every level). `none` turns the preset's chain off. |
 | `--reduce <target>` | Simplify the model itself to this share of its triangles (`0.5`, `50%`), or to this many (`1500t`), before any LODs are made. Sets the preset's Reduce, or adds one before the chain. |
+| `--target-error <limit>` | The error limit of the Reduce and of every LOD level, `0` to `1`: how far the surface may move, as a share of the model's size (`0.01` by default), or in its own units with the `error-absolute` flag. A level stops short of its target rather than go past it, so `1` lets every level reach its target whatever it costs the shape. |
+| `--simplifier preserve-attributes\|standard\|sloppy` | The simplifier the Reduce and the LOD chain use. `preserve-attributes`, the default, weighs shading and texture layout beside the shape; `sloppy` is fastest and closes holes. |
+| `--simplify-flags <flags>\|none` | The simplifier's flags, as the whole set: any of `lock-border`, `error-absolute`, `prune`, `regularize`, `regularize-light`, `collapse-across-seams`, `preserve-folds`, `clamp-attribute-error`, separated by commas. Replaces the preset's flags, so a flag it has on and the list leaves out goes off; `none` turns them all off. |
 | `--packaging single-file\|file-per-lod` | `single-file` writes one FBX holding `Name_LOD0`...`Name_LODn`. `file-per-lod` writes `name_LOD0.fbx`, `name_LOD1.fbx`... A run with no chain writes `name.fbx` either way. |
 | `--hierarchy rebuild\|flat` | `rebuild` keeps the model's hierarchy; `flat` writes every mesh at the top level, in world space. |
 | `--format binary\|ascii` | The FBX encoding. |
@@ -136,7 +139,9 @@ workspace's Export does.
 | `--replace-models` | Let each model's results replace the model itself, when `--out` and `--suffix` put them there: so an engine that has the model placed in its scenes picks up the new one. There is no undo; keep the models in source control. |
 
 Without `--preset`, the stack is just what `--lods` and `--reduce` ask for, so at
-least one of the three is needed.
+least one of the three is needed. `--target-error`, `--simplifier` and
+`--simplify-flags` set the Reduce's and the chain's own settings; an object the
+preset gives settings of its own keeps them.
 
 A number of triangles is a budget for the model's objects together, shared out
 in proportion to their own triangles, so each keeps the same share of what it

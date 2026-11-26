@@ -19,9 +19,10 @@ use std::path::PathBuf;
 use review_audit::{Engine, Severity};
 use review_localization::{Key, tr};
 use review_optimize::stack::limits::{
-    LOD_RATIO_MAX, LOD_RATIO_MIN, LOD_TRIANGLES_MAX, LOD_TRIANGLES_MIN, MAX_LOD_LEVELS,
+    LOD_ERROR_MAX, LOD_ERROR_MIN, LOD_RATIO_MAX, LOD_RATIO_MIN, LOD_TRIANGLES_MAX,
+    LOD_TRIANGLES_MIN, MAX_LOD_LEVELS,
 };
-use review_optimize::{FbxFormat, HierarchyMode, LodPackaging};
+use review_optimize::{FbxFormat, HierarchyMode, LodPackaging, SimplifyAlgorithm, SimplifyFlags};
 
 use crate::keys::cli as k;
 
@@ -137,6 +138,13 @@ pub(crate) struct OptimizeArgs {
     pub(crate) preset: Option<PathBuf>,
     pub(crate) lods: Option<Lods>,
     pub(crate) reduce: Option<Target>,
+    /// `--target-error`: the error limit of the Reduce and of every LOD level.
+    pub(crate) target_error: Option<f32>,
+    /// `--simplifier`: the algorithm the Reduce and the chain use.
+    pub(crate) simplifier: Option<SimplifyAlgorithm>,
+    /// `--simplify-flags`: the whole set of simplifier flags, in place of the
+    /// preset's.
+    pub(crate) simplify_flags: Option<SimplifyFlags>,
     pub(crate) packaging: Option<LodPackaging>,
     pub(crate) hierarchy: Option<HierarchyMode>,
     pub(crate) format: Option<FbxFormat>,
@@ -243,6 +251,9 @@ const OUT: &str = "--out";
 const PRESET: &str = "--preset";
 const LODS: &str = "--lods";
 const REDUCE: &str = "--reduce";
+const TARGET_ERROR: &str = "--target-error";
+const SIMPLIFIER: &str = "--simplifier";
+const SIMPLIFY_FLAGS: &str = "--simplify-flags";
 const PACKAGING: &str = "--packaging";
 const HIERARCHY: &str = "--hierarchy";
 const FORMAT: &str = "--format";
@@ -270,6 +281,20 @@ const PROFILE_CHOICES: &[&str] = &["unity", "unreal", "generic"];
 const FAIL_ON_CHOICES: &[&str] = &["error", "warning", "info", "never"];
 const BAR_CHOICES: &[&str] = &["auto", "on", "off"];
 const NO_LODS: &str = "none";
+const SIMPLIFIER_CHOICES: &[&str] = &["preserve-attributes", "standard", "sloppy"];
+/// The simplifier flags `--simplify-flags` takes: each of the Inspector's checkboxes
+/// by the name it shows there, in its order.
+const SIMPLIFY_FLAG_WORDS: &[&str] = &[
+    "lock-border",
+    "error-absolute",
+    "prune",
+    "regularize",
+    "regularize-light",
+    "collapse-across-seams",
+    "preserve-folds",
+    "clamp-attribute-error",
+];
+const NO_FLAGS: &str = "none";
 
 /// What an option takes after its name.
 #[derive(Clone, Copy)]
@@ -311,14 +336,32 @@ const SPECS: &[Spec] = &[
     },
     Spec {
         name: LODS,
-        takes: Takes::Value(k::HELP_VALUE_RATIOS),
+        takes: Takes::Value(k::HELP_VALUE_TARGETS),
         help: k::HELP_OPTION_LODS,
         on: OPTIMIZE,
     },
     Spec {
         name: REDUCE,
-        takes: Takes::Value(k::HELP_VALUE_RATIO),
+        takes: Takes::Value(k::HELP_VALUE_TARGET),
         help: k::HELP_OPTION_REDUCE,
+        on: OPTIMIZE,
+    },
+    Spec {
+        name: TARGET_ERROR,
+        takes: Takes::Value(k::HELP_VALUE_LIMIT),
+        help: k::HELP_OPTION_TARGET_ERROR,
+        on: OPTIMIZE,
+    },
+    Spec {
+        name: SIMPLIFIER,
+        takes: Takes::Choice(SIMPLIFIER_CHOICES),
+        help: k::HELP_OPTION_SIMPLIFIER,
+        on: OPTIMIZE,
+    },
+    Spec {
+        name: SIMPLIFY_FLAGS,
+        takes: Takes::Value(k::HELP_VALUE_FLAGS),
+        help: k::HELP_OPTION_SIMPLIFY_FLAGS,
         on: OPTIMIZE,
     },
     Spec {
@@ -698,6 +741,19 @@ fn optimize_args(given: &Given) -> Result<OptimizeArgs, String> {
         .trimmed(REDUCE)
         .map(|value| target(REDUCE, &value))
         .transpose()?;
+    let target_error = given
+        .trimmed(TARGET_ERROR)
+        .map(|value| error_limit(TARGET_ERROR, &value))
+        .transpose()?;
+    let simplifier = choice(given, SIMPLIFIER, SIMPLIFIER_CHOICES)?.map(|word| match word {
+        "standard" => SimplifyAlgorithm::Standard,
+        "sloppy" => SimplifyAlgorithm::Sloppy,
+        _ => SimplifyAlgorithm::WithAttributes,
+    });
+    let simplify_flags = given
+        .trimmed(SIMPLIFY_FLAGS)
+        .map(|value| flag_list(SIMPLIFY_FLAGS, &value))
+        .transpose()?;
     let preset = given.path(PRESET);
     let makes_lods = matches!(lods, Some(Lods::Levels(_)));
     if preset.is_none() && !makes_lods && reduce.is_none() {
@@ -708,6 +764,9 @@ fn optimize_args(given: &Given) -> Result<OptimizeArgs, String> {
         preset,
         lods,
         reduce,
+        target_error,
+        simplifier,
+        simplify_flags,
         packaging: choice(given, PACKAGING, PACKAGING_CHOICES)?.map(|word| match word {
             "file-per-lod" => LodPackaging::FilePerLod,
             _ => LodPackaging::SingleFileSuffixed,
@@ -819,6 +878,47 @@ fn target(name: &str, value: &str) -> Result<Target, String> {
         return Err(bad());
     }
     Ok(Target::Share(parsed))
+}
+
+/// An error limit, as the Inspector's slider takes it: `0` to `1`.
+fn error_limit(name: &str, value: &str) -> Result<f32, String> {
+    value
+        .trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|limit| (LOD_ERROR_MIN..=LOD_ERROR_MAX).contains(limit))
+        .ok_or_else(|| k::usage_bad_error(name.to_owned(), value.to_owned()))
+}
+
+/// `regularize,lock-border`, or `none`: the whole set, so a flag the preset has on
+/// and the list leaves out is off.
+fn flag_list(name: &str, value: &str) -> Result<SimplifyFlags, String> {
+    let mut flags = SimplifyFlags::default();
+    if value.trim().eq_ignore_ascii_case(NO_FLAGS) {
+        return Ok(flags);
+    }
+    let words = || [SIMPLIFY_FLAG_WORDS, &[NO_FLAGS]].concat().join("|");
+    for item in value
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+    {
+        let word = SIMPLIFY_FLAG_WORDS
+            .iter()
+            .find(|word| item.eq_ignore_ascii_case(word))
+            .ok_or_else(|| k::usage_bad_choice(words(), name.to_owned(), item.to_owned()))?;
+        match *word {
+            "lock-border" => flags.lock_border = true,
+            "error-absolute" => flags.error_absolute = true,
+            "prune" => flags.prune = true,
+            "regularize" => flags.regularize = true,
+            "regularize-light" => flags.regularize_light = true,
+            "collapse-across-seams" => flags.permissive = true,
+            "preserve-folds" => flags.preserve_folds = true,
+            _ => flags.clamp_attribute_error = true,
+        }
+    }
+    Ok(flags)
 }
 
 /// `0.5,0.25`, `50%, 25%`, `750t,375t`, or a mix of the two.
@@ -967,6 +1067,51 @@ mod tests {
                 "{bad}: the count's message, its values in their places: {error}"
             );
         }
+    }
+
+    /// The simplifier's settings without a preset: the error limit, the algorithm and
+    /// the whole set of flags, by the Inspector's names, in any case; `none` is the
+    /// empty set, and anything else is refused before a model is read.
+    #[test]
+    fn the_simplifiers_settings_are_read() {
+        let parsed = run(
+            "optimize a.fbx --out o --reduce 400t --target-error 1 --simplifier standard \
+             --simplify-flags regularize,LOCK-BORDER,collapse-across-seams",
+        );
+        let Command::Optimize(args) = parsed.command else {
+            panic!("not optimize");
+        };
+        assert_eq!(args.target_error, Some(1.0));
+        assert_eq!(args.simplifier, Some(SimplifyAlgorithm::Standard));
+        assert_eq!(
+            args.simplify_flags,
+            Some(SimplifyFlags {
+                regularize: true,
+                lock_border: true,
+                permissive: true,
+                ..SimplifyFlags::default()
+            })
+        );
+        let Command::Optimize(args) =
+            run("optimize a.fbx --out o --reduce 0.5 --simplify-flags none").command
+        else {
+            panic!("not optimize");
+        };
+        assert_eq!(args.simplify_flags, Some(SimplifyFlags::default()));
+        for line in [
+            "optimize a.fbx --out o --reduce 0.5 --target-error 2",
+            "optimize a.fbx --out o --reduce 0.5 --target-error x",
+            "optimize a.fbx --out o --reduce 0.5 --simplifier fast",
+            "optimize a.fbx --out o --reduce 0.5 --simplify-flags regularize,smooth",
+        ] {
+            let error = usage_error(line);
+            assert!(!error.is_empty(), "{line} is refused");
+        }
+        assert!(
+            usage_error("optimize a.fbx --out o --reduce 0.5 --simplify-flags smooth")
+                .contains("lock-border|error-absolute"),
+            "a wrong flag is answered with the flags there are"
+        );
     }
 
     #[test]
