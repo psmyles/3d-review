@@ -395,7 +395,8 @@ review3d-cli info hero.fbx --report stats.json
 
 What each model holds, as the Model Stats panel shows it: polygons, triangles and
 vertices as the modelling program counts them, GPU vertices as an engine would
-build them, draws, materials, UV sets, bones, animations and the file's unit.
+build them, draws, materials, UV sets, bones, animations and the file's unit; and
+its size in metres.
 
 ## The report
 
@@ -493,4 +494,8 @@ Each entry, when `done`: `counts` (`polygons`, `triangles`, `vertices`,
 `unit_meters` (the file's unit in meters, `0` when it declares none, written as the
 shortest number that is it: `0.01` for centimeters) and `up_axis` (`positive_x`,
 `negative_x`, `positive_y`, `negative_y`, `positive_z` or `negative_z`, the words
-an audit profile's up-axis target uses, or `null` when the file names none).
+an audit profile's up-axis target uses, or `null` when the file names none),
+`bounds_m` (the model's box: `min`, `max` and `size`, each `[x, y, z]` in metres and
+in the file's own axes, which `up_axis` names; `null` for a model with no
+geometry) and `node_bounds` (the same box for each object that owns triangles, with
+its `node` index and `name`, in node order).

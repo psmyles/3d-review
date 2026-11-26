@@ -97,6 +97,47 @@ fn work(common: &Common, bar: &Bar, report: &mut Report) {
                 "nodes": model_data.nodes.len(),
             }),
         );
+        // The model's extent, in metres and the file's own axes: import scales every
+        // file to metres and leaves its axes as they are, so this is the same box
+        // a game reading the file would see, with up as `up_axis` says.
+        let bounds_json = |bounds: review_model::Bounds| {
+            let triple = |v: [f32; 3]| json!(v.map(figure));
+            json!({
+                "min": triple(bounds.min.to_array()),
+                "max": triple(bounds.max.to_array()),
+                "size": triple(bounds.size().to_array()),
+            })
+        };
+        let bounds = model_data.bounds.filter(|bounds| !bounds.is_empty());
+        if let Some(bounds) = bounds {
+            let size = bounds.size();
+            console::say(&format!(
+                "  {}",
+                k::info_size(
+                    format!("{:.4}", size.x),
+                    format!("{:.4}", size.y),
+                    format!("{:.4}", size.z),
+                )
+            ));
+        }
+        entry.set(
+            "bounds_m",
+            bounds.map_or(serde_json::Value::Null, bounds_json),
+        );
+        // Each object's own box: what an assembly step needs to place parts, and
+        // what a whole robot's file is made of. Only nodes that own triangles.
+        let node_bounds: Vec<serde_json::Value> = review_model::measure::node_bounds(model_data)
+            .into_iter()
+            .enumerate()
+            .filter(|(_, bounds)| !bounds.is_empty())
+            .map(|(index, bounds)| {
+                let mut value = bounds_json(bounds);
+                value["node"] = json!(index);
+                value["name"] = json!(model_data.nodes[index].name);
+                value
+            })
+            .collect();
+        entry.set("node_bounds", json!(node_bounds));
         entry.set("unit_meters", figure(meters));
         // Spelled as the audit report and its profiles spell an axis
         // (`positive_y`); `null` when the file names none.

@@ -202,6 +202,25 @@ fn info_reports_the_source_counts() {
         up.is_null() || up.as_str().is_some_and(|axis| axes.contains(&axis)),
         "{up}"
     );
+    // The metre cube is a metre on every side, whatever unit the file was
+    // written in, and its one object has the same box.
+    let bounds = &report["results"][0]["bounds_m"];
+    assert_eq!(
+        bounds["size"],
+        serde_json::json!([1.0, 1.0, 1.0]),
+        "{bounds}"
+    );
+    assert_eq!(
+        bounds["min"],
+        serde_json::json!([-0.5, -0.5, -0.5]),
+        "{bounds}"
+    );
+    let nodes = report["results"][0]["node_bounds"]
+        .as_array()
+        .expect("a node list");
+    assert_eq!(nodes.len(), 1, "only the node that owns triangles");
+    assert_eq!(nodes[0]["size"], bounds["size"]);
+    assert!(stdout(&output).contains("Size: 1.0000 x 1.0000 x 1.0000 m"));
 }
 
 #[test]
