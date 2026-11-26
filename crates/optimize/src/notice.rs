@@ -51,6 +51,10 @@ pub enum OptWarning {
     NormalsKeptForBlendShapes { object: String },
     /// Recalculate Normals failed on an object.
     NormalsFailed { object: String, detail: String },
+    /// Unwrap failed on an object and left its UVs as they were.
+    UnwrapFailed { object: String, detail: String },
+    /// Unwrap was told to cut at a custom attribute the object does not carry.
+    UnwrapSeamAttributeMissing { object: String, attribute: String },
     /// Shrinkwrap skipped a skinned or blend-shaped object.
     ShrinkwrapKeptDeforming { object: String },
     /// Shrinkwrap skipped an object too small to wrap.
@@ -156,6 +160,14 @@ impl fmt::Display for OptWarning {
             Self::NormalsFailed { object, detail } => {
                 write!(f, "Recalculate Normals: '{object}': {detail}")
             }
+            Self::UnwrapFailed { object, detail } => {
+                write!(f, "Unwrap: '{object}' kept its UVs: {detail}")
+            }
+            Self::UnwrapSeamAttributeMissing { object, attribute } => write!(
+                f,
+                "Unwrap: '{object}' has no attribute {attribute}, so it was unwrapped without \
+                 those seams."
+            ),
             Self::ShrinkwrapKeptDeforming { object } => write!(
                 f,
                 "Shrinkwrap: '{object}' is skinned or has blend shapes, so it was left as it \

@@ -10,10 +10,11 @@
 use review_labels::opt::{op_description, op_kind};
 use review_model::ModelData;
 use review_optimize::{
-    AoQuality, AoTarget, AttributeWeights, BakeAoParams, ExportFileType, ExportOptions, FbxFormat,
-    HierarchyMode, LodLevel, LodPackaging, LodParams, NormalMode, NormalParams, OpKind,
-    ReduceParams, RemeshDensity, RemeshParams, RemeshTopology, ShrinkwrapMethod, ShrinkwrapParams,
-    SimplifyAlgorithm, SimplifyFlags, SimplifySettings, TargetMode, VoxelTarget, WeldParams,
+    AoQuality, AoTarget, AttributeWeights, BakeAoParams, ChartGrowth, ExportFileType,
+    ExportOptions, FbxFormat, Flattening, HierarchyMode, LodLevel, LodPackaging, LodParams,
+    NormalMode, NormalParams, OpKind, ReduceParams, RemeshDensity, RemeshParams, RemeshTopology,
+    SeamSource, ShrinkwrapMethod, ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags,
+    SimplifySettings, TargetMode, UnwrapParams, UvLayout, VoxelTarget, WeldParams,
 };
 use review_render::Selection;
 
@@ -35,8 +36,10 @@ use crate::state::{
         SHRINKWRAP_RESOLUTION_MAX, SHRINKWRAP_RESOLUTION_MIN, SHRINKWRAP_TARGET_RATIO_MAX,
         SHRINKWRAP_TARGET_RATIO_MIN, SHRINKWRAP_TARGET_TRIANGLES_MAX,
         SHRINKWRAP_TARGET_TRIANGLES_MIN, SHRINKWRAP_VOXEL_RESOLUTION_MAX,
-        SHRINKWRAP_VOXEL_RESOLUTION_MIN, VOLUME_CHANGE_MAX, VOLUME_CHANGE_MIN, WELD_TOLERANCE_MAX,
-        WELD_TOLERANCE_MIN,
+        SHRINKWRAP_VOXEL_RESOLUTION_MIN, UNWRAP_CREASE_MAX, UNWRAP_CREASE_MIN, UNWRAP_DENSITY_MAX,
+        UNWRAP_DENSITY_MIN, UNWRAP_ISLAND_STRETCH_MAX, UNWRAP_ISLAND_STRETCH_MIN,
+        UNWRAP_PADDING_MAX, UNWRAP_RESOLUTION_MAX, UNWRAP_RESOLUTION_MIN, UV_SET_MAX,
+        VOLUME_CHANGE_MAX, VOLUME_CHANGE_MIN, WELD_TOLERANCE_MAX, WELD_TOLERANCE_MIN,
     },
 };
 use crate::theme;
@@ -65,7 +68,7 @@ pub(crate) fn body(
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| match state.opt.selected {
-            Some(StackItem::Op(id)) => operation_body(ui, state, id),
+            Some(StackItem::Op(id)) => operation_body(ui, state, id, model),
             Some(StackItem::ExportSettings) => out.intent = export_body(ui, state),
             None => node_body(ui, state, model),
         });
@@ -77,7 +80,7 @@ pub(crate) fn body(
 }
 
 /// Parameters for the selected operation.
-fn operation_body(ui: &mut egui::Ui, state: &mut UiState, id: u64) {
+fn operation_body(ui: &mut egui::Ui, state: &mut UiState, id: u64, model: &ModelData) {
     let Some(op) = state.opt.stack.op(id) else {
         ui.weak(keys::ui_opt::OPERATION_GONE);
         return;
@@ -102,6 +105,7 @@ fn operation_body(ui: &mut egui::Ui, state: &mut UiState, id: u64) {
         }
         OpKind::SimplifyLod(params) => lod_params(ui, params).map(OpKind::SimplifyLod),
         OpKind::BakeAo(params) => bake_ao_params(ui, params).map(OpKind::BakeAo),
+        OpKind::Unwrap(params) => unwrap_params(ui, &params, model).map(OpKind::Unwrap),
         // These three have nothing to configure — meshoptimizer exposes no knobs
         // for them, and inventing some would be worse than an honest note.
         OpKind::FilterTriangles | OpKind::VertexCache | OpKind::VertexFetch => {
@@ -531,6 +535,197 @@ fn remesh_params(ui: &mut egui::Ui, params: RemeshParams) -> Option<RemeshParams
     ui.label(egui::RichText::from(keys::ui_opt::REMESH_EXPLAINED).color(color::TEXT_MUTED));
 
     (edited != params).then_some(edited)
+}
+
+/// The Unwrap operation's settings. The seam choice lists what `model` carries:
+/// its custom attributes and its UV sets, plus whatever the settings name that
+/// it does not (a preset made for another model).
+fn unwrap_params(
+    ui: &mut egui::Ui,
+    params: &UnwrapParams,
+    model: &ModelData,
+) -> Option<UnwrapParams> {
+    let mut edited = params.clone();
+    let uv_sets = model.stats.uv_set_count as u32;
+    let mut seams: Vec<SeamSource> = vec![SeamSource::None];
+    seams.extend(
+        model
+            .custom_attributes
+            .iter()
+            .map(|attribute| SeamSource::Attribute(attribute.name.clone())),
+    );
+    seams.extend((0..uv_sets).map(SeamSource::UvSetU));
+    if !seams.contains(&edited.seams) {
+        seams.push(edited.seams.clone());
+    }
+
+    panel_grid(ui, "opt_unwrap", |ui| {
+        labeled_combo(
+            ui,
+            Tip::new(keys::ui_opt::UNWRAP_LAYOUT)
+                .describe(keys::ui_opt::UNWRAP_LAYOUT_DESCRIPTION)
+                .page(Page::OptUnwrap),
+            "opt_unwrap_layout",
+            labels::uv_layout(edited.layout),
+            |ui| {
+                for layout in UvLayout::ALL {
+                    ui.selectable_value(&mut edited.layout, layout, labels::uv_layout(layout));
+                }
+            },
+        );
+        labeled_slider_with_value(
+            ui,
+            Tip::new(keys::ui_opt::UNWRAP_TARGET_SET)
+                .describe(keys::ui_opt::UNWRAP_TARGET_SET_DESCRIPTION)
+                .page(Page::OptUnwrap),
+            &mut edited.target_set,
+            0..=UV_SET_MAX,
+            0,
+        );
+        let mut referenced = edited.reference_set.is_some();
+        labeled_checkbox(
+            ui,
+            Tip::new(keys::ui_opt::UNWRAP_USE_REFERENCE)
+                .describe(keys::ui_opt::UNWRAP_USE_REFERENCE_DESCRIPTION)
+                .page(Page::OptUnwrap),
+            &mut referenced,
+        );
+        edited.reference_set = match (referenced, edited.reference_set) {
+            (true, Some(mut set)) => {
+                labeled_slider_with_value(
+                    ui,
+                    Tip::new(keys::ui_opt::UNWRAP_REFERENCE_SET).page(Page::OptUnwrap),
+                    &mut set,
+                    0..=UV_SET_MAX,
+                    0,
+                );
+                Some(set)
+            }
+            (true, None) => Some(0),
+            (false, _) => None,
+        };
+        labeled_combo(
+            ui,
+            Tip::new(keys::ui_opt::UNWRAP_SEAMS)
+                .describe(keys::ui_opt::UNWRAP_SEAMS_DESCRIPTION)
+                .page(Page::OptUnwrap),
+            "opt_unwrap_seams",
+            labels::seam_source(&edited.seams),
+            |ui| {
+                for seam in &seams {
+                    ui.selectable_value(&mut edited.seams, seam.clone(), labels::seam_source(seam));
+                }
+            },
+        );
+        labeled_checkbox(
+            ui,
+            Tip::new(keys::ui_opt::UNWRAP_SPLIT_REFERENCE)
+                .describe(keys::ui_opt::UNWRAP_SPLIT_REFERENCE_DESCRIPTION)
+                .page(Page::OptUnwrap),
+            &mut edited.split_at_reference_seams,
+        );
+        labeled_checkbox(
+            ui,
+            Tip::new(keys::ui_opt::UNWRAP_SPLIT_CREASES).page(Page::OptUnwrap),
+            &mut edited.split_at_creases,
+        );
+        if edited.split_at_creases {
+            labeled_slider_with_value(
+                ui,
+                Tip::new(keys::ui_opt::NORMAL_CREASE_ANGLE).page(Page::OptUnwrap),
+                &mut edited.crease_angle,
+                UNWRAP_CREASE_MIN..=UNWRAP_CREASE_MAX,
+                0,
+            );
+        }
+        labeled_combo(
+            ui,
+            Tip::new(keys::ui_opt::UNWRAP_CHARTS)
+                .describe(keys::ui_opt::UNWRAP_CHARTS_DESCRIPTION)
+                .page(Page::OptUnwrap),
+            "opt_unwrap_charts",
+            labels::chart_growth(edited.charts),
+            |ui| {
+                for charts in ChartGrowth::ALL {
+                    ui.selectable_value(&mut edited.charts, charts, labels::chart_growth(charts));
+                }
+            },
+        );
+        match edited.layout {
+            UvLayout::Tiled => {
+                labeled_combo(
+                    ui,
+                    Tip::new(keys::ui_opt::UNWRAP_FLATTENING)
+                        .describe(keys::ui_opt::UNWRAP_FLATTENING_DESCRIPTION)
+                        .page(Page::OptUnwrap),
+                    "opt_unwrap_flattening",
+                    labels::flattening(edited.flattening),
+                    |ui| {
+                        for flattening in Flattening::ALL {
+                            ui.selectable_value(
+                                &mut edited.flattening,
+                                flattening,
+                                labels::flattening(flattening),
+                            );
+                        }
+                    },
+                );
+                if edited.charts == ChartGrowth::Islands {
+                    labeled_slider_with_value(
+                        ui,
+                        Tip::new(keys::ui_opt::UNWRAP_ISLAND_STRETCH)
+                            .describe(keys::ui_opt::UNWRAP_ISLAND_STRETCH_DESCRIPTION)
+                            .page(Page::OptUnwrap),
+                        &mut edited.island_stretch_limit,
+                        UNWRAP_ISLAND_STRETCH_MIN..=UNWRAP_ISLAND_STRETCH_MAX,
+                        2,
+                    );
+                }
+                labeled_log_slider_with_value(
+                    ui,
+                    Tip::new(keys::ui_opt::UNWRAP_DENSITY)
+                        .describe(keys::ui_opt::UNWRAP_DENSITY_DESCRIPTION)
+                        .page(Page::OptUnwrap),
+                    &mut edited.density,
+                    UNWRAP_DENSITY_MIN..=UNWRAP_DENSITY_MAX,
+                    3,
+                );
+                labeled_checkbox(
+                    ui,
+                    Tip::new(keys::ui_opt::UNWRAP_ALIGN)
+                        .describe(keys::ui_opt::UNWRAP_ALIGN_DESCRIPTION)
+                        .page(Page::OptUnwrap),
+                    &mut edited.align_to_reference,
+                );
+                labeled_checkbox(
+                    ui,
+                    Tip::new(keys::ui_opt::UNWRAP_KEEP_BETTER)
+                        .describe(keys::ui_opt::UNWRAP_KEEP_BETTER_DESCRIPTION)
+                        .page(Page::OptUnwrap),
+                    &mut edited.keep_better,
+                );
+            }
+            UvLayout::Atlas => {
+                labeled_log_slider_with_value(
+                    ui,
+                    Tip::new(keys::ui_opt::UNWRAP_RESOLUTION).page(Page::OptUnwrap),
+                    &mut edited.resolution,
+                    UNWRAP_RESOLUTION_MIN..=UNWRAP_RESOLUTION_MAX,
+                    0,
+                );
+                labeled_slider_with_value(
+                    ui,
+                    Tip::new(keys::ui_opt::UNWRAP_PADDING)
+                        .describe(keys::ui_opt::UNWRAP_PADDING_DESCRIPTION)
+                        .page(Page::OptUnwrap),
+                    &mut edited.padding,
+                    0..=UNWRAP_PADDING_MAX,
+                    0,
+                );
+            }
+        }
+    });
+    (edited != *params).then_some(edited)
 }
 
 fn bake_ao_params(ui: &mut egui::Ui, params: BakeAoParams) -> Option<BakeAoParams> {

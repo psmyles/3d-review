@@ -174,6 +174,14 @@ ui-enums-hierarchy-flat = Flat, world-baked meshes
 ui-enums-fbx-binary = Binary
 ui-enums-fbx-ascii = ASCII
 ui-enums-file-type-fbx = FBX
+ui-enums-uv-layout-atlas = Atlas
+ui-enums-uv-layout-tiled = Tiled
+ui-enums-charts-islands = Islands
+ui-enums-charts-automatic = Automatic
+ui-enums-flattening-minimum-stretch = Minimum stretch
+ui-enums-flattening-conformal = Conformal
+ui-enums-seams-none = None
+ui-enums-seams-uv-set-u = U of UV set { $set }
 ui-enums-file-type-glb = glb (binary glTF)
 
 ## Viewport tool

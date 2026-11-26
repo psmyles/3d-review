@@ -30,6 +30,7 @@ pub fn op_kind(kind: &OpKind) -> Key {
         OpKind::Shrinkwrap(_) => k::OP_SHRINKWRAP,
         OpKind::RecalculateNormals(_) => k::OP_RECALCULATE_NORMALS,
         OpKind::SimplifyLod(_) => k::OP_SIMPLIFY_LOD,
+        OpKind::Unwrap(_) => k::OP_UNWRAP,
         OpKind::BakeAo(_) => k::OP_BAKE_AO,
         OpKind::VertexCache => k::OP_VERTEX_CACHE,
         OpKind::Overdraw { .. } => k::OP_OVERDRAW,
@@ -55,6 +56,7 @@ pub fn op_description(kind: &OpKind) -> Key {
         OpKind::Shrinkwrap(_) => k::OP_SHRINKWRAP_DESCRIPTION,
         OpKind::RecalculateNormals(_) => k::OP_RECALCULATE_NORMALS_DESCRIPTION,
         OpKind::SimplifyLod(_) => k::OP_SIMPLIFY_LOD_DESCRIPTION,
+        OpKind::Unwrap(_) => k::OP_UNWRAP_DESCRIPTION,
         OpKind::BakeAo(_) => k::OP_BAKE_AO_DESCRIPTION,
         OpKind::VertexCache => k::OP_VERTEX_CACHE_DESCRIPTION,
         OpKind::Overdraw { .. } => k::OP_OVERDRAW_DESCRIPTION,
@@ -108,6 +110,12 @@ pub fn explain_opt_warning(warning: &OptWarning) -> String {
         }
         OptWarning::NormalsFailed { object, detail } => {
             k::warning_normals_failed(object.clone(), detail.clone())
+        }
+        OptWarning::UnwrapFailed { object, detail } => {
+            k::warning_unwrap_failed(detail.clone(), object.clone())
+        }
+        OptWarning::UnwrapSeamAttributeMissing { object, attribute } => {
+            k::warning_unwrap_seam_attribute_missing(attribute.clone(), object.clone())
         }
         OptWarning::ShrinkwrapKeptDeforming { object } => {
             k::warning_shrinkwrap_kept_deforming(object.clone())

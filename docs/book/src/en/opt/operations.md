@@ -43,6 +43,11 @@ with and without it.
   `_LOD0` alone (or the most detailed level there is), and the existing
   lower levels are left out: the new ones replace them, under the same names.
   Parts without a level in their name are simplified as usual.
+- **Unwrap UVs** - [makes fresh UVs](unwrap.md): cuts the surface into islands
+  where you say (a CAD face id, the old UV seams, sharp edges), flattens each,
+  and lays them out at one texel density for repeating textures, or packs them
+  into the square for baking. Below Generate LODs, every level gets its own.
+  Does not change the shape.
 - **Bake AO to Vertex Colors** - works out [soft shadows](ao.md) for each point
   and stores them as colors on the points. Does not change the shape.
 - **Optimize Vertex Cache** - reorders the triangles so the GPU can

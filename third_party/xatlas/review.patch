@@ -1,0 +1,79 @@
+--- a/xatlas.cpp
++++ b/xatlas.cpp
+@@ -53,6 +53,49 @@
+ #include <stdio.h>
+ #include <string.h>
+ 
++// review patch P1: the transcendental functions xatlas calls (the LSCM setup's
++// angles, the chart rotation in packing) come from the platform's maths
++// library, which is free to round the last bit differently on every OS. These
++// are 3D Review's (`crates/optimize/src/xatlas/ffi.rs`: the pure-Rust libm), the
++// same bits everywhere (docs/ARCHITECTURE.md, D27). Defined after every
++// include, so no library declaration is renamed.
++extern "C" float review_xatlas_acosf(float x);
++extern "C" float review_xatlas_sinf(float x);
++extern "C" float review_xatlas_cosf(float x);
++extern "C" float review_xatlas_atan2f(float y, float x);
++#define acosf review_xatlas_acosf
++#define sinf review_xatlas_sinf
++#define cosf review_xatlas_cosf
++#define atan2f review_xatlas_atan2f
++// end review patch P1
++
++// review patch P2: xatlas keeps an orthogonal projection of a curved chart
++// that stretches up to 10% on average (25% at its worst triangle), which is
++// fine for a lightmap and not for a tiling surface texture: a strip of a
++// cylinder came out stretched where LSCM unrolls it exactly. 3D Review keeps a
++// projection only when it is all but exact, and flattens the rest by LSCM.
++#define REVIEW_XATLAS_ORTHO_STRETCH 1.001f
++#define REVIEW_XATLAS_ORTHO_MAX_STRETCH 1.01f
++// end review patch P2
++
++// review patch P3: chart growth stops at two things that split every island
++// that curves far, even when told to grow over whole islands: a face whose
++// normal is ~75 degrees or more from the chart's (1 - cos >= 0.707), and a face
++// whose chart would fold over itself when projected onto its best-fit plane
++// (a half cylinder does). Both are right for xatlas's own segmentation; for an
++// island the seams already decided, the LSCM flattening and its own validity
++// check (with the piecewise fallback) are the test. Both are per thread (xatlas
++// runs on its caller's, single-threaded), set before each atlas by
++// `review_xatlas_set_growth`; upstream's are 0.707 and checked.
++static thread_local float review_xatlas_normal_limit = 0.707f;
++static thread_local bool review_xatlas_check_projection = true;
++extern "C" void review_xatlas_set_growth(float normal_limit, bool check_projection)
++{
++	review_xatlas_normal_limit = normal_limit;
++	review_xatlas_check_projection = check_projection;
++}
++// end review patch P3
++
+ #ifndef XA_DEBUG
+ #ifdef NDEBUG
+ #define XA_DEBUG 0
+@@ -5767,7 +5810,7 @@
+ 			parameterizeChart(chart);
+ 			for (uint32_t i = oldFaceCount; i < faceCount; i++)
+ 				m_faceCharts[chart->faces[i]] = chart->id;
+-			if (!isChartParameterizationValid(chart)) {
++			if (review_xatlas_check_projection && !isChartParameterizationValid(chart)) { // review patch P3
+ 				for (uint32_t i = oldFaceCount; i < faceCount; i++)
+ 					m_faceCharts[chart->faces[i]] = -1;
+ 				chart->faces.resize(oldFaceCount);
+@@ -5854,7 +5897,7 @@
+ 		// Compute metrics.
+ 		float cost = 0.0f;
+ 		const float normalDeviation = computeNormalDeviationMetric(chart, face);
+-		if (normalDeviation >= 0.707f) // ~75 degrees
++		if (normalDeviation >= review_xatlas_normal_limit) // ~75 degrees upstream; review patch P3
+ 			return FLT_MAX;
+ 		cost += m_data.options.normalDeviationWeight * normalDeviation;
+ 		// Penalize faces that cross seams, reward faces that close seams or reach boundaries.
+@@ -7285,7 +7328,7 @@
+ 				m_quality.computeMetrics(m_unifiedMesh);
+ 				XA_PROFILE_END(parameterizeChartsEvaluateQuality)
+ 				// Use orthogonal parameterization if quality is acceptable.
+-				if (!m_quality.boundaryIntersection && m_quality.flippedTriangleCount == 0 && m_quality.zeroAreaTriangleCount == 0 && m_quality.totalGeometricArea > 0.0f && m_quality.stretchMetric <= 1.1f && m_quality.maxStretchMetric <= 1.25f)
++				if (!m_quality.boundaryIntersection && m_quality.flippedTriangleCount == 0 && m_quality.zeroAreaTriangleCount == 0 && m_quality.totalGeometricArea > 0.0f && m_quality.stretchMetric <= REVIEW_XATLAS_ORTHO_STRETCH && m_quality.maxStretchMetric <= REVIEW_XATLAS_ORTHO_MAX_STRETCH) // review patch P2
+ 					m_type = ChartType::Ortho;
+ 			}
+ 			if (m_type == ChartType::LSCM) {

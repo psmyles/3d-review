@@ -73,6 +73,18 @@ and compiled by `crates/optimize/build.rs`.*
 Copyright (c) 2016-2026 Arseny Kapoulkine - <https://github.com/zeux/meshoptimizer>
 License text: [`licenses/meshoptimizer-MIT.txt`](../licenses/meshoptimizer-MIT.txt)
 
+#### xatlas - MIT (with thekla_atlas and Fast-BVH, MIT, and OpenNL, BSD-3-Clause)
+
+*The Unwrap operation's charting, flattening and atlas packing. Upstream commit `f700c77`,
+vendored at `third_party/xatlas/` with this project's patches (`review.patch`; what each does and
+why in `third_party/xatlas/NOTICE.txt`), and compiled by `crates/optimize/build.rs`. Its source
+carries code from thekla_atlas, Fast-BVH and OpenNL, under the notices below.*
+Copyright (c) 2018-2020 Jonathan Young - <https://github.com/jpcy/xatlas>
+Copyright (c) 2013 Thekla, Inc; Copyright NVIDIA Corporation 2006 -- Ignacio Castano (thekla_atlas)
+Copyright (c) 2012 Brandon Pelfrey (Fast-BVH)
+Copyright (c) 2004-2010, Bruno Levy (OpenNL)
+License text: [`licenses/xatlas-MIT.txt`](../licenses/xatlas-MIT.txt)
+
 #### psd_sdk - BSD-2-Clause
 
 *The Photoshop `.psd` reader behind PSD textures, through fire-decode. Compiled from source by

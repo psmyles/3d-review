@@ -13,9 +13,40 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(has_meshopt)");
     println!("cargo:rustc-check-cfg=cfg(has_ufbxw)");
     println!("cargo:rustc-check-cfg=cfg(has_ufbxw_probe)");
+    println!("cargo:rustc-check-cfg=cfg(has_xatlas)");
 
     build_meshoptimizer();
     build_ufbx_write();
+    build_xatlas();
+}
+
+/// xatlas, behind the Unwrap operation (`src/xatlas/`). Optional like the other
+/// trees: without it the operation reports itself unavailable.
+fn build_xatlas() {
+    let dir = Path::new("../../third_party/xatlas");
+    let source = dir.join("xatlas.cpp");
+    for file in ["xatlas.cpp", "xatlas.h", "xatlas_c.h"] {
+        println!("cargo:rerun-if-changed={}", dir.join(file).display());
+    }
+    if !source.exists() {
+        return;
+    }
+    exact_float(&mut cc::Build::new())
+        .cpp(true)
+        .file(&source)
+        .include(dir)
+        // Single-threaded: pieces run in parallel in the optimizer's own pool,
+        // and xatlas's threads would make the result depend on scheduling.
+        .define("XA_MULTITHREADED", "0")
+        // The same code in every profile, so a debug build writes what a release
+        // build does (D27).
+        .define("XA_DEBUG", "0")
+        // Its debug assertions use `assert`, which only `NDEBUG` turns off.
+        .define("NDEBUG", None)
+        .define("XATLAS_C_API", "1")
+        .warnings(false)
+        .compile("xatlas");
+    println!("cargo:rustc-cfg=has_xatlas");
 }
 
 /// The product's name and version, from `product.json` (the one place they're set), for the

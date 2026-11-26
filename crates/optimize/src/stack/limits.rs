@@ -98,6 +98,20 @@ pub const AO_BAKE_DISTANCE_MAX: f32 = 10.0;
 pub const AO_BAKE_INTENSITY_MIN: f32 = 0.1;
 pub const AO_BAKE_INTENSITY_MAX: f32 = 4.0;
 
+/// Unwrap: the UV set written or referred to (glTF and FBX meshes rarely carry
+/// more than a handful), the texel density in UV units per metre, the crease
+/// angle in degrees, the atlas resolution and padding in texels.
+pub const UV_SET_MAX: u32 = 7;
+pub const UNWRAP_DENSITY_MIN: f32 = 0.001;
+pub const UNWRAP_DENSITY_MAX: f32 = 1000.0;
+pub const UNWRAP_CREASE_MIN: f32 = 1.0;
+pub const UNWRAP_CREASE_MAX: f32 = 179.0;
+pub const UNWRAP_RESOLUTION_MIN: u32 = 64;
+pub const UNWRAP_RESOLUTION_MAX: u32 = 16384;
+pub const UNWRAP_PADDING_MAX: u32 = 64;
+pub const UNWRAP_ISLAND_STRETCH_MIN: f32 = 1.0;
+pub const UNWRAP_ISLAND_STRETCH_MAX: f32 = 10.0;
+
 /// `value` inside `min..=max`, or `fallback` when it is not a number at all.
 pub(crate) fn fit(value: &mut f32, min: f32, max: f32, fallback: f32) {
     *value = if value.is_nan() {

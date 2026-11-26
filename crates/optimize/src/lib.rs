@@ -49,6 +49,8 @@ pub mod probe;
 mod ao;
 mod parallel;
 mod shading;
+mod unwrap;
+mod xatlas;
 
 pub mod cancel;
 
@@ -82,6 +84,7 @@ pub use stack::{
     RemeshTopology, ShrinkwrapMethod, ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags,
     SimplifySettings, StackRepairs, TargetMode, VoxelTarget, WeldParams,
 };
+pub use stack::{ChartGrowth, Flattening, SeamSource, UnwrapParams, UvLayout};
 
 /// Everything that can go wrong in this crate.
 #[derive(Debug, thiserror::Error)]

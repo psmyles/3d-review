@@ -23,6 +23,7 @@ mod normals;
 mod params;
 mod remesh;
 mod shrinkwrap;
+mod unwrap;
 
 pub use ao::*;
 pub use export::*;
@@ -30,6 +31,7 @@ pub use normals::*;
 pub use params::*;
 pub use remesh::*;
 pub use shrinkwrap::*;
+pub use unwrap::*;
 
 /// What [`OptStack::rebind_to_model`] did with a loaded preset's per-object
 /// overrides — three counts the caller reports, since each means something
@@ -488,6 +490,9 @@ pub enum OpKind {
     RecalculateNormals(NormalParams),
     /// Generate the LOD chain. At most one per stack.
     SimplifyLod(LodParams),
+    /// Rebuild a UV set: cut the surface into islands, flatten each, and lay
+    /// them out tiled at a texel density or packed into an atlas.
+    Unwrap(UnwrapParams),
     /// Bake raycast ambient occlusion into the vertex-color set.
     BakeAo(BakeAoParams),
     /// Reorder triangles for the GPU's post-transform vertex cache.
@@ -651,6 +656,36 @@ impl OpKind {
                 params.levels.truncate(MAX_LOD_LEVELS);
                 params.levels.iter_mut().for_each(level);
             }
+            OpKind::Unwrap(params) => {
+                let default = UnwrapParams::default();
+                params.target_set = params.target_set.min(UV_SET_MAX);
+                params.reference_set = params.reference_set.map(|set| set.min(UV_SET_MAX));
+                if let SeamSource::UvSetU(set) = &mut params.seams {
+                    *set = (*set).min(UV_SET_MAX);
+                }
+                fit(
+                    &mut params.density,
+                    UNWRAP_DENSITY_MIN,
+                    UNWRAP_DENSITY_MAX,
+                    default.density,
+                );
+                fit(
+                    &mut params.crease_angle,
+                    UNWRAP_CREASE_MIN,
+                    UNWRAP_CREASE_MAX,
+                    default.crease_angle,
+                );
+                params.resolution = params
+                    .resolution
+                    .clamp(UNWRAP_RESOLUTION_MIN, UNWRAP_RESOLUTION_MAX);
+                params.padding = params.padding.min(UNWRAP_PADDING_MAX);
+                fit(
+                    &mut params.island_stretch_limit,
+                    UNWRAP_ISLAND_STRETCH_MIN,
+                    UNWRAP_ISLAND_STRETCH_MAX,
+                    default.island_stretch_limit,
+                );
+            }
             OpKind::BakeAo(params) => {
                 let default = BakeAoParams::default();
                 fit(
@@ -681,7 +716,7 @@ impl OpKind {
     /// Every operation the "Add" menu offers, in menu order — cleanup first
     /// (what you almost always want before anything else), then the LOD
     /// generator, then the GPU reorder passes that belong at the end.
-    pub const ALL: [fn() -> OpKind; 12] = [
+    pub const ALL: [fn() -> OpKind; 13] = [
         || OpKind::Weld(WeldParams::default()),
         || OpKind::FilterTriangles,
         || OpKind::PruneComponents { error: 0.01 },
@@ -690,6 +725,7 @@ impl OpKind {
         || OpKind::Remesh(RemeshParams::default()),
         || OpKind::RecalculateNormals(NormalParams::default()),
         || OpKind::SimplifyLod(LodParams::default()),
+        || OpKind::Unwrap(UnwrapParams::default()),
         || OpKind::BakeAo(BakeAoParams::default()),
         || OpKind::VertexCache,
         || OpKind::Overdraw { threshold: 1.05 },
@@ -707,6 +743,7 @@ impl OpKind {
             OpKind::Shrinkwrap(_) => "Shrinkwrap",
             OpKind::RecalculateNormals(_) => "Recalculate Normals",
             OpKind::SimplifyLod(_) => "Generate LODs",
+            OpKind::Unwrap(_) => "Unwrap UVs",
             OpKind::BakeAo(_) => "Bake AO to Vertex Colors",
             OpKind::VertexCache => "Optimize Vertex Cache",
             OpKind::Overdraw { .. } => "Optimize Overdraw",
@@ -728,6 +765,7 @@ impl OpKind {
             | OpKind::SimplifyLod(_) => true,
             OpKind::BakeAo(_)
             | OpKind::RecalculateNormals(_)
+            | OpKind::Unwrap(_)
             | OpKind::VertexCache
             | OpKind::Overdraw { .. }
             | OpKind::VertexFetch => false,
@@ -738,7 +776,7 @@ impl OpKind {
     /// rebuild them: anything that changes the shape, and anything that rewrites
     /// the normals they are built perpendicular to.
     pub fn invalidates_tangents(&self) -> bool {
-        self.alters_geometry() || matches!(self, OpKind::RecalculateNormals(_))
+        self.alters_geometry() || matches!(self, OpKind::RecalculateNormals(_) | OpKind::Unwrap(_))
     }
 }
 
@@ -873,9 +911,9 @@ mod tests {
     }
 
     #[test]
-    fn the_add_menu_offers_twelve_distinct_operations() {
+    fn the_add_menu_offers_thirteen_distinct_operations() {
         let labels: Vec<&str> = OpKind::ALL.iter().map(|build| build().label()).collect();
-        assert_eq!(labels.len(), 12);
+        assert_eq!(labels.len(), 13);
         for (index, label) in labels.iter().enumerate() {
             assert!(
                 !labels[index + 1..].contains(label),

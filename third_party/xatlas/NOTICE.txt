@@ -1,0 +1,41 @@
+xatlas — vendored source
+========================
+
+Upstream:  https://github.com/jpcy/xatlas
+Commit:    f700c77 (Merge pull request #107 from T-rvw/upgrade_premake_to_use_vs2022)
+License:   MIT — see LICENSE. xatlas.cpp also carries code from thekla_atlas
+           (MIT, Copyright (c) 2013 Thekla, Inc; Copyright NVIDIA Corporation
+           2006 -- Ignacio Castano), Fast-BVH (MIT, Copyright (c) 2012 Brandon
+           Pelfrey) and OpenNL (BSD 3-Clause, Copyright (c) 2004-2010, Bruno
+           Levy), with their notices in the source.
+
+What is vendored
+----------------
+`xatlas.cpp`, `xatlas.h` and `xatlas_c.h` from `source/xatlas/` at the commit
+above, **plus this project's patch**, recorded as `review.patch` (a unified diff
+against the pristine upstream `xatlas.cpp`). Refreshing this directory is: copy
+the newer upstream files in, update the commit above, re-apply `review.patch`
+(`git apply third_party/xatlas/review.patch`, resolving any drift by hand),
+regenerate it from the result, then run the workspace tests — the Unwrap
+operation's suite (`crates/optimize/src/xatlas/`, `tests/unwrap.rs`) and the
+determinism test (`crates/cli/tests/determinism.rs`).
+
+`crates/optimize/build.rs` compiles it single-threaded (`XA_MULTITHREADED=0`:
+the optimizer runs pieces in parallel itself, and xatlas's own threads would
+make the result depend on scheduling), with `XA_DEBUG=0` in every profile (so a
+debug build writes what a release build does), with its C API
+(`XATLAS_C_API=1`), and without floating-point contraction.
+
+The patch (marked `review patch P<n>` in the source)
+----------------------------------------------------
+P1  The four transcendental functions xatlas calls — `acosf`, `sinf`, `cosf`,
+    `atan2f` (the LSCM setup's corner angles, the chart rotation in packing) —
+    are redirected, by macros defined after every include, to
+    `review_xatlas_*`, which `crates/optimize/src/xatlas/ffi.rs` defines over
+    the pure-Rust `libm`. The platform's maths library rounds differently on
+    every OS, and a different last bit there is a different UV in the written
+    file (docs/ARCHITECTURE.md, D27).
+
+    Modified by the 3D Review project on 2026-11-26, for the reason above (the
+    notice OpenNL's license asks a modifier to give; the modified lines are not
+    in OpenNL's own code).

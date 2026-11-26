@@ -16,9 +16,9 @@ use review_localization::Key;
 use review_log::Level;
 use review_model::{NodeKind, SkinningMethod};
 use review_optimize::{
-    AoQuality, AoTarget, ExportFileType, FbxFormat, HierarchyMode, LodPackaging, NormalMode,
-    RemeshDensity, RemeshTopology, Shortfall, ShrinkwrapMethod, SimplifyAlgorithm, TargetMode,
-    VoxelTarget,
+    AoQuality, AoTarget, ChartGrowth, ExportFileType, FbxFormat, Flattening, HierarchyMode,
+    LodPackaging, NormalMode, RemeshDensity, RemeshTopology, SeamSource, Shortfall,
+    ShrinkwrapMethod, SimplifyAlgorithm, TargetMode, UvLayout, VoxelTarget,
 };
 use review_render::{
     AlphaMode, BufferView, ChannelSelect, CheckerTexture, EnvironmentMap, GtaoQuality,
@@ -315,6 +315,37 @@ pub(crate) fn hierarchy_mode(mode: HierarchyMode) -> Key {
     }
 }
 
+pub(crate) fn uv_layout(layout: UvLayout) -> Key {
+    match layout {
+        UvLayout::Atlas => keys::ui_enums::UV_LAYOUT_ATLAS,
+        UvLayout::Tiled => keys::ui_enums::UV_LAYOUT_TILED,
+    }
+}
+
+pub(crate) fn chart_growth(growth: ChartGrowth) -> Key {
+    match growth {
+        ChartGrowth::Islands => keys::ui_enums::CHARTS_ISLANDS,
+        ChartGrowth::Automatic => keys::ui_enums::CHARTS_AUTOMATIC,
+    }
+}
+
+pub(crate) fn flattening(flattening: Flattening) -> Key {
+    match flattening {
+        Flattening::MinimumStretch => keys::ui_enums::FLATTENING_MINIMUM_STRETCH,
+        Flattening::Conformal => keys::ui_enums::FLATTENING_CONFORMAL,
+    }
+}
+
+/// A seam source, as the Unwrap Inspector lists it: an attribute by its own
+/// name, a UV set by its number.
+pub(crate) fn seam_source(seams: &SeamSource) -> String {
+    match seams {
+        SeamSource::None => review_localization::tr(keys::ui_enums::SEAMS_NONE).into_owned(),
+        SeamSource::Attribute(name) => name.clone(),
+        SeamSource::UvSetU(set) => keys::ui_enums::seams_uv_set_u(f64::from(*set)),
+    }
+}
+
 pub(crate) fn export_file_type(file_type: ExportFileType) -> Key {
     match file_type {
         ExportFileType::Fbx => keys::ui_enums::FILE_TYPE_FBX,
@@ -472,6 +503,15 @@ mod tests {
         }
         for value in ExportFileType::ALL {
             assert_resolves(export_file_type(value));
+        }
+        for value in UvLayout::ALL {
+            assert_resolves(uv_layout(value));
+        }
+        for value in ChartGrowth::ALL {
+            assert_resolves(chart_growth(value));
+        }
+        for value in Flattening::ALL {
+            assert_resolves(flattening(value));
         }
     }
 }

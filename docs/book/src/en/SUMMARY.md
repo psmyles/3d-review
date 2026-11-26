@@ -48,6 +48,7 @@
   - [Remeshing a model](opt/remesh.md)
   - [Wrapping a model in one skin](opt/shrinkwrap.md)
   - [Normals and tangents](opt/normals.md)
+  - [Unwrapping UVs](opt/unwrap.md)
   - [Baking ambient occlusion](opt/ao.md)
   - [Per-object overrides](opt/overrides.md)
   - [Comparing the result](opt/comparison.md)

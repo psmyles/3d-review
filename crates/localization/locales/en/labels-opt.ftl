@@ -51,6 +51,13 @@ labels-opt-op-simplify-lod = Generate LODs
     .description = Makes a set of simpler copies of the model (levels of detail) for a game
         to show at a distance. Each level is made from the model as it stands at this
         point in the list.
+labels-opt-op-unwrap = Unwrap UVs
+    .description = Makes a fresh set of UVs. The surface is cut into islands where the
+        settings say (a custom attribute such as a CAD face id, the existing UV seams, sharp
+        edges) and always between materials; each island is flattened, then either laid out
+        at one texel density and turned to lie as the old UVs did, for textures that repeat,
+        or packed into the square without overlapping, for baking. Runs on every level when
+        it comes after Generate LODs. Does not change the shape.
 labels-opt-op-bake-ao = Bake AO to Vertex Colors
     .description = Works out how much light reaches each point of the model and stores it
         as a color on that point. Objects whose names end in _LOD and a number are shaded
@@ -106,6 +113,9 @@ labels-opt-warning-normals-kept-for-blend-shapes =
     are. Its shapes store normal changes relative to the old normals, which new ones would
     contradict.
 labels-opt-warning-normals-failed = Recalculate Normals: '{ $object }': { $detail }
+labels-opt-warning-unwrap-failed = Unwrap: '{ $object }' kept its UVs: { $detail }
+labels-opt-warning-unwrap-seam-attribute-missing =
+    Unwrap: '{ $object }' has no attribute { $attribute }, so it was unwrapped without those seams.
 labels-opt-warning-shrinkwrap-kept-deforming =
     Shrinkwrap: '{ $object }' is skinned or has blend shapes, so it was left as it is.
     Wrapping replaces the surface entirely, and no skin weight authored against the old

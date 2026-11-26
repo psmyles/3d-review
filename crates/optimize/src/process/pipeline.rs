@@ -529,6 +529,13 @@ pub(crate) fn apply_op(
         return SimplifyRun::NONE;
     }
 
+    // Unwrap reads the model's custom attribute layout (its seam attribute)
+    // and runs its pieces in parallel, each in an atlas of its own.
+    if matches!(op.kind, OpKind::Unwrap(_)) {
+        crate::unwrap::unwrap_submeshes(submeshes, op, stack, model, warnings, run);
+        return SimplifyRun::NONE;
+    }
+
     for piece in submeshes.iter_mut() {
         if run.cancelled() {
             return SimplifyRun::NONE;
@@ -545,14 +552,15 @@ pub(crate) fn apply_op(
             OpKind::Overdraw { threshold } => ops::optimize_overdraw(piece, *threshold),
             OpKind::VertexFetch => ops::optimize_vertex_fetch(piece),
             // The LOD operation is refused above; Reduce, the AO bake, Remesh,
-            // Shrinkwrap and Recalculate Normals are handled above. None
+            // Shrinkwrap, Recalculate Normals and Unwrap are handled above. None
             // reaches this path.
             OpKind::Reduce(_)
             | OpKind::SimplifyLod(_)
             | OpKind::BakeAo(_)
             | OpKind::Remesh(_)
             | OpKind::Shrinkwrap(_)
-            | OpKind::RecalculateNormals(_) => Ok(()),
+            | OpKind::RecalculateNormals(_)
+            | OpKind::Unwrap(_) => Ok(()),
         };
         if let Err(error) = outcome {
             warnings.push(OptWarning::OperationFailed {

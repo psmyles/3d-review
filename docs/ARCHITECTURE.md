@@ -847,6 +847,29 @@ triangles because a simplify rebuilt it, an unmapped animation target, an export
 issued before the capture landed. Output is written in the source file's own
 unit (`UnitScale`), since import normalizes every file to meters.
 
+`unwrap/` is the Unwrap operation, over the vendored xatlas (`xatlas/`, whose
+`ffi.rs` is the only `unsafe`; `third_party/xatlas/NOTICE.txt` says what its three
+patches change and why). Per object, all its material pieces in one call:
+`islands.rs` cuts each piece's triangles into islands by a union-find over
+position-matched edges, the seams being a change of the seam key (a custom
+attribute's words, or a UV set's U rounded to the whole number an id is), a
+reference-UV gap over `REFERENCE_SEAM_GAP` (the simplifier refits each copy of a
+hard-edge vertex alone, so exact comparison over-cuts), a crease, and every
+border and non-manifold edge; the island ids are xatlas's per-face material, so
+no chart crosses one. With Charts on Islands, patch P3 lifts xatlas's chart-growth
+limits so a chart takes its whole island, and P2 keeps xatlas from settling for
+an orthogonal projection that stretches. `layout.rs` places the charts: an atlas
+straight from xatlas's packing; tiled, each chart refined as rigidly as possible
+(`arap.rs`, Liu et al. 2008: closed-form 2x2 rotations, a cotangent-Laplacian
+solve by Jacobi-preconditioned CG in `f64`) then scaled to the density by its
+area, turned by closed-form 2x2 Procrustes onto its reference UVs and centred
+there, or replaced by the reference UVs scaled to the density where those stretch
+less; an island whose mean stretch flattened whole is over
+`island_stretch_limit` (a band round a cylinder, which flattens whole only as a
+ring) takes xatlas's own charting instead where that is clearly less stretched.
+The per-corner UVs go back through `Submesh::split_by_corner`, and a set past the
+model's last is added (assembly and the level's stats count it).
+
 `export/glb.rs` writes the same chain as glb, in safe Rust (`export` picks
 between the two by `ExportOptions::file_type`): the node graph with each node's
 TRS or matrix and its `extras`, one mesh per mesh node with one primitive per
@@ -1300,8 +1323,9 @@ list of unsafe modules:
   it returns), `ffi/raw.rs` (pointer-to-slice leaves), `startup.rs` (the Windows
   launch hint and the startup window's show), `tracy_alloc.rs` (the `GlobalAlloc` wrapper). The marshallers are
   `deny`, and read only through `raw.rs`'s safe accessors.
-- `optimize`: `ffi.rs` + `meshopt/`, `export_ffi.rs` + `export/write.rs`, and the
-  test-only `probe.rs`.
+- `optimize`: `ffi.rs` + `meshopt/`, `export_ffi.rs` + `export/write.rs`,
+  `xatlas/ffi.rs` (the xatlas C API, its one checked call, and the `libm`
+  functions its patch calls back into), and the test-only `probe.rs`.
 - `render`: `rhi/backend/{d3d11,metal,vulkan}.rs` and the `extern "C"` logger callback
   in `rhi/sokol_log.rs`.
 - `shell-windows`: `com.rs` (the DLL exports and the class factory),
@@ -1592,6 +1616,7 @@ one settled.
 | D27 | The same input and settings write the same bytes: on every run, at any thread count and on every OS. Nothing written may depend on the clock (the FBX export pins every date to the Unix epoch), on `HashMap` order, or on how work fell across threads (`parallel.rs`'s fixed chunks), and nothing on the platform's maths library: a sine, arccosine, power or logarithm whose value reaches a file or a report goes through `review_model::exact` (the pure-Rust `libm` crate) rather than `f32::sin` and its kin, which call glibc, the Windows CRT or Apple's libm, free to round the last bit differently. The vendored C and C++ (ufbx, ufbx_write, meshoptimizer) build with `-ffp-contract=off` (MSVC: `/fp:precise`), so no compiler fuses `a * b + c` into one FMA - Clang's default on Apple Silicon - where another does not. Rust never fuses on its own. `review-cli`'s `tests/determinism.rs` runs `optimize` over the CAD kit and the fixtures and checks every file's SHA-256 against `tests/determinism.sha256`, recorded on one OS and checked on the others; a mismatch there is a rounding difference between two compilers or maths libraries, to be found and removed, not re-recorded. |
 | D28 | The renderer on Linux is sokol_gfx's **Vulkan** backend (1.3, plus `VK_EXT_descriptor_buffer`), on a third leaf, `rhi/backend/vulkan.rs` (over `ash`), twin of the other two — not GL. Its SPIR-V is compiled by glslang inside sokol-shdc when `scripts/gen-shaders` runs, into a reflection of its own (`generated/review_vk.rs`, the only one Linux compiles, so no other OS carries it), which keeps D4/D5's promises — a broken shader fails before the build and nothing compiles one at run time — with no blob for `build.rs` to make. The vendored sokol-rust's build script gains the backend (vendor/NOTICE.txt), since upstream's has none. A device is picked the way D3D11 falls back to WARP: discrete GPU, integrated, then a software rasterizer such as Mesa's lavapipe, which is also what renders on a machine with no GPU at all. sokol names no native image here, so the IBL bake's readback (D19) is unavailable and the bake stays a Windows job; the windowless backbuffer is an image of the leaf's own. HEIC / HEIF / AVIF decode only where fire-decode vendors libheif (Windows, macOS), and are reported unsupported on Linux until it vendors a Linux stack. |
 | D29 | **glTF is a first-class format, read in safe Rust** (`gltf` crate, `import/src/gltf/`) beside ufbx, into the same `ModelData`. Its application attributes (names starting `_`, any component type) are carried exactly as raw 32-bit words (`ModelData::custom_attributes`), never blended: the optimizer keeps them as a fixed-width table on every `Submesh` and in `row_ids`, so vertices that differ in one are never merged and the line between them is a seam the simplifier keeps; Remesh and Shrinkwrap give each new face the words of the source triangle nearest its centre, as they do its material. What glTF says that `ModelData` has no field for - `COLOR_0`'s stored type, extras, materials with their textures, each vertex as stored - is kept verbatim in `GltfSource` as text and numbers (invariant 10), for the glb writer to write back unchanged. The writer (`export/glb.rs`) writes an untouched vertex with the values the file stored rather than undoing the world bake and the V flip, neither of which is exact in floating point; so a glb through a stack that changes nothing reproduces itself byte for byte (`optimize/tests/glb_export.rs`), and the CAD parts Blender wrote come back with every triangle, attribute, transform and extra as they were. |
+| D30 | **UV unwrapping is xatlas, patched, behind our own islands and layout.** xatlas (MIT) charts, flattens (LSCM, with its own validity check and piecewise fallback) and packs; it is compiled single-threaded with `XA_DEBUG=0` and `NDEBUG` in every profile, its four transcendentals redirected to `libm` (patch P1) so its bytes are the same on every OS. Two more patches serve CAD islands: an orthogonal projection is kept only when all but exact (P2, upstream allows 10% stretch), and a per-thread switch lifts the chart-growth limits that split every island curving past ~75 degrees (P3). The islands, the tiled layout (density, Procrustes alignment, keep-the-better) and the as-rigid-as-possible refinement are ours, in safe Rust. On the CAD kit, against Blender's minimum-stretch baseline (plan section 3): stretch p95 1.000 on every mechanical part's levels and 1.16-1.25 on the shell (Blender 1.26-1.33), density spread no wider anywhere; `optimize/tests/unwrap.rs` holds it. |
 
 The structural rules the decisions add up to:
 

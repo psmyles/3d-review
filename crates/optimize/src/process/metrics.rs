@@ -165,7 +165,8 @@ pub(crate) fn measured_stats(
         triangle_count,
         vertex_count: indexed_vertices,
         gpu_vertex_count: model.count_gpu_vertices(),
-        uv_set_count: source.stats.uv_set_count,
+        // The source's, or more when an Unwrap added a set.
+        uv_set_count: source.stats.uv_set_count.max(model.uv_channels.len()),
         material_count: model.materials.len(),
         draw_count: model.material_draw_count(),
         // The node graph is carried through unchanged — the skin too, rebuilt

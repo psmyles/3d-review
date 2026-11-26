@@ -10,6 +10,14 @@ notices, see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 - **[ufbx_write](https://github.com/ufbx/ufbx-write)** - Samuli Raivio. FBX export from the Opt
   workspace. 3D Review's patches are listed in `third_party/ufbx-write/NOTICE.txt`.
 
+## UV unwrapping
+
+- **[xatlas](https://github.com/jpcy/xatlas)** - Jonathan Young, with code from thekla_atlas
+  (Thekla, Inc and Ignacio Castano), Fast-BVH (Brandon Pelfrey) and OpenNL (Bruno Levy). The Unwrap
+  operation's charts, flattening and atlas packing. The as-rigid-as-possible refinement after it
+  follows Liu, Zhang, Xu, Gotsman and Gortler, "A Local/Global Approach to Mesh Parameterization"
+  (2008).
+
 ## glTF
 
 - **[gltf](https://github.com/gltf-rs/gltf)** - David Harvey-Macaulay and the gltf library

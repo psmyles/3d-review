@@ -875,12 +875,32 @@ impl<'a> Writer<'a> {
 
         // TEXCOORD_n, V turned back down.
         let uv_sets = if level.uv_channels.is_empty() {
-            source.stats.uv_set_count.min(1)
+            level.stats.uv_set_count.min(1)
         } else {
             level.uv_channels.len()
         };
         for set in 0..uv_sets {
+            // A set the primitive's source vertices did not have is left out,
+            // unless an operation (an Unwrap) has given them one since.
+            let changed =
+                order
+                    .iter()
+                    .zip(&unchanged)
+                    .any(|(&vertex, unchanged)| match unchanged {
+                        Some((corner, _)) => {
+                            level
+                                .uv_for_channel(vertex as usize, set)
+                                .to_array()
+                                .map(f32::to_bits)
+                                != source
+                                    .uv_for_channel(*corner, set)
+                                    .to_array()
+                                    .map(f32::to_bits)
+                        }
+                        None => true,
+                    });
             if let Some(originals) = originals
+                && !changed
                 && !had(
                     &|logical| {
                         originals

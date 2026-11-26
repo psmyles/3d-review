@@ -56,7 +56,13 @@ pub(crate) fn assemble(
 
     let total_vertices: usize = submeshes.iter().map(|piece| piece.vertices.len()).sum();
     let total_indices: usize = submeshes.iter().map(|piece| piece.indices.len()).sum();
-    let channel_count = source.uv_channels.len();
+    // An Unwrap may have written a set the source did not have.
+    let channel_count = submeshes
+        .iter()
+        .map(|piece| piece.uv_channels.len())
+        .max()
+        .unwrap_or(0)
+        .max(source.uv_channels.len());
     let color_channel_count = submeshes
         .iter()
         .map(|piece| piece.color_channels.len())
@@ -427,6 +433,11 @@ pub(crate) fn assemble(
                 Some(source_uvs) if source_uvs.len() == piece_vertices.len() => {
                     destination.extend_from_slice(source_uvs)
                 }
+                // A piece that kept one set (excluded from an Unwrap that added
+                // more) has it on its vertices.
+                None if channel == 0 && piece.uv_channels.is_empty() => {
+                    destination.extend(piece_vertices.iter().map(|vertex| vertex.uv))
+                }
                 // A submesh built before this channel existed can't happen today,
                 // but padding keeps the arrays parallel rather than silently short.
                 _ => destination.resize(vertices.len(), glam::Vec2::ZERO),
@@ -457,7 +468,14 @@ pub(crate) fn assemble(
         },
         nodes: source.nodes.clone(),
         uv_channels,
-        uv_set_names: source.uv_set_names.clone(),
+        uv_set_names: {
+            let mut names = source.uv_set_names.clone();
+            // A set an Unwrap added is named for its place, as glTF names its sets.
+            while names.len() < channel_count {
+                names.push(format!("TEXCOORD_{}", names.len()));
+            }
+            names
+        },
         bounds: None,
         stats: ModelStats::default(),
         materials: source.materials.clone(),

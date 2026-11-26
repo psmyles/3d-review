@@ -21,7 +21,7 @@ use std::process::Command;
 
 use review_optimize::{
     BakeAoParams, LodLevel, LodParams, NormalParams, OpKind, OptStack, ReduceParams, RemeshParams,
-    ShrinkwrapParams, SimplifyFlags, SimplifySettings, WeldParams, preset,
+    ShrinkwrapParams, SimplifyFlags, SimplifySettings, UnwrapParams, WeldParams, preset,
 };
 use sha2::{Digest, Sha256};
 
@@ -104,6 +104,16 @@ fn stacks() -> Vec<(&'static str, OptStack, Vec<&'static str>, Vec<&'static str>
     rebuild.push_op(OpKind::Shrinkwrap(ShrinkwrapParams::default()));
     rebuild.push_op(OpKind::Remesh(RemeshParams::default()));
 
+    // The glb run's chain also unwraps every level into CAD-face islands, the
+    // xatlas and as-rigid-as-possible paths among them.
+    let mut glb_chain = OptStack::default();
+    for op in &chain.ops {
+        glb_chain.push_op(op.kind.clone());
+        if matches!(op.kind, OpKind::SimplifyLod(_)) {
+            glb_chain.push_op(OpKind::Unwrap(UnwrapParams::cad_islands("_CAD_FACE")));
+        }
+    }
+
     let everything = KIT.iter().chain(FIXTURES).copied().collect();
     let rebuildable = KIT
         .iter()
@@ -111,10 +121,10 @@ fn stacks() -> Vec<(&'static str, OptStack, Vec<&'static str>, Vec<&'static str>
         .chain(["assets/test_models/monkey.fbx"])
         .collect();
     vec![
-        ("chain", chain.clone(), everything, Vec::new()),
+        ("chain", chain, everything, Vec::new()),
         ("rebuild", rebuild, rebuildable, Vec::new()),
         // The glb writer, and custom attributes through every operation.
-        ("glb", chain, KIT_GLB.to_vec(), vec!["--format", "glb"]),
+        ("glb", glb_chain, KIT_GLB.to_vec(), vec!["--format", "glb"]),
     ]
 }
 
