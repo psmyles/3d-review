@@ -54,6 +54,8 @@
 //! interior orientation, which is what lets the seeds — and so the whole
 //! partition — be reproducible.
 
+use review_model::exact;
+
 use crate::cancel::{CancelToken, cancelled};
 
 use super::surface::Surface;
@@ -380,7 +382,7 @@ fn mark_corners(surface: Surface<'_>, features: &mut Features) {
             let dot =
                 (incoming[0] * outgoing[0] + incoming[1] * outgoing[1] + incoming[2] * outgoing[2])
                     .clamp(-1.0, 1.0);
-            *slot = dot.acos();
+            *slot = exact::acos_f64(dot);
         }
 
         // Only the sharpest vertex of each bend. A tip rounded over several

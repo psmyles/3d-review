@@ -58,8 +58,11 @@ CAD kit (`experiments/cad-kit/inputs`) and the committed
 fixtures, and compares every file's SHA-256 with `tests/determinism.sha256`.
 The hashes were recorded on one OS and are checked on the others, so a failure
 on one machine only is two toolchains rounding differently: find the operation
-the named files share and make it agree (a pure-Rust `libm` for a
-transcendental, `-ffp-contract=off` for the C), rather than re-recording.
+the named files share and make it agree, rather than re-recording. Both
+usual causes are closed already: transcendentals in output code go through
+`review_model::exact` (pure-Rust `libm`), and the vendored C builds with
+`-ffp-contract=off`. A new `.sin()` or `.powf()` in `optimize` that reaches a
+file reopens the first; use `exact` instead (tests and the viewer need not).
 `REVIEW_RECORD_HASHES=1` rewrites the file, for a change that is *meant* to
 change the output; say so in the commit and check the new hashes on the other
 OS. Debug and release builds write the same bytes, so either profile checks it.

@@ -12,6 +12,7 @@ pub mod cancel;
 mod clip;
 pub mod color;
 mod demo;
+pub mod exact;
 pub mod extras;
 mod geometry;
 pub mod hierarchy;

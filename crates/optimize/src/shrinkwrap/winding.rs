@@ -30,6 +30,7 @@
 //! costs the exact sum over its own neighbourhood.
 
 use glam::Vec3;
+use review_model::exact;
 
 /// How many times its own radius a cluster must be away before its dipole
 /// approximation is used instead of descending into it.
@@ -301,7 +302,7 @@ fn solid_angle(query: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f32 {
     }
     let numerator = a.dot(b.cross(c));
     let denominator = la * lb * lc + a.dot(b) * lc + b.dot(c) * la + c.dot(a) * lb;
-    2.0 * numerator.atan2(denominator)
+    2.0 * exact::atan2(numerator, denominator)
 }
 
 #[cfg(test)]

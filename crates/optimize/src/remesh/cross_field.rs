@@ -89,6 +89,8 @@
 // quads were asked for, and only just before the merge, because it costs about
 // a third of a rebuild's time and nothing earlier can spend it.
 
+use review_model::exact;
+
 use crate::cancel::{CancelToken, cancelled};
 use crate::parallel;
 
@@ -272,7 +274,7 @@ fn smooth(
         // How far it turned, as the cross sees it: a quarter turn is no turn.
         let aligned = nearest_rotation(after, before, normal);
         let dot = dot(aligned, before).clamp(-1.0, 1.0);
-        moved = moved.max(dot.acos());
+        moved = moved.max(exact::acos(dot));
     }
     moved
 }

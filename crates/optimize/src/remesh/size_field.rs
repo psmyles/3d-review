@@ -37,6 +37,8 @@
 //! across cores without the schedule reaching the result, and what lets the
 //! whole thing be abandoned between passes when the user has moved on.
 
+use review_model::exact;
+
 use crate::cancel::{CancelToken, cancelled};
 use crate::parallel;
 
@@ -326,7 +328,7 @@ pub(crate) fn build(
                 let dot = own[0] * theirs[0] + own[1] * theirs[1] + own[2] * theirs[2];
                 let length = distance(here, there);
                 if length > 0.0 {
-                    let angle = dot.clamp(-1.0, 1.0).acos();
+                    let angle = exact::acos_f64(dot.clamp(-1.0, 1.0));
                     peak = peak.max(angle / length);
                 }
             });
@@ -335,7 +337,7 @@ pub(crate) fn build(
             // ratio rather than a difference. The additive constant drops out at
             // the centring step, so only the shape of the field matters here —
             // which is also why the exponent is applied later, as a multiply.
-            *slot = -(peak + flat).ln();
+            *slot = -exact::ln_f64(peak + flat);
         }
     });
     drop(smoothed);
@@ -389,12 +391,12 @@ pub(crate) fn build(
             .sum::<f64>()
     })) / total_area;
 
-    let limit = MAX_RANGE.ln();
+    let limit = exact::ln_f64(MAX_RANGE);
     let mut field = vec![1.0f64; count];
     parallel::sweep(&mut field, threads, |base, chunk| {
         for (offset, slot) in chunk.iter_mut().enumerate() {
             let centred = (spacing[base + offset] - mean) * strength as f64;
-            *slot = centred.clamp(-limit, limit).exp();
+            *slot = exact::exp_f64(centred.clamp(-limit, limit));
         }
     });
     drop(spacing);

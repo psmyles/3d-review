@@ -33,6 +33,8 @@
 //! ([`seeds::vertex_budget`]) — so unlike the engines, nothing here has to be
 //! run twice to land near the number in the box.
 
+use review_model::exact;
+
 use crate::OptError;
 use crate::cancel::{CancelToken, cancelled};
 
@@ -138,7 +140,7 @@ pub(crate) fn rebuild(
 
     let crease_cosine = params
         .sharp_edges
-        .then(|| params.crease_angle.clamp(0.0, 180.0).to_radians().cos());
+        .then(|| exact::cos(params.crease_angle.clamp(0.0, 180.0).to_radians()));
     let features = features::build(surface, params.align_to_boundaries, crease_cosine, cancel);
     let mut seeds = seeds::place(surface, &features, triangles, cancel);
     if seeds.is_empty() {

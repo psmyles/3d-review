@@ -61,6 +61,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use glam::{Vec3, Vec4};
 use review_model::color::linear_to_srgb;
+use review_model::exact;
 use review_model::naming::node_lod;
 use review_model::triangle_positions;
 use review_model::{Bounds, Bvh, ModelData, Vertex};
@@ -446,8 +447,8 @@ fn vertex_ao(
         // hemisphere around +z, then rotated into the vertex's frame.
         let disk_radius = u1.sqrt();
         let phi = std::f32::consts::TAU * u2;
-        let direction = tangent * (disk_radius * phi.cos())
-            + bitangent * (disk_radius * phi.sin())
+        let direction = tangent * (disk_radius * exact::cos(phi))
+            + bitangent * (disk_radius * exact::sin(phi))
             + n * (1.0 - u1).sqrt();
         if scene
             .bvh
@@ -458,9 +459,7 @@ fn vertex_ao(
     }
 
     let occlusion = hits as f32 / rays as f32;
-    (1.0 - occlusion)
-        .powf(params.intensity.max(0.01))
-        .clamp(0.0, 1.0)
+    exact::powf(1.0 - occlusion, params.intensity.max(0.01)).clamp(0.0, 1.0)
 }
 
 /// Write the baked value into its target channels. Alpha is always linear; the

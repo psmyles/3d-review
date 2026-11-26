@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use glam::{Mat3, Mat4};
-use review_model::{ModelData, SourceExtras};
+use review_model::{ModelData, SourceExtras, exact};
 
 use crate::notice::ExportNote;
 use crate::process::ProcessedLod;
@@ -171,7 +171,7 @@ pub(crate) fn build_deform(
     // Import took normal deltas through `|det L|^(1/3) L^-T` — the normal
     // matrix with the node's scale divided out (`review_import_normal_delta_
     // matrix`) — so undoing it is that matrix's inverse, `L^T / |det L|^(1/3)`.
-    let delta_scale = linear.determinant().abs().cbrt();
+    let delta_scale = exact::cbrt(linear.determinant().abs());
     let undo_normal_delta = (delta_scale.is_finite() && delta_scale > 0.0)
         .then(|| linear.transpose() * delta_scale.recip());
 

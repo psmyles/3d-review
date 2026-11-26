@@ -97,6 +97,8 @@ fluent-bundle = "0.16"
 # "it built" means "it loads".
 fluent-syntax = "0.12"
 glam = "0.30"
+# Pure-Rust maths functions: the same bits on every OS (review_model::exact).
+libm = "0.2"
 # The standard logging facade. Already in the graph (winit, egui and notify log
 # through it), so `review-log` installing the one logger hears them too, and a
 # crate that only writes lines needs nothing but this.

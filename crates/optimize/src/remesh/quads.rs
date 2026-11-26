@@ -81,6 +81,8 @@
 //! is left over after it is genuinely unpairable, which is the honest place for a
 //! triangle to be.
 
+use review_model::exact;
+
 use crate::cancel::{CancelToken, cancelled};
 
 use super::RemeshOutput;
@@ -475,7 +477,7 @@ fn rectangularity(points: &[[f64; 3]; 4]) -> f64 {
         let (Some(back), Some(forward)) = (unit(sub(previous, here)), unit(sub(next, here))) else {
             return 0.0;
         };
-        let angle = dot(back, forward).clamp(-1.0, 1.0).acos();
+        let angle = exact::acos_f64(dot(back, forward).clamp(-1.0, 1.0));
         worst = worst.max((angle - std::f64::consts::FRAC_PI_2).abs());
     }
     (1.0 - worst / std::f64::consts::FRAC_PI_2).max(0.0)

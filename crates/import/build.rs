@@ -25,7 +25,7 @@ fn main() {
         // amalgamation shares the invocation. The bridge is emitted first so a
         // linker that resolves in command-line order sees it before the library
         // it calls into.
-        cc::Build::new()
+        exact_float(&mut cc::Build::new())
             .file(bridge_c_path)
             // The source-property capture is the bridge's second file: same
             // extraction call, same warnings-on build.
@@ -34,11 +34,25 @@ fn main() {
             .include("src")
             .warnings(true)
             .compile("ufbx_bridge");
-        cc::Build::new()
+        exact_float(&mut cc::Build::new())
             .file(c_path)
             .include("../../third_party/ufbx")
             .warnings(false)
             .compile("ufbx");
         println!("cargo:rustc-cfg=has_ufbx");
+    }
+}
+
+/// Floating point that rounds the same on every compiler: no fusing of `a * b + c`
+/// into one FMA (Clang's default on Apple Silicon, where GCC on x86-64 cannot),
+/// and no reassociation. ufbx's transforms and tangent maths reach every vertex
+/// the optimizer writes (`docs/ARCHITECTURE.md`, D27).
+fn exact_float(build: &mut cc::Build) -> &mut cc::Build {
+    if build.get_compiler().is_like_msvc() {
+        // Since Visual Studio 2022, `/fp:precise` contracts nothing
+        // unless `/fp:contract` asks it to.
+        build.flag("/fp:precise")
+    } else {
+        build.flag("-ffp-contract=off").flag("-fno-fast-math")
     }
 }

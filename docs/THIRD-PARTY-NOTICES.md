@@ -16,7 +16,7 @@ document, together with the [`../licenses/`](../licenses/) directory, is how the
   binary, the typefaces embedded in it, the shader code ported from other projects, and the
   embedded image assets. Read the typeface note - the font licenses are the only terms in the
   distribution that say anything about *modifying* a component.
-* **Section 2** covers the Rust crates (201 of them). One, `option-ext`, is MPL-2.0; the note
+* **Section 2** covers the Rust crates (349 of them). One, `option-ext`, is MPL-2.0; the note
   under the table says what that does and does not require.
 * **Section 3** notes what is *not* here, and why.
 
@@ -263,7 +263,7 @@ licenses apply to those parts. Each ported function says so in a comment beside 
 
 ## 2. Rust crates
 
-348 crates are linked into the 3D Review binary (the union of the three shipped targets: Windows, macOS and Linux). Where a crate
+349 crates are linked into the 3D Review binary (the union of the three shipped targets: Windows, macOS and Linux). Where a crate
 offers a choice of licenses, the column below records **the license 3D Review elects**, not the
 full SPDX expression - 3D Review elects MIT wherever MIT is offered, then the most permissive of
 what is left. A crate whose license is a conjunction (`AND`) lists every term. Full texts:
@@ -446,6 +446,7 @@ Rather than invent one, those rows name the authors the crate itself declares.
 | `lebe` | 0.5.3 | BSD-3-Clause | Copyright (c) 2022 Contributors to the lebe Project. All rights reserved. |
 | `libc` | 0.2.186 | MIT | Copyright (c) The Rust Project Developers |
 | `libloading` | 0.8.9 | ISC | Copyright © 2015, Simonas Kazlauskas |
+| `libm` | 0.2.16 | MIT | Copyright (c) 2018 Jorge Aparicio. Portions from musl libc, Copyright © 2005-2020 Rich Felker, et al. (its maths code Copyright © 1993,2004 Sun Microsystems, © 2003-2011 David Schultz, © 2003-2009 Steven G. Kargl, © 2003-2009 Bruce D. Evans, © 2008 Stephen L. Moshier, © 2017-2018 Arm Limited), and from the CORE-MATH project (MIT) |
 | `libwebp-sys` | 0.14.4 | MIT | (no notice in crate; authors: XianYou <xianyou.cyq@alibaba-inc.com>, Kornel Lesiński <kornel@geekhood.net>); compiles libwebp (see section 1) |
 | `linebender_resource_handle` | 0.1.1 | MIT | (no copyright notice supplied by the crate) |
 | `linux-raw-sys` | 0.4.15 | MIT | (no notice in crate; authors: Dan Gohman <dev@sunfishcode.online>) |

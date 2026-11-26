@@ -12,12 +12,14 @@
 //! every hue comes out at the same *perceived* lightness. An HSV wheel at one
 //! value does not: its blue reads far darker than its yellow.
 
+use crate::exact;
+
 /// Encode a linear value as sRGB.
 pub fn linear_to_srgb(value: f32) -> f32 {
     if value <= 0.003_130_8 {
         value * 12.92
     } else {
-        1.055 * value.powf(1.0 / 2.4) - 0.055
+        1.055 * exact::powf(value, 1.0 / 2.4) - 0.055
     }
 }
 
@@ -26,16 +28,16 @@ pub fn srgb_to_linear(value: f32) -> f32 {
     if value <= 0.040_449_936 {
         value / 12.92
     } else {
-        ((value + 0.055) / 1.055).powf(2.4)
+        exact::powf((value + 0.055) / 1.055, 2.4)
     }
 }
 
 /// Linear sRGB to OKLab `[L, a, b]` (Björn Ottosson's matrices). `L` is the
 /// perceived lightness, 0 for black and 1 for white.
 pub fn linear_srgb_to_oklab([r, g, b]: [f32; 3]) -> [f32; 3] {
-    let l = (0.412_221_46 * r + 0.536_332_55 * g + 0.051_445_995 * b).cbrt();
-    let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b).cbrt();
-    let s = (0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b).cbrt();
+    let l = exact::cbrt(0.412_221_46 * r + 0.536_332_55 * g + 0.051_445_995 * b);
+    let m = exact::cbrt(0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b);
+    let s = exact::cbrt(0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b);
     [
         0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s,
         1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s,
@@ -65,8 +67,13 @@ pub fn oklab_to_linear_srgb([lightness, a, b]: [f32; 3]) -> [f32; 3] {
 /// and an equal lightness is the point of picking a palette in OKLCh.
 pub fn oklch_to_linear_srgb(lightness: f32, chroma: f32, hue: f32) -> [f32; 3] {
     let angle = hue.rem_euclid(1.0) * std::f32::consts::TAU;
-    let at =
-        |chroma: f32| oklab_to_linear_srgb([lightness, chroma * angle.cos(), chroma * angle.sin()]);
+    let at = |chroma: f32| {
+        oklab_to_linear_srgb([
+            lightness,
+            chroma * exact::cos(angle),
+            chroma * exact::sin(angle),
+        ])
+    };
     let in_gamut = |rgb: [f32; 3]| rgb.iter().all(|&c| (-1e-5..=1.0 + 1e-5).contains(&c));
     let mut rgb = at(chroma);
     if !in_gamut(rgb) {

@@ -12,7 +12,7 @@
 use std::borrow::Cow;
 
 use glam::Vec3;
-use review_model::{Bvh, ModelData};
+use review_model::{Bvh, ModelData, exact};
 use serde::{Deserialize, Serialize};
 
 use crate::submesh::Submesh;
@@ -242,7 +242,7 @@ pub(crate) fn compare(
             let indices =
                 &to.model.indices[facing.triangle as usize * 3..facing.triangle as usize * 3 + 3];
             let other = normal_at(&to.model, indices, facing.barycentric);
-            angles.push(normal.dot(other).clamp(-1.0, 1.0).acos().to_degrees());
+            angles.push(exact::acos(normal.dot(other).clamp(-1.0, 1.0)).to_degrees());
         }
     }
     let size = reference.size.max(f32::MIN_POSITIVE);

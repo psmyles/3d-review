@@ -39,6 +39,21 @@ fn product() {
     }
 }
 
+/// Floating point that rounds the same on every compiler: no fusing of `a * b + c`
+/// into one FMA (Clang's default on Apple Silicon, where GCC on x86-64 cannot),
+/// and no reassociation. The libraries' arithmetic reaches the written files, so
+/// a contraction one OS makes and another does not is a byte that differs
+/// (`docs/ARCHITECTURE.md`, D27).
+fn exact_float(build: &mut cc::Build) -> &mut cc::Build {
+    if build.get_compiler().is_like_msvc() {
+        // Since Visual Studio 2022, `/fp:precise` contracts nothing
+        // unless `/fp:contract` asks it to.
+        build.flag("/fp:precise")
+    } else {
+        build.flag("-ffp-contract=off").flag("-fno-fast-math")
+    }
+}
+
 fn build_meshoptimizer() {
     let dir = Path::new("../../third_party/meshoptimizer");
     let header = dir.join("meshoptimizer.h");
@@ -63,7 +78,7 @@ fn build_meshoptimizer() {
 
     check_meshopt_header(&header);
 
-    cc::Build::new()
+    exact_float(&mut cc::Build::new())
         // meshoptimizer is C++ (no STL, no exceptions) behind a pure-C API.
         // `cpp(true)` also links the C++ runtime, which its default allocator
         // needs (global `operator new` / `operator delete`).
@@ -97,7 +112,7 @@ fn build_ufbx_write() {
     // warnings **on**, which they cannot be while the vendored writer shares the
     // invocation. The bridge is emitted first so a linker that resolves in
     // command-line order sees it before the library it calls into.
-    cc::Build::new()
+    exact_float(&mut cc::Build::new())
         .file(bridge_c)
         .include(dir)
         .include("src")
@@ -107,7 +122,7 @@ fn build_ufbx_write() {
         // suppressed by number so every *other* warning still reaches the log.
         .flag_if_supported("/wd4201")
         .compile("export_bridge");
-    cc::Build::new()
+    exact_float(&mut cc::Build::new())
         .file(&source)
         .include(dir)
         .warnings(false)
