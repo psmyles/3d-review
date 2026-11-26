@@ -35,6 +35,11 @@ ui-toolbar-menu-remember-settings = Remember Settings
         such as colors, sizes, the environment and the ambient occlusion settings, are kept
         and come back the next time you start the viewer.
 
+ui-toolbar-menu-reload-changed-files = Reload Changed Files
+    .description = When this is ticked, the model is opened again when its file changes on
+        disk, so a new export from your modelling program shows at once. The view, the
+        workspace and its settings stay as they were.
+
 ui-toolbar-menu-view-log = View Log
     .description = Opens a window listing what the viewer has reported since it started:
         files opened, how long they took, warnings and errors. The same lines are saved to

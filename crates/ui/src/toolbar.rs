@@ -316,7 +316,7 @@ fn recent_files_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) 
     }
 }
 
-/// Preferences: the Remember Settings switch.
+/// Preferences: the Remember Settings and Reload Changed Files switches.
 fn preferences_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
     // A copy, not the field: flipping it is `app`'s job, because flipping it is
     // also what writes the settings file.
@@ -331,6 +331,19 @@ fn preferences_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
     .clicked()
     {
         output.menu = Some(MenuIntent::ToggleRememberSettings);
+    }
+
+    let mut reload = state.reload_changed_files;
+    let reload_response = ui.checkbox(&mut reload, keys::ui_toolbar::MENU_RELOAD_CHANGED_FILES);
+    if tip(
+        reload_response,
+        Tip::new(keys::ui_toolbar::MENU_RELOAD_CHANGED_FILES)
+            .describe(keys::ui_toolbar::MENU_RELOAD_CHANGED_FILES_DESCRIPTION)
+            .page(Page::Menu),
+    )
+    .clicked()
+    {
+        output.menu = Some(MenuIntent::ToggleReloadChangedFiles);
     }
 }
 

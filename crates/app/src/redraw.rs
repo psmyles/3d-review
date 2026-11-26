@@ -130,20 +130,27 @@ impl App {
             self.record_windowed_bounds();
         }
 
+        // A model file that changed on disk is opened again once it settles;
+        // until then the loop wakes for it as it would for a repaint.
+        let reload = self.reload_if_due(now);
+
         self.redraw.fold_request(now);
 
         // Sleep until the next scheduled repaint (if any), otherwise block until
         // the next input event. When the scheduled time arrives, fire one redraw
         // and fall back to waiting.
+        let wait = |until: Option<Instant>| until.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
         match self.redraw.wake(now) {
             Wake::Draw => {
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
-                event_loop.set_control_flow(ControlFlow::Wait);
+                event_loop.set_control_flow(wait(reload));
             }
-            Wake::Until(wake) => event_loop.set_control_flow(ControlFlow::WaitUntil(wake)),
-            Wake::Idle => event_loop.set_control_flow(ControlFlow::Wait),
+            Wake::Until(wake) => event_loop.set_control_flow(ControlFlow::WaitUntil(
+                reload.map_or(wake, |reload| reload.min(wake)),
+            )),
+            Wake::Idle => event_loop.set_control_flow(wait(reload)),
         }
     }
 }

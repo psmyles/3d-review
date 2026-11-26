@@ -40,6 +40,8 @@ pub enum MenuCommand {
     About,
     /// App → Remember Settings.
     ToggleRememberSettings,
+    /// App → Reload Changed Files.
+    ToggleReloadChangedFiles,
     /// App → Install Command Line Tool…: link `review3d-cli` onto the PATH. The one
     /// entry with no toolbar counterpart — Setup does this on Windows, and only the
     /// macOS .dmg has no installer to do it (see [`install_cli`]).
@@ -69,13 +71,14 @@ pub enum MenuCommand {
     Credits,
 }
 
-/// The app state the menu bar shows: its two check items and the Open Recent list.
+/// The app state the menu bar shows: its check items and the Open Recent list.
 ///
 /// Borrowed plain values, handed over by [`MenuBar::sync`], so this crate still
 /// knows nothing of where they live.
 #[derive(Debug, Clone, Copy)]
 pub struct MenuState<'a> {
     pub remember_settings: bool,
+    pub reload_changed_files: bool,
     pub tracy_profiler: bool,
     pub recent_files: &'a [PathBuf],
 }

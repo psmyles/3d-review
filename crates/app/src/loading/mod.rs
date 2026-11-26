@@ -34,7 +34,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use review_import::ImportError;
 use review_model::ModelData;
@@ -47,6 +47,10 @@ mod classify;
 mod measure;
 mod parse;
 mod session;
+
+/// How long the model's file has to stay unchanged before it is opened again:
+/// an exporter writes a file in several goes, and each raises its own change.
+const RELOAD_SETTLE: Duration = Duration::from_millis(400);
 
 pub(crate) use measure::{ModelMeasured, SourceExtrasReady};
 use parse::ParsedFile;
@@ -69,6 +73,10 @@ pub(crate) enum OpenIntent {
     /// Attach what binds to the model on screen, and replace it otherwise (a drop
     /// on the window, File > Open Recent).
     Drop,
+    /// Open the session's files again, because the model's file changed on disk
+    /// (**Reload Changed Files**): a new session, as [`Self::NewSession`] is,
+    /// that keeps the view where it was.
+    Reload,
 }
 
 /// Files to open, and what opening them means.
@@ -121,6 +129,39 @@ impl App {
         }
     }
 
+    /// A watched file changed on disk. The model's own file, with **Reload
+    /// Changed Files** on, is opened again once it has settled ([`RELOAD_SETTLE`]
+    /// after its last change), so a save is read once, whole.
+    pub(crate) fn model_file_changed(&mut self, changed: &Path) {
+        if !self.ui.reload_changed_files {
+            return;
+        }
+        let Some(model) = self.scene_files.first() else {
+            return;
+        };
+        if crate::paths::same_file(model, changed) {
+            self.reload_due = Some(Instant::now() + RELOAD_SETTLE);
+        }
+    }
+
+    /// Open the session's files again if a change has settled (from the event
+    /// loop's idle step), and say when to look next otherwise.
+    pub(crate) fn reload_if_due(&mut self, now: Instant) -> Option<Instant> {
+        let due = self.reload_due?;
+        if now < due {
+            return Some(due);
+        }
+        self.reload_due = None;
+        if self.ui.reload_changed_files && !self.scene_files.is_empty() {
+            log::info!(
+                "{} changed on disk; reloading",
+                self.scene_files[0].display()
+            );
+            self.open_files(self.scene_files.clone(), OpenIntent::Reload);
+        }
+        None
+    }
+
     /// Ask for files to open as a new session. The picker runs on a worker thread
     /// and comes back through the event loop (`dialog.rs`), so the answer lands in
     /// [`Self::open_files`] one turn of the loop later rather than in this call.
@@ -161,7 +202,7 @@ impl App {
             return;
         }
         let request = LoadRequest { paths, intent };
-        if intent == OpenIntent::NewSession {
+        if matches!(intent, OpenIntent::NewSession | OpenIntent::Reload) {
             self.supersede_loads();
             self.loads.waiting.clear();
             self.start_request_now(request);
@@ -276,7 +317,11 @@ impl App {
                             error.to_string(),
                         ));
                     log::error!("model load failed: {} ({error})", path.display());
-                    self.forget_missing_recent_file(&path);
+                    // A reload can catch a file between an exporter's writes: it
+                    // has not gone, and the next change opens it again.
+                    if intent != OpenIntent::Reload {
+                        self.forget_missing_recent_file(&path);
+                    }
                 }
             }
         }

@@ -11,7 +11,7 @@
 //! not stop this one starting.
 //!
 //! The viewer writes only the keys it owns — [`REMEMBER_KEY`], [`TRACY_KEY`],
-//! [`RECENT_KEY`] and everything under [`OPTIONS_PREFIX`] — and carries every other
+//! [`RELOAD_KEY`], [`RECENT_KEY`] and everything under [`OPTIONS_PREFIX`] — and carries every other
 //! line through a save untouched, so
 //! a hand-set `locale`, a comment, or a key only a newer build knows survives this
 //! one rewriting the file. What the remembered values *are* is `review_ui`'s
@@ -32,6 +32,10 @@ const REMEMBER_KEY: &str = "remember_settings";
 
 /// Whether the Tracy client starts at launch, as if `--tracy` had been passed.
 const TRACY_KEY: &str = "tracy_profiler";
+
+/// Whether the model is opened again when its file changes on disk. On unless
+/// the file says `false`.
+const RELOAD_KEY: &str = "reload_changed_files";
 
 /// One recently opened model. The key repeats, one line per file, most recent
 /// first — the order the menu lists them in.
@@ -71,6 +75,9 @@ fn apply_entries(ui: &mut UiState, entries: &[(String, String)]) {
     ui.tracy_profiler = entries
         .iter()
         .any(|(key, value)| key == TRACY_KEY && value == "true");
+    ui.reload_changed_files = !entries
+        .iter()
+        .any(|(key, value)| key == RELOAD_KEY && value == "false");
     ui.recent_files = entries
         .iter()
         .filter(|(key, _)| key == RECENT_KEY)
@@ -148,6 +155,7 @@ fn settings_text(existing: &str, ui: &UiState) -> String {
         let owned = parse_line(line).is_some_and(|(key, _)| {
             key == REMEMBER_KEY
                 || key == TRACY_KEY
+                || key == RELOAD_KEY
                 || key == RECENT_KEY
                 || key.starts_with(OPTIONS_PREFIX)
         });
@@ -157,6 +165,7 @@ fn settings_text(existing: &str, ui: &UiState) -> String {
         }
     }
     text.push_str(&format!("{TRACY_KEY}={}\n", ui.tracy_profiler));
+    text.push_str(&format!("{RELOAD_KEY}={}\n", ui.reload_changed_files));
     text.push_str(&format!("{REMEMBER_KEY}={}\n", ui.remember_settings));
     for path in ui
         .recent_files
@@ -285,7 +294,8 @@ mod tests {
 
         let text = settings_text(existing, &ui);
         assert!(text.starts_with(
-            "# mine\nlocale=de\nfuture=x\ntracy_profiler=false\nremember_settings=true\n"
+            "# mine\nlocale=de\nfuture=x\ntracy_profiler=false\nreload_changed_files=true\n\
+             remember_settings=true\n"
         ));
         assert!(!text.contains("options.gone"));
         assert!(text.contains("options.ambient_occlusion.radius=2\n"));
@@ -306,7 +316,7 @@ mod tests {
         let text = settings_text(existing, &UiState::default());
         assert_eq!(
             text,
-            "locale=de\ntracy_profiler=false\nremember_settings=false\n"
+            "locale=de\ntracy_profiler=false\nreload_changed_files=true\nremember_settings=false\n"
         );
     }
 
@@ -319,12 +329,31 @@ mod tests {
             ..UiState::default()
         };
         let text = settings_text("tracy_profiler=false\n", &ui);
-        assert_eq!(text, "tracy_profiler=true\nremember_settings=false\n");
+        assert_eq!(
+            text,
+            "tracy_profiler=true\nreload_changed_files=true\nremember_settings=false\n"
+        );
 
         let mut restored = UiState::default();
         apply_entries(&mut restored, &parse_entries(&text));
         assert!(restored.tracy_profiler);
         assert!(!restored.remember_settings);
+    }
+
+    /// Reload Changed Files is on unless the file says otherwise, and is kept
+    /// whether or not the option-window values are being remembered.
+    #[test]
+    fn reload_changed_files_is_on_unless_switched_off() {
+        let mut restored = UiState::default();
+        apply_entries(&mut restored, &parse_entries("locale=de\n"));
+        assert!(restored.reload_changed_files);
+        let ui = UiState {
+            reload_changed_files: false,
+            ..UiState::default()
+        };
+        let text = settings_text("", &ui);
+        apply_entries(&mut restored, &parse_entries(&text));
+        assert!(!restored.reload_changed_files);
     }
 
     /// The recent files are kept in order whether or not the option-window

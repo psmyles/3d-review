@@ -29,6 +29,15 @@ workspace, and has four parts.
 
 - **Remember Settings** is a switch. A tick next to it means it is on. See
   [below](#remember-settings) for what it keeps.
+- **Reload Changed Files** is a switch, on to start with. While it is on, the
+  model is opened again when its file changes on disk, so a new export from
+  your modelling program shows at once, without opening it by hand. The view
+  stays where it was, and so do the workspace and its settings: an Opt stack
+  runs again on the new model, and the audit checks it again. Animation files
+  attached to the model are attached again. The viewer waits until the file
+  has stopped changing for a moment, so an export written in several goes is
+  read once, whole. Textures reload on their own whatever this says. The
+  switch is kept between sessions, whether or not Remember Settings is on.
 
 ## Debug
 

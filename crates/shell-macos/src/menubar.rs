@@ -4,7 +4,7 @@
 //! quit: ⌘Q belongs to the menu, not the window, so without one there is no way out
 //! but Force Quit. This builds the menu bar the viewer's own toolbar menu implies,
 //! with each entry where a Mac puts it rather than where the toolbar does: About and
-//! the Remember Settings preference go in the application menu (with Install
+//! the Remember Settings and Reload Changed Files preferences go in the application menu (with Install
 //! Command Line Tool, which has no toolbar counterpart: Setup does it on Windows),
 //! the toolbar's Exit *is* Quit, and Help is AppKit's Help menu (which is what gives
 //! it the search field). Every item that is *ours* routes back through the caller's
@@ -15,7 +15,7 @@
 //! AppKit's own responder-chain selectors (`terminate:`, `hide:`,
 //! `performMiniaturize:` …), so they behave exactly as macOS users expect, need no
 //! routing of ours, and cannot desynchronise from app state because they never touch
-//! it. What *can* desynchronise — the two check marks and the Open Recent list — is
+//! it. What *can* desynchronise — the check marks and the Open Recent list — is
 //! brought back in line by [`Installed::sync`].
 //!
 //! **Accelerators here intercept keys before winit ever sees them.** That is why only
@@ -46,6 +46,7 @@ mod keys {
 // items are AppKit's.
 const ID_ABOUT: &str = "review.about";
 const ID_REMEMBER_SETTINGS: &str = "review.remember-settings";
+const ID_RELOAD_CHANGED_FILES: &str = "review.reload-changed-files";
 const ID_INSTALL_CLI: &str = "review.install-cli";
 const ID_OPEN: &str = "review.open";
 const ID_ADD_ANIMATIONS: &str = "review.add-animations";
@@ -64,6 +65,7 @@ const ID_RECENT_PREFIX: &str = "review.recent.";
 pub(crate) struct Installed {
     _menu: Menu,
     remember_settings: CheckMenuItem,
+    reload_changed_files: CheckMenuItem,
     tracy_profiler: CheckMenuItem,
     open_recent: Submenu,
     /// The list Open Recent was last built from; `None` until the first sync, so
@@ -78,6 +80,7 @@ impl Installed {
         // flips a check item's mark the moment it is clicked, before the command
         // has reached `app`, so only the item knows what it is showing.
         sync_check(&self.remember_settings, state.remember_settings);
+        sync_check(&self.reload_changed_files, state.reload_changed_files);
         sync_check(&self.tracy_profiler, state.tracy_profiler);
         if self.recent_shown.as_deref() != Some(state.recent_files) {
             self.rebuild_open_recent(state.recent_files);
@@ -118,10 +121,17 @@ pub(crate) fn install(
     product: &str,
     on_command: impl Fn(MenuCommand) + Send + Sync + 'static,
 ) -> Option<Installed> {
-    // Both start unticked; the first `sync` sets them from the app's state.
+    // All start unticked; the first `sync` sets them from the app's state.
     let remember_settings = CheckMenuItem::with_id(
         ID_REMEMBER_SETTINGS,
         review_localization::tr(keys::menu::REMEMBER_SETTINGS),
+        true,
+        false,
+        None,
+    );
+    let reload_changed_files = CheckMenuItem::with_id(
+        ID_RELOAD_CHANGED_FILES,
+        review_localization::tr(keys::menu::RELOAD_CHANGED_FILES),
         true,
         false,
         None,
@@ -146,6 +156,7 @@ pub(crate) fn install(
             &item(ID_ABOUT, &keys::menu::about(product)),
             &PredefinedMenuItem::separator(),
             &remember_settings,
+            &reload_changed_files,
             &PredefinedMenuItem::separator(),
             // Here rather than in the toolbar's menu: only the macOS .dmg has no
             // installer to put the CLI on the PATH.
@@ -265,6 +276,7 @@ pub(crate) fn install(
     Some(Installed {
         _menu: menu,
         remember_settings,
+        reload_changed_files,
         tracy_profiler,
         open_recent,
         recent_shown: None,
@@ -280,6 +292,7 @@ fn command_for(id: &MenuId) -> Option<MenuCommand> {
     Some(match id {
         ID_ABOUT => MenuCommand::About,
         ID_REMEMBER_SETTINGS => MenuCommand::ToggleRememberSettings,
+        ID_RELOAD_CHANGED_FILES => MenuCommand::ToggleReloadChangedFiles,
         ID_INSTALL_CLI => MenuCommand::InstallCommandLineTool,
         ID_OPEN => MenuCommand::Open,
         ID_ADD_ANIMATIONS => MenuCommand::AddAnimations,
@@ -330,6 +343,10 @@ mod tests {
         let ids = [
             (ID_ABOUT, MenuCommand::About),
             (ID_REMEMBER_SETTINGS, MenuCommand::ToggleRememberSettings),
+            (
+                ID_RELOAD_CHANGED_FILES,
+                MenuCommand::ToggleReloadChangedFiles,
+            ),
             (ID_INSTALL_CLI, MenuCommand::InstallCommandLineTool),
             (ID_OPEN, MenuCommand::Open),
             (ID_ADD_ANIMATIONS, MenuCommand::AddAnimations),

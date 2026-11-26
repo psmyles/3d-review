@@ -368,13 +368,19 @@ impl App {
         }
     }
 
-    /// Register a texture file's parent directory with the disk watcher (created
-    /// lazily). Watching the directory — not the file — tolerates editors that save
-    /// via an atomic rename. Each directory is watched at most once.
+    /// Register a texture file's parent directory with the disk watcher.
     pub(crate) fn watch_texture(&mut self, path: &Path) {
         if self.textures.embedded.contains(path) {
             return;
         }
+        self.watch_file(path);
+    }
+
+    /// Register a file's parent directory with the disk watcher (created
+    /// lazily) — a texture's, or the model's own. Watching the directory — not
+    /// the file — tolerates editors that save via an atomic rename. Each
+    /// directory is watched at most once.
+    pub(crate) fn watch_file(&mut self, path: &Path) {
         let Some(dir) = path.parent().map(Path::to_path_buf) else {
             return;
         };
@@ -391,19 +397,19 @@ impl App {
                         // Only content writes / creates matter (a save is one or both).
                         if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
                             for changed in event.paths {
-                                let _ = proxy.send_event(UserEvent::TextureChanged(changed));
+                                let _ = proxy.send_event(UserEvent::FileChanged(changed));
                             }
                         }
                     }
                     // A backend error stops reload events for its watch; leave a
                     // trace instead of dropping it without a word.
-                    Err(error) => log::warn!("texture watcher error: {error}"),
+                    Err(error) => log::warn!("file watcher error: {error}"),
                 }
             };
             match RecommendedWatcher::new(handler, notify::Config::default()) {
                 Ok(watcher) => self.textures.watcher = Some(watcher),
                 Err(error) => {
-                    log::warn!("failed to create texture watcher: {error}");
+                    log::warn!("failed to create file watcher: {error}");
                     self.textures.watcher_unavailable = true;
                     self.notifications.report(
                         NoticeKind::Warning,
@@ -426,10 +432,7 @@ impl App {
                     self.textures.watched_dirs.insert(dir);
                 }
                 Err(error) => {
-                    log::warn!(
-                        "failed to watch texture directory {}: {error}",
-                        dir.display()
-                    );
+                    log::warn!("failed to watch directory {}: {error}", dir.display());
                     self.notifications
                         .warning(keys::app_notifications::watch_failed(file_label(&dir)));
                     // Record the attempt so a failing directory isn't retried

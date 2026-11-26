@@ -278,6 +278,10 @@ struct App {
     /// The open requests waiting their turn, and the one being parsed
     /// (`loading/mod.rs`).
     loads: loading::LoadQueue,
+    /// When the model's file, changed on disk, is next opened again: a moment
+    /// after its last change event, so a save written in several goes is read
+    /// once, whole (`loading::reload`).
+    reload_due: Option<std::time::Instant>,
     scene_revision: u64,
     /// Source of every model revision handed to the renderer, for the source mesh
     /// and each processed Opt level alike. One shared counter because the
@@ -502,6 +506,7 @@ impl Default for App {
             scene_extras: None,
             scene_files: Vec::new(),
             loads: loading::LoadQueue::default(),
+            reload_due: None,
             scene_revision: 0,
             model_revision_counter: 0,
             model_load_generation: Arc::new(AtomicU64::new(0)),
@@ -887,7 +892,10 @@ impl ApplicationHandler<UserEvent> for App {
     /// its concern.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
-            UserEvent::TextureChanged(path) => self.reload_texture_file(&path),
+            UserEvent::FileChanged(path) => {
+                self.reload_texture_file(&path);
+                self.model_file_changed(&path);
+            }
             UserEvent::TextureDecoded(decode) => self.handle_texture_decoded(decode),
             UserEvent::OptProcessed(message) => self.handle_opt_processed(*message),
             UserEvent::OptProgressed(message) => self.handle_opt_progressed(message),

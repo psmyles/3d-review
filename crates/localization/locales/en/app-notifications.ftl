@@ -10,6 +10,7 @@
 app-notifications-loading = Loading { $file }...
 app-notifications-loading-files = Loading { $count } files...
 app-notifications-loaded = Loaded { $file } in { $seconds }s
+app-notifications-reloaded = Reloaded { $file } in { $seconds }s, as it changed on disk
 app-notifications-couldnt-load = Couldn't load { $file }: { $detail }
 
 # Animation files attached to the model on screen, so their clips play on it.
@@ -170,7 +171,8 @@ app-notifications-export-start-failed = Couldn't start the export
 app-notifications-preset-build-failed = Couldn't build the preset: { $detail }
 app-notifications-preset-saved = Saved { $file }
 app-notifications-preset-load-failed = Couldn't load that preset: { $detail }
-app-notifications-watcher-unavailable = Textures will not reload on their own (the file watcher could not start)
+app-notifications-watcher-unavailable = Files will not reload on their own (the file watcher could not start)
     .description = Normally a texture refreshes by itself when you save it in your paint
-        program. That will not happen this time; reopen the model to pick up a change.
+        program, and the model when you export it again. That will not happen this time;
+        reopen the model to pick up a change.
 app-notifications-watch-failed = { $file } will not reload on its own when it changes

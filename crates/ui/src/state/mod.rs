@@ -200,6 +200,8 @@ pub enum MenuIntent {
     /// Flip [`UiState::tracy_profiler`] and write the settings file; it takes
     /// effect at the next launch.
     ToggleTracyProfiler,
+    /// Flip [`UiState::reload_changed_files`] and write the settings file.
+    ToggleReloadChangedFiles,
     /// Ask GitHub for the newest release, and open the releases page if it is
     /// newer than this build (or say that this build is the latest).
     CheckForUpdates,
@@ -446,6 +448,10 @@ pub struct UiState {
     /// Tracy is running now. Flipped only by `app`, which writes it to the
     /// settings file as it does.
     pub tracy_profiler: bool,
+    /// Whether the model is opened again when its file changes on disk — the
+    /// menu's **Reload Changed Files**, on by default. Flipped only by `app`,
+    /// which writes it to the settings file as it does.
+    pub reload_changed_files: bool,
     /// The models opened lately, most recent first — File > Open Recent. Kept in
     /// the settings file whether or not **Remember settings** is on (it is a
     /// history, not a tool setting), and maintained only by `app`: a load that
@@ -525,6 +531,7 @@ impl Default for UiState {
             fps: 0.0,
             remember_settings: false,
             tracy_profiler: false,
+            reload_changed_files: true,
             recent_files: Vec::new(),
         }
     }

@@ -92,7 +92,9 @@ pub(super) fn classify(
         };
     }
     match (intent, session) {
-        (OpenIntent::NewSession, _) | (_, Session::Empty) => new_session(files, matcher),
+        (OpenIntent::NewSession | OpenIntent::Reload, _) | (_, Session::Empty) => {
+            new_session(files, matcher)
+        }
         (OpenIntent::Attach, _) => attach_to_current(files, matcher),
         (OpenIntent::Drop, session) => {
             if session == Session::StandIn
@@ -264,6 +266,18 @@ mod tests {
                 attach: Vec::new(),
                 left_out: vec![(1, LeftOut::SecondModel), (2, LeftOut::NoMatch)],
             }
+        );
+    }
+
+    /// A reload is a new session of the same files: the model and the
+    /// animations that were attached to it, attached again.
+    #[test]
+    fn a_reload_opens_the_session_again() {
+        let files = [RIG, BODY];
+        let matcher = table(&[(1, Rig::File(0))]);
+        assert_eq!(
+            classify(OpenIntent::Reload, Session::Rig, &files, &matcher),
+            classify(OpenIntent::NewSession, Session::Rig, &files, &matcher),
         );
     }
 

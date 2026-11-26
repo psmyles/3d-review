@@ -134,8 +134,12 @@ impl App {
                 let model = Arc::new(model);
                 // Replacing the model is what supersedes the old one's measuring,
                 // here rather than when the request was made.
-                let generation =
-                    self.apply_new_model(&rig_path, Arc::clone(&model), started.elapsed());
+                let generation = self.apply_new_model(
+                    &rig_path,
+                    Arc::clone(&model),
+                    started.elapsed(),
+                    intent == OpenIntent::Reload,
+                );
                 self.report_repairs(&rig_path, &repairs);
                 let attached = self.attach_parsed(&model, attach.into_iter().filter_map(&mut take));
                 // After its animation files, so the model is the newest entry in
@@ -178,8 +182,15 @@ impl App {
 
     /// Show `model` as the session's model, and re-point every piece of
     /// dependent state (framing, stats, materials, undo) at it. Returns the
-    /// generation it is measured under.
-    fn apply_new_model(&mut self, path: &Path, model: Arc<ModelData>, elapsed: Duration) -> u64 {
+    /// generation it is measured under. A `reload` of the file on screen keeps
+    /// the view where it was rather than framing the model again.
+    fn apply_new_model(
+        &mut self,
+        path: &Path,
+        model: Arc<ModelData>,
+        elapsed: Duration,
+        reload: bool,
+    ) -> u64 {
         // Loading into the empty viewport (first load, or after Ctrl+N) shows
         // the model already framed — a fly-in from the home view would only
         // delay it. Replacing an already-loaded model keeps the animated
@@ -205,8 +216,10 @@ impl App {
         );
         let (materials_snapshot, material_revision) = if let Some(renderer) = self.renderer.as_mut()
         {
-            frame_camera_to_model(renderer, &model, animate_framing);
-            renderer.reset_uv_camera();
+            if !reload {
+                frame_camera_to_model(renderer, &model, animate_framing);
+                renderer.reset_uv_camera();
+            }
             // Seed the editable material table from the import defaults.
             renderer.set_model_materials(&model.materials);
             (renderer.material_snapshot(), renderer.material_revision())
@@ -218,10 +231,14 @@ impl App {
         let generation = self.replace_scene_model(model, vec![path.to_path_buf()]);
         let label = file_label(path);
         self.set_window_title(Some(&label));
-        self.notifications.success(keys::app_notifications::loaded(
-            label,
-            format_load_time(elapsed),
-        ));
+        let seconds = format_load_time(elapsed);
+        self.notifications.success(if reload {
+            keys::app_notifications::reloaded(label, seconds)
+        } else {
+            keys::app_notifications::loaded(label, seconds)
+        });
+        // Its folder joins the watch, for Reload Changed Files.
+        self.watch_file(path);
         // A gate run starts measuring from here — the first present with the
         // model actually on screen (`gate.rs`); no-op otherwise.
         self.gate_model_ready(path);

@@ -19,9 +19,10 @@ use crate::{audit, dialog, imported_textures, loading, opt, update};
 /// an accidental clone would deep-copy every one of them (invariant 1).
 #[derive(Debug)]
 pub(crate) enum UserEvent {
-    /// A watched directory reported a change to this path; if it's a bound texture,
-    /// re-decode + re-upload it (posted by the file-watcher thread).
-    TextureChanged(PathBuf),
+    /// A watched directory reported a change to this path: a texture the scene
+    /// holds is re-decoded and re-uploaded, and the model's own file is opened
+    /// again (posted by the file-watcher thread).
+    FileChanged(PathBuf),
     /// A background texture decode finished (posted by the decode thread). The
     /// result is uploaded + the slot/binding updated here on the main thread.
     TextureDecoded(TextureDecode),

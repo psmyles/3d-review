@@ -144,6 +144,11 @@ impl App {
                     .info(review_localization::tr(notice).into_owned());
                 self.redraw.requested = true;
             }
+            MenuIntent::ToggleReloadChangedFiles => {
+                self.ui.reload_changed_files = !self.ui.reload_changed_files;
+                self.persist_settings();
+                self.redraw.requested = true;
+            }
             MenuIntent::CheckForUpdates => self.check_for_updates(),
             MenuIntent::Exit => self.exit_requested = true,
         }
@@ -165,6 +170,7 @@ impl App {
             MenuCommand::OpenRecent(index) => MenuIntent::OpenRecent(index),
             MenuCommand::ClearRecentFiles => MenuIntent::ClearRecentFiles,
             MenuCommand::ToggleRememberSettings => MenuIntent::ToggleRememberSettings,
+            MenuCommand::ToggleReloadChangedFiles => MenuIntent::ToggleReloadChangedFiles,
             MenuCommand::ToggleTracyProfiler => MenuIntent::ToggleTracyProfiler,
             MenuCommand::CheckForUpdates => MenuIntent::CheckForUpdates,
             MenuCommand::About => {
@@ -203,6 +209,7 @@ impl App {
         if let Some(menu_bar) = self.menu_bar.as_mut() {
             menu_bar.sync(MenuState {
                 remember_settings: self.ui.remember_settings,
+                reload_changed_files: self.ui.reload_changed_files,
                 tracy_profiler: self.ui.tracy_profiler,
                 recent_files: &self.ui.recent_files,
             });
