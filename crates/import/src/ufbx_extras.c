@@ -141,7 +141,8 @@ REVIEW_EXTRAS_LIST(video, review_import_video_extras, videos, video_count, video
 REVIEW_EXTRAS_LIST(mesh, review_import_mesh_extras, meshes, mesh_count, mesh_capacity)
 REVIEW_EXTRAS_LIST(color_set, review_import_color_set, color_sets, color_set_count, color_set_capacity)
 REVIEW_EXTRAS_LIST(color_value, double, color_values, color_value_count, color_value_capacity)
-REVIEW_EXTRAS_LIST(edge, uint32_t, edges, edge_count, edge_capacity)
+/* No `edge` helper: edges are appended with their layers, by
+   `review_extras_push_edge_layers` below, and an unused one is a GCC warning. */
 REVIEW_EXTRAS_LIST(vertex_crease, double, vertex_crease, vertex_crease_count, vertex_crease_capacity)
 REVIEW_EXTRAS_LIST(face_group, review_import_face_group, face_groups, face_group_count, face_group_capacity)
 REVIEW_EXTRAS_LIST(extra_skin, review_import_extra_skin, extra_skins, extra_skin_count, extra_skin_capacity)

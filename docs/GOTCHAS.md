@@ -52,6 +52,18 @@ its tests at one that still exercises the same property; a test no remaining
 fixture can exercise (a skinned character, today) stays, `#[ignore]`d with the
 reason, rather than passing by skipping.
 
+**The output's bytes are pinned across OSes** (D27). `review-cli`'s
+`tests/determinism.rs` runs `optimize` through two stacks over the
+CAD kit (`experiments/cad-kit/inputs`) and the committed
+fixtures, and compares every file's SHA-256 with `tests/determinism.sha256`.
+The hashes were recorded on one OS and are checked on the others, so a failure
+on one machine only is two toolchains rounding differently: find the operation
+the named files share and make it agree (a pure-Rust `libm` for a
+transcendental, `-ffp-contract=off` for the C), rather than re-recording.
+`REVIEW_RECORD_HASHES=1` rewrites the file, for a change that is *meant* to
+change the output; say so in the commit and check the new hashes on the other
+OS. Debug and release builds write the same bytes, so either profile checks it.
+
 **Render checks can be scripted, headlessly.** `review-snapshot` (see
 [ARCHITECTURE](ARCHITECTURE.md#snapshot--review-snapshot)) draws through the
 real renderer on a windowless GPU and writes PNGs; `--compare` turns "the
@@ -495,6 +507,20 @@ matrix is the transpose of `node.transform` itself. `inverse().transpose()` is
 the map for the opposite direction and rotates every normal the wrong way round.
 The two agree for a pure uniform scale, so it hides until a rotated node is
 exported.
+
+### ufbx_write dates every file with the clock unless it is given a date
+
+A date left zero is filled in at save time: the header's `CreationTimeStamp`
+from the local clock (and with it the binary `FileId`, `CreationTime` and the
+footer, which are derived from it), and the `SceneInfo`'s
+`LastSaved|DateTime_GMT` and `Original|DateTime_GMT` from UTC. Two exports of
+one model differed in 26 bytes, so no run could ever be compared with another
+(D27). `export_bridge.c` sets `save_opts.local_timestamp` and
+`ufbxw_save_info.date_time_utc` to `RVO_EXPORT_DATE`, the Unix epoch, which the
+`Original` date then defaults to. Blender's FBX exporter pins its own the same
+way (to 1970-01-01 10:00). Two exports in the same millisecond match even with
+the clock in them, so `the_same_export_writes_the_same_bytes` checks the dates
+as written, not only that two files agree.
 
 ### ufbx_write seeds every scene with a "Take 001" animation stack
 

@@ -72,6 +72,11 @@ compile.
 full Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`) is only
 needed if you want to _edit_ shaders.
 
+**Linux (x86_64):** GCC (or Clang) and the usual build tools are enough.
+For now only the console tool builds there, with
+`cargo build --release -p review-cli`. The viewer follows once the renderer
+has its Vulkan backend.
+
 ```
 cargo run -p review-app            # launch the viewer
 cargo check --workspace            # fast type check
@@ -87,7 +92,7 @@ lints, tests and the shader freshness check. It sets
 bundled library fails instead of quietly skipping. Pass `-AllowSkips` /
 `--allow-skips` on a checkout that genuinely lacks them.
 
-You need Rust 1.88 or newer, edition 2024.
+You need Rust 1.99 or newer, edition 2024.
 
 On macOS, `scripts/dev-app.sh [--debug] [model.fbx]` wraps the built binary in
 an unsigned `.app` and launches it. That is the only way to try the menu bar,
@@ -164,6 +169,9 @@ the lighting maps. It needs a real GPU.
 - `scripts/build-mac.sh` builds, signs, notarizes and packages the macOS
   `.dmg`. It is run by hand on the development Mac, so the signing certificate
   never leaves that machine.
+- `scripts/build-linux.sh` packages the Linux build as a tarball,
+  `dist/3d-review-<version>-linux-x86_64.tar.gz`. Unpack it anywhere: the
+  console tool is at the top of the folder it holds.
 - `scripts/gate.ps1` and `scripts/gate.sh` measure the startup time, frame
   time and memory of two builds against each other, to catch a slowdown before
   it ships. There is no cross-platform comparison: a Mac and a PC are two

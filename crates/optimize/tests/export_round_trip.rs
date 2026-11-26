@@ -469,6 +469,53 @@ fn ascii_output_reads_back_too() {
     );
 }
 
+#[test]
+fn the_same_export_writes_the_same_bytes() {
+    // ufbx_write stamps the clock into the header's `CreationTimeStamp` (and the
+    // binary `FileId`, `CreationTime` and footer derived from it) and into the
+    // `SceneInfo`'s two `DateTime_GMT`s when they are left unset, so two exports
+    // of one model differed in 26 bytes and no pipeline could cache or compare
+    // its outputs. The bridge pins all of them to the Unix epoch.
+    let Some(model) = fixture("monkey.fbx") else {
+        return;
+    };
+    let result = run(&model, &weld_and_halve());
+    let dir = temp_dir("round_trip_same_bytes");
+    let written: Vec<Vec<u8>> = ["first.fbx", "second.fbx"]
+        .iter()
+        .map(|name| {
+            let path = dir.join(name);
+            export_fbx(&result.lods, &model, None, &path, &ExportOptions::default())
+                .expect("export succeeds");
+            std::fs::read(&path).expect("read the export back")
+        })
+        .collect();
+    assert!(
+        written[0] == written[1],
+        "two exports of the same chain differ"
+    );
+
+    // Two exports inside one millisecond would match even with the clock in
+    // them, so the dates themselves are checked too, where ASCII spells them out.
+    let Some(text) = ascii_export_after("monkey.fbx", "round_trip_dates", &weld_and_halve()) else {
+        return;
+    };
+    for date in ["LastSaved|DateTime_GMT", "Original|DateTime_GMT"] {
+        assert!(
+            scene_property(&text, date).contains("01/01/1970 00:00:00.000"),
+            "{date} should be the pinned epoch, not the clock"
+        );
+    }
+    let stamp = text
+        .split("CreationTimeStamp:")
+        .nth(1)
+        .expect("the header has a CreationTimeStamp");
+    assert!(
+        stamp.contains("Year: 1970") && stamp.contains("Millisecond: 0"),
+        "the header's CreationTimeStamp should be the pinned epoch"
+    );
+}
+
 /// Export `name` as ASCII and hand back the text, or `None` when the fixture is
 /// absent. ASCII because these two tests are about what the *file* says, which a
 /// re-import normalizes away: a reader resolves the declared unit and flattens

@@ -27,6 +27,16 @@
  * `src/ufbxw_probe.c` writes the same number and the tests check it. */
 #define RVO_FBX_VERSION 7700
 
+/* Every date the file records: the header's `CreationTimeStamp` (which the
+ * binary `FileId`, `CreationTime` and the footer are derived from) and the
+ * `SceneInfo`'s `LastSaved|DateTime_GMT` / `Original|DateTime_GMT`. ufbx_write
+ * fills each with the clock when it is left zero, which made two exports of
+ * one model differ in 26 bytes, so the same input and settings could never
+ * give the same file. The Unix epoch instead, as Blender's exporter also pins
+ * its own (to 1970-01-01 10:00); the file's modification time says when it was
+ * written. Not the source's own dates either: ufbx exposes none of them. */
+static const ufbxw_datetime RVO_EXPORT_DATE = { 1970, 1, 1, 0, 0, 0, 0 };
+
 /* The source reader's property type codes (`review_model::extras::PropType`). */
 enum {
     RVO_PROP_UNKNOWN = 0,
@@ -806,6 +816,8 @@ static void rvo_write_scene_settings(ufbxw_scene *out, const rvo_export_scene *s
         info.original_application_name = ufbxw_str(rvo_str_or(scene->original_application_name, ""));
         info.original_application_version = ufbxw_str(rvo_str_or(scene->original_application_version, ""));
         info.original_filename = ufbxw_str(rvo_str_or(scene->original_filename, ""));
+        /* `original_date_time_utc` left zero takes this one too. */
+        info.date_time_utc = RVO_EXPORT_DATE;
         ufbxw_set_save_info(out, &info);
     }
     {
@@ -1653,6 +1665,7 @@ int review_export_fbx(const rvo_export_scene *scene, const char *path, int ascii
     memset(&save_opts, 0, sizeof(save_opts));
     save_opts.format = ascii ? UFBXW_SAVE_FORMAT_ASCII : UFBXW_SAVE_FORMAT_BINARY;
     save_opts.version = RVO_FBX_VERSION;
+    save_opts.local_timestamp = RVO_EXPORT_DATE;
 
     if (!rvo_save_to_path(out, path, &save_opts, error, error_length)) {
         goto cleanup;
