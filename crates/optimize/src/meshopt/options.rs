@@ -47,8 +47,10 @@ pub mod remesh {
 
 /// `meshopt_Tangent*`: the `options` of `meshopt_generateTangents`.
 pub mod tangent {
-    // Bit 0 is `meshopt_TangentCompatible` (MikkTSpace-exact weighting),
-    // deliberately not exposed: the viewer uses upstream's default weighting.
+    /// `meshopt_TangentCompatible`: MikkTSpace's own weighting and fallbacks,
+    /// what a glTF reader computes when a file has no tangents — for the glb
+    /// export's MikkTSpace option. The viewer keeps upstream's default.
+    pub const MIKKTSPACE: u32 = 1 << 0;
     /// A corner touching only degenerate triangles gets a zero tangent instead
     /// of an arbitrary fallback, so the caller can tell it apart.
     pub const ZERO_FALLBACK: u32 = 1 << 1;

@@ -173,6 +173,17 @@ pub fn generate_tangents(
 }
 
 #[cfg(not(has_meshopt))]
+pub fn generate_tangents_mikktspace(
+    _indices: &[u32],
+    _positions: &[f32],
+    _normals: &[f32],
+    _uvs: &[f32],
+    _vertex_count: usize,
+) -> Result<Vec<f32>, OptError> {
+    Err(OptError::Unavailable)
+}
+
+#[cfg(not(has_meshopt))]
 pub const VOXEL_RESOLUTION_MIN: u32 = 4;
 
 #[cfg(not(has_meshopt))]

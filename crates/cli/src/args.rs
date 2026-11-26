@@ -24,7 +24,8 @@ use review_optimize::stack::limits::{
     VOLUME_CHANGE_MIN,
 };
 use review_optimize::{
-    ExportFileType, FbxFormat, HierarchyMode, LodPackaging, SimplifyAlgorithm, SimplifyFlags,
+    ExportFileType, FbxFormat, GlbTangents, HierarchyMode, LodPackaging, SimplifyAlgorithm,
+    SimplifyFlags,
 };
 
 use crate::keys::cli as k;
@@ -164,6 +165,8 @@ pub(crate) struct OptimizeArgs {
     pub(crate) format: Option<FbxFormat>,
     /// `--strip-custom-attributes`: leave a glb's `_` attributes out.
     pub(crate) strip_custom_attributes: bool,
+    /// `--tangents`: what a glb writes as `TANGENT`.
+    pub(crate) tangents: Option<GlbTangents>,
     pub(crate) suffix: String,
     pub(crate) if_exists: IfExists,
     /// `--replace-models`: a model's results may be written over the model
@@ -289,12 +292,15 @@ const JOB_OPTIONS: &[&str] = &[
     HIERARCHY,
     FORMAT,
     STRIP_CUSTOM_ATTRIBUTES,
+    TANGENTS,
     SUFFIX,
 ];
 const PACKAGING: &str = "--packaging";
 const HIERARCHY: &str = "--hierarchy";
 const FORMAT: &str = "--format";
 const STRIP_CUSTOM_ATTRIBUTES: &str = "--strip-custom-attributes";
+const TANGENTS: &str = "--tangents";
+const TANGENTS_CHOICES: &[&str] = &["source", "mikktspace", "none"];
 const SUFFIX: &str = "--suffix";
 const IF_EXISTS: &str = "--if-exists";
 const REPLACE_MODELS: &str = "--replace-models";
@@ -442,6 +448,12 @@ const SPECS: &[Spec] = &[
         name: STRIP_CUSTOM_ATTRIBUTES,
         takes: Takes::Nothing,
         help: k::HELP_OPTION_STRIP_CUSTOM_ATTRIBUTES,
+        on: OPTIMIZE,
+    },
+    Spec {
+        name: TANGENTS,
+        takes: Takes::Choice(TANGENTS_CHOICES),
+        help: k::HELP_OPTION_TANGENTS,
         on: OPTIMIZE,
     },
     Spec {
@@ -881,6 +893,11 @@ fn optimize_args(given: &Given) -> Result<OptimizeArgs, String> {
             _ => None,
         }),
         strip_custom_attributes: given.flag(STRIP_CUSTOM_ATTRIBUTES),
+        tangents: choice(given, TANGENTS, TANGENTS_CHOICES)?.map(|word| match word {
+            "mikktspace" => GlbTangents::MikkTSpace,
+            "none" => GlbTangents::Omit,
+            _ => GlbTangents::AsSource,
+        }),
         suffix: given.trimmed(SUFFIX).unwrap_or_default(),
         if_exists: match choice(given, IF_EXISTS, IF_EXISTS_CHOICES)? {
             Some("skip") => IfExists::Skip,

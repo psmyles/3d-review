@@ -16,9 +16,9 @@ use review_localization::Key;
 use review_log::Level;
 use review_model::{NodeKind, SkinningMethod};
 use review_optimize::{
-    AoQuality, AoTarget, ChartGrowth, ExportFileType, FbxFormat, Flattening, HierarchyMode,
-    LodPackaging, NormalMode, NormalWeighting, RemeshDensity, RemeshTopology, SeamSource,
-    Shortfall, ShrinkwrapMethod, SimplifyAlgorithm, TargetMode, UvLayout, VoxelTarget,
+    AoQuality, AoTarget, ChartGrowth, ExportFileType, FbxFormat, Flattening, GlbTangents,
+    HierarchyMode, LodPackaging, NormalMode, NormalWeighting, RemeshDensity, RemeshTopology,
+    SeamSource, Shortfall, ShrinkwrapMethod, SimplifyAlgorithm, TargetMode, UvLayout, VoxelTarget,
 };
 use review_render::{
     AlphaMode, BufferView, ChannelSelect, CheckerTexture, EnvironmentMap, GtaoQuality,
@@ -315,6 +315,14 @@ pub(crate) fn hierarchy_mode(mode: HierarchyMode) -> Key {
     }
 }
 
+pub(crate) fn glb_tangents(tangents: GlbTangents) -> Key {
+    match tangents {
+        GlbTangents::AsSource => keys::ui_enums::GLB_TANGENTS_AS_SOURCE,
+        GlbTangents::MikkTSpace => keys::ui_enums::GLB_TANGENTS_MIKKTSPACE,
+        GlbTangents::Omit => keys::ui_enums::GLB_TANGENTS_OMIT,
+    }
+}
+
 pub(crate) fn normal_weighting(weighting: NormalWeighting) -> Key {
     match weighting {
         NormalWeighting::AngleAndEdges => keys::ui_enums::NORMAL_WEIGHTING_ANGLE_AND_EDGES,
@@ -518,6 +526,9 @@ mod tests {
         }
         for value in NormalWeighting::ALL {
             assert_resolves(normal_weighting(value));
+        }
+        for value in GlbTangents::ALL {
+            assert_resolves(glb_tangents(value));
         }
         for value in ChartGrowth::ALL {
             assert_resolves(chart_growth(value));

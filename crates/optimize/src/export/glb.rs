@@ -47,7 +47,7 @@ use crate::OptError;
 use crate::notice::ExportNote;
 use crate::process::ProcessedLod;
 use crate::replace_file::Staged;
-use crate::stack::{ExportOptions, HierarchyMode, LodPackaging};
+use crate::stack::{ExportOptions, GlbTangents, HierarchyMode, LodPackaging};
 
 /// glTF's own axes: +X right, +Y up, +Z toward the viewer.
 const GLTF_AXES: review_model::CoordinateAxes = review_model::CoordinateAxes {
@@ -744,7 +744,7 @@ impl<'a> Writer<'a> {
         let originals = self.gltf.map(|gltf| &gltf.vertices);
         // Per written vertex: the source corner it is still bit-for-bit, and
         // that corner's glTF vertex — the values the file stored.
-        let unchanged: Vec<Option<(usize, usize)>> = order
+        let mut unchanged: Vec<Option<(usize, usize)>> = order
             .iter()
             .map(|&vertex| {
                 let corner = *lod.carry.source_corner.get(vertex as usize)?;
@@ -755,6 +755,63 @@ impl<'a> Writer<'a> {
             })
             .collect();
         let local_space = matches!(space, Space::Local { .. });
+        let view = Written {
+            level,
+            source,
+            originals,
+            space,
+            local_space,
+        };
+
+        // MikkTSpace tangents, when asked for: worked out per corner from what
+        // the file will hold — local positions and normals, the first UV set as
+        // stored — and a vertex split wherever its corners disagree (a UV mirror).
+        let mut mikktspace: Option<Vec<Vec4>> = None;
+        let has_uvs = level.stats.uv_set_count > 0 || !level.uv_channels.is_empty();
+        if self.options.glb_tangents == GlbTangents::MikkTSpace && has_uvs {
+            let positions: Vec<f32> = order
+                .iter()
+                .zip(&unchanged)
+                .flat_map(|(&vertex, &known)| view.position(vertex, known).to_array())
+                .collect();
+            let normals: Vec<f32> = order
+                .iter()
+                .zip(&unchanged)
+                .flat_map(|(&vertex, &known)| view.normal(vertex, known).to_array())
+                .collect();
+            let uvs: Vec<f32> = order
+                .iter()
+                .zip(&unchanged)
+                .flat_map(|(&vertex, &known)| view.uv(vertex, known, 0).to_array())
+                .collect();
+            if let Ok(corner_tangents) = crate::meshopt::generate_tangents_mikktspace(
+                &indices,
+                &positions,
+                &normals,
+                &uvs,
+                order.len(),
+            ) {
+                let mut slot_of: HashMap<(u32, [u32; 4]), u32> = HashMap::new();
+                let mut split_order = Vec::with_capacity(order.len());
+                let mut split_unchanged = Vec::with_capacity(order.len());
+                let mut computed = Vec::with_capacity(order.len());
+                for (corner, index) in indices.iter_mut().enumerate() {
+                    let tangent = Vec4::from_slice(&corner_tangents[corner * 4..corner * 4 + 4]);
+                    let key = (*index, tangent.to_array().map(f32::to_bits));
+                    let next = split_order.len() as u32;
+                    *index = *slot_of.entry(key).or_insert_with(|| {
+                        split_order.push(order[*index as usize]);
+                        split_unchanged.push(unchanged[*index as usize]);
+                        computed.push(tangent);
+                        next
+                    });
+                }
+                order = split_order;
+                unchanged = split_unchanged;
+                mikktspace = Some(computed);
+            }
+        }
+
         // Whether the primitive's source vertices had something: any of them,
         // when any is known; `otherwise` when none is (all made by an operation,
         // or a source that is not glTF). A primitive that had no UVs, tangents or
@@ -766,27 +823,13 @@ impl<'a> Writer<'a> {
             }
             known.any(|&(_, logical)| has(logical))
         };
-        let same = |a: &[f32], b: &[f32]| a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits());
-
         let mut attributes = BTreeMap::new();
 
         // POSITION.
         let mut positions = Vec::with_capacity(order.len() * 12);
         let (mut min, mut max) = ([f32::MAX; 3], [f32::MIN; 3]);
         for (slot, &vertex) in order.iter().enumerate() {
-            let value = level.vertices[vertex as usize].position;
-            let written = match (unchanged[slot], originals) {
-                (Some((corner, logical)), Some(originals))
-                    if local_space
-                        && same(
-                            &value.to_array(),
-                            &source.vertices[corner].position.to_array(),
-                        ) =>
-                {
-                    originals.positions[logical]
-                }
-                _ => space.point(value),
-            };
+            let written = view.position(vertex, unchanged[slot]);
             for axis in 0..3 {
                 min[axis] = min[axis].min(written[axis]);
                 max[axis] = max[axis].max(written[axis]);
@@ -814,19 +857,7 @@ impl<'a> Writer<'a> {
         // NORMAL.
         let mut normals = Vec::with_capacity(order.len() * 12);
         for (slot, &vertex) in order.iter().enumerate() {
-            let value = level.vertices[vertex as usize].normal;
-            let written = match (unchanged[slot], originals) {
-                (Some((corner, logical)), Some(originals))
-                    if local_space
-                        && same(
-                            &value.to_array(),
-                            &source.vertices[corner].normal.to_array(),
-                        ) =>
-                {
-                    originals.normals[logical].unwrap_or_else(|| space.normal(value))
-                }
-                _ => space.normal(value),
-            };
+            let written = view.normal(vertex, unchanged[slot]);
             normals.extend(
                 written
                     .to_array()
@@ -839,9 +870,11 @@ impl<'a> Writer<'a> {
 
         // TANGENT: where the source had tangents — every vertex of a non-glTF
         // source, each glTF vertex whose primitive carried them.
-        let wants_tangents = match originals {
-            None => true,
-            Some(originals) => had(
+        let wants_tangents = match (self.options.glb_tangents, originals) {
+            (GlbTangents::Omit, _) => false,
+            (GlbTangents::MikkTSpace, _) => mikktspace.is_some(),
+            (GlbTangents::AsSource, None) => true,
+            (GlbTangents::AsSource, Some(originals)) => had(
                 &|logical| originals.tangents[logical].is_some(),
                 self.gltf.is_some_and(|gltf| gltf.tangents),
             ),
@@ -849,18 +882,9 @@ impl<'a> Writer<'a> {
         if wants_tangents {
             let mut tangents = Vec::with_capacity(order.len() * 16);
             for (slot, &vertex) in order.iter().enumerate() {
-                let value = level.vertices[vertex as usize].tangent;
-                let written = match (unchanged[slot], originals) {
-                    (Some((corner, logical)), Some(originals))
-                        if local_space
-                            && same(
-                                &value.to_array(),
-                                &source.vertices[corner].tangent.to_array(),
-                            ) =>
-                    {
-                        originals.tangents[logical].unwrap_or_else(|| space.tangent(value))
-                    }
-                    _ => space.tangent(value),
+                let written = match &mikktspace {
+                    Some(computed) => computed[slot],
+                    None => view.tangent(vertex, unchanged[slot]),
                 };
                 tangents.extend(
                     written
@@ -915,22 +939,7 @@ impl<'a> Writer<'a> {
             }
             let mut uvs = Vec::with_capacity(order.len() * 8);
             for (slot, &vertex) in order.iter().enumerate() {
-                let value = level.uv_for_channel(vertex as usize, set);
-                let written = match (unchanged[slot], originals) {
-                    (Some((corner, logical)), Some(originals))
-                        if same(
-                            &value.to_array(),
-                            &source.uv_for_channel(corner, set).to_array(),
-                        ) =>
-                    {
-                        originals
-                            .uvs
-                            .get(set)
-                            .and_then(|uvs| uvs[logical])
-                            .unwrap_or_else(|| flip_v(value))
-                    }
-                    _ => flip_v(value),
-                };
+                let written = view.uv(vertex, unchanged[slot], set);
                 uvs.extend(
                     written
                         .to_array()
@@ -1137,6 +1146,90 @@ impl<'a> Writer<'a> {
             &serde_json::to_vec(&document).expect("the document serializes"),
             &bin.bytes,
         )
+    }
+}
+
+/// What the file holds for a level vertex: the value the source file stored,
+/// where the vertex is still bit-for-bit its source corner (`unchanged`), or
+/// the level's value taken back out of world space (and V turned down).
+struct Written<'a> {
+    level: &'a ModelData,
+    source: &'a ModelData,
+    originals: Option<&'a review_model::GltfVertices>,
+    space: &'a Space,
+    local_space: bool,
+}
+
+impl Written<'_> {
+    fn same(a: &[f32], b: &[f32]) -> bool {
+        a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+    }
+
+    fn position(&self, vertex: u32, unchanged: Option<(usize, usize)>) -> Vec3 {
+        let value = self.level.vertices[vertex as usize].position;
+        match (unchanged, self.originals) {
+            (Some((corner, logical)), Some(originals))
+                if self.local_space
+                    && Self::same(
+                        &value.to_array(),
+                        &self.source.vertices[corner].position.to_array(),
+                    ) =>
+            {
+                originals.positions[logical]
+            }
+            _ => self.space.point(value),
+        }
+    }
+
+    fn normal(&self, vertex: u32, unchanged: Option<(usize, usize)>) -> Vec3 {
+        let value = self.level.vertices[vertex as usize].normal;
+        match (unchanged, self.originals) {
+            (Some((corner, logical)), Some(originals))
+                if self.local_space
+                    && Self::same(
+                        &value.to_array(),
+                        &self.source.vertices[corner].normal.to_array(),
+                    ) =>
+            {
+                originals.normals[logical].unwrap_or_else(|| self.space.normal(value))
+            }
+            _ => self.space.normal(value),
+        }
+    }
+
+    fn tangent(&self, vertex: u32, unchanged: Option<(usize, usize)>) -> Vec4 {
+        let value = self.level.vertices[vertex as usize].tangent;
+        match (unchanged, self.originals) {
+            (Some((corner, logical)), Some(originals))
+                if self.local_space
+                    && Self::same(
+                        &value.to_array(),
+                        &self.source.vertices[corner].tangent.to_array(),
+                    ) =>
+            {
+                originals.tangents[logical].unwrap_or_else(|| self.space.tangent(value))
+            }
+            _ => self.space.tangent(value),
+        }
+    }
+
+    fn uv(&self, vertex: u32, unchanged: Option<(usize, usize)>, set: usize) -> Vec2 {
+        let value = self.level.uv_for_channel(vertex as usize, set);
+        match (unchanged, self.originals) {
+            (Some((corner, logical)), Some(originals))
+                if Self::same(
+                    &value.to_array(),
+                    &self.source.uv_for_channel(corner, set).to_array(),
+                ) =>
+            {
+                originals
+                    .uvs
+                    .get(set)
+                    .and_then(|uvs| uvs[logical])
+                    .unwrap_or_else(|| flip_v(value))
+            }
+            _ => flip_v(value),
+        }
     }
 }
 

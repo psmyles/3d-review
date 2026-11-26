@@ -18,6 +18,9 @@ placed where it sits in the world.
 
 **Format** - for FBX, binary or text (ASCII).
 
+**Tangents** - for glb: the source's own, MikkTSpace tangents worked out from the
+written mesh, or none (see [Normals and tangents](normals.md#tangents-in-a-glb)).
+
 **Keep custom attributes** - for glb, whether to write the model's custom vertex
 attributes: the extra data a glTF file can carry per vertex under a name
 starting with an underscore, such as a CAD face id. Turn it off for the files a

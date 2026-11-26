@@ -265,6 +265,9 @@ fn build_stack(args: &OptimizeArgs) -> Result<OptStack, String> {
     if args.strip_custom_attributes {
         stack.export.strip_custom_attributes = true;
     }
+    if let Some(tangents) = args.tangents {
+        stack.export.glb_tangents = tangents;
+    }
     stack.sanitize();
     if !stack.ops.iter().any(|op| op.enabled) {
         return Err(tr(k::OPTIMIZE_NOTHING_ENABLED).into_owned());
@@ -710,6 +713,7 @@ mod tests {
             file_type: None,
             format: None,
             strip_custom_attributes: false,
+            tangents: None,
             suffix: String::new(),
             if_exists: IfExists::Fail,
             replace_models: false,

@@ -138,6 +138,7 @@ as the Opt workspace's Export does.
 | `--packaging single-file\|file-per-lod` | `single-file` writes one FBX holding `Name_LOD0`...`Name_LODn`. `file-per-lod` writes `name_LOD0.fbx`, `name_LOD1.fbx`... A run with no chain writes `name.fbx` either way. |
 | `--hierarchy rebuild\|flat` | `rebuild` keeps the model's hierarchy; `flat` writes every mesh at the top level, in world space. |
 | `--format binary\|ascii\|glb` | What to write: binary FBX (the default), ASCII FBX, or glb (binary glTF). A glb keeps a glTF model's extras, materials and custom attributes; see [glb output](#glb-output). |
+| `--tangents source\|mikktspace\|none` | What a glb writes as `TANGENT`: the source's own where it had them (the default), MikkTSpace tangents worked out from the written positions, normals and first UV set on every primitive with UVs, or none. |
 | `--strip-custom-attributes` | Leave the custom vertex attributes (glTF names starting with `_`, such as `_CAD_FACE`) out of a glb, for the files a game loads. |
 | `--suffix <text>` | Added to each file name, before the extension and any `_LOD<n>`. |
 | `--if-exists fail\|skip\|replace` | When a file a model would write is already there. `fail` (the default) fails that model, `skip` leaves the model out, `replace` writes over the file. |
@@ -182,7 +183,7 @@ what it leaves out comes from the command line. So the run's shared settings go
 on the command line once, and each line says only what differs. A line may set
 `--out`, `--preset`, `--lods`, `--reduce`, `--target-error`, `--simplifier`,
 `--simplify-flags`, `--max-volume-change`, `--max-distance`, `--packaging`,
-`--hierarchy`, `--format`, `--strip-custom-attributes` and `--suffix`; the rest
+`--hierarchy`, `--format`, `--tangents`, `--strip-custom-attributes` and `--suffix`; the rest
 belong to the whole run.
 Paths are relative to the working folder, double quotes keep one with spaces
 together, and blank lines and lines starting with `#` are skipped. The file is
@@ -223,7 +224,7 @@ an AO bake, exclude it in the preset.
   under the same parent; one file per level puts each level on the original
   objects.
 - One primitive per material, with `POSITION`, `NORMAL`, each UV set the
-  primitive had, `TANGENT` where it had tangents, `COLOR_0` in the type it came
+  primitive had, `TANGENT` where it had tangents (or MikkTSpace tangents with `--tangents mikktspace`), `COLOR_0` in the type it came
   in (16-bit normalized from Blender, never cut to 8 bits, so a palette index in
   R survives), and the custom attributes in their own types.
 - A glTF model's materials, textures, samplers and images exactly as the file

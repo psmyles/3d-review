@@ -11,10 +11,11 @@ use review_labels::opt::{op_description, op_kind};
 use review_model::ModelData;
 use review_optimize::{
     AoQuality, AoTarget, AttributeWeights, BakeAoParams, ChartGrowth, ExportFileType,
-    ExportOptions, FbxFormat, Flattening, HierarchyMode, LodLevel, LodPackaging, LodParams,
-    NormalMode, NormalParams, NormalWeighting, OpKind, ReduceParams, RemeshDensity, RemeshParams,
-    RemeshTopology, SeamSource, ShrinkwrapMethod, ShrinkwrapParams, SimplifyAlgorithm,
-    SimplifyFlags, SimplifySettings, TargetMode, UnwrapParams, UvLayout, VoxelTarget, WeldParams,
+    ExportOptions, FbxFormat, Flattening, GlbTangents, HierarchyMode, LodLevel, LodPackaging,
+    LodParams, NormalMode, NormalParams, NormalWeighting, OpKind, ReduceParams, RemeshDensity,
+    RemeshParams, RemeshTopology, SeamSource, ShrinkwrapMethod, ShrinkwrapParams,
+    SimplifyAlgorithm, SimplifyFlags, SimplifySettings, TargetMode, UnwrapParams, UvLayout,
+    VoxelTarget, WeldParams,
 };
 use review_render::Selection;
 
@@ -1197,6 +1198,23 @@ fn export_body(ui: &mut egui::Ui, state: &mut UiState) -> Option<OptIntent> {
                 },
             ),
             ExportFileType::Glb => {
+                labeled_combo(
+                    ui,
+                    Tip::new(keys::ui_opt::EXPORT_TANGENTS)
+                        .describe(keys::ui_opt::EXPORT_TANGENTS_DESCRIPTION)
+                        .page(Page::OptOperations),
+                    "opt_export_tangents",
+                    labels::glb_tangents(edited.glb_tangents),
+                    |ui| {
+                        for tangents in GlbTangents::ALL {
+                            ui.selectable_value(
+                                &mut edited.glb_tangents,
+                                tangents,
+                                labels::glb_tangents(tangents),
+                            );
+                        }
+                    },
+                );
                 let mut keep = !edited.strip_custom_attributes;
                 labeled_checkbox(
                     ui,

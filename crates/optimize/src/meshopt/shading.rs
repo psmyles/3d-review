@@ -100,6 +100,44 @@ pub fn generate_tangents(
     uvs: &[f32],
     vertex_count: usize,
 ) -> Result<Vec<f32>, OptError> {
+    generate_tangents_with(
+        indices,
+        positions,
+        normals,
+        uvs,
+        vertex_count,
+        options::tangent::ZERO_FALLBACK,
+    )
+}
+
+/// [`generate_tangents`] with MikkTSpace's weighting and fallbacks
+/// (`meshopt_TangentCompatible`): the tangents a glTF reader computes for a file
+/// that has none.
+pub fn generate_tangents_mikktspace(
+    indices: &[u32],
+    positions: &[f32],
+    normals: &[f32],
+    uvs: &[f32],
+    vertex_count: usize,
+) -> Result<Vec<f32>, OptError> {
+    generate_tangents_with(
+        indices,
+        positions,
+        normals,
+        uvs,
+        vertex_count,
+        options::tangent::MIKKTSPACE,
+    )
+}
+
+fn generate_tangents_with(
+    indices: &[u32],
+    positions: &[f32],
+    normals: &[f32],
+    uvs: &[f32],
+    vertex_count: usize,
+    flags: u32,
+) -> Result<Vec<f32>, OptError> {
     check_indices(indices, vertex_count)?;
     check_stream(positions, vertex_count, POSITION_COMPONENTS)?;
     check_stream(normals, vertex_count, NORMAL_COMPONENTS)?;
@@ -127,7 +165,7 @@ pub fn generate_tangents(
             NORMAL_COMPONENTS * size_of::<f32>(),
             uvs.as_ptr(),
             UV_COMPONENTS * size_of::<f32>(),
-            options::tangent::ZERO_FALLBACK,
+            flags,
         );
     }
     if result.iter().any(|value| !value.is_finite()) {

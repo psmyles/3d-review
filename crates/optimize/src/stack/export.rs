@@ -94,6 +94,28 @@ impl ExportFileType {
     }
 }
 
+/// What a glb carries as `TANGENT`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum GlbTangents {
+    /// What the source had: its own tangents, where it had them.
+    #[default]
+    AsSource,
+    /// MikkTSpace tangents, worked out from the written positions, normals and
+    /// first UV set — what a glTF reader would compute itself, and what a
+    /// normal map baked in MikkTSpace expects — on every primitive with UVs.
+    MikkTSpace,
+    /// None: a reader computes its own.
+    Omit,
+}
+
+impl GlbTangents {
+    pub const ALL: [GlbTangents; 3] = [
+        GlbTangents::AsSource,
+        GlbTangents::MikkTSpace,
+        GlbTangents::Omit,
+    ];
+}
+
 /// Settings for the export step, edited through the stack panel's
 /// "Export settings" row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -108,4 +130,6 @@ pub struct ExportOptions {
     /// glb: what a pipeline needs while it works is not always what the game
     /// should load.
     pub strip_custom_attributes: bool,
+    /// What a glb writes as `TANGENT`.
+    pub glb_tangents: GlbTangents,
 }

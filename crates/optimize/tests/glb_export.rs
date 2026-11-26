@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 
 use review_model::{ComponentType, ModelData};
 use review_optimize::{
-    ExportFileType, ExportOptions, HierarchyMode, LodLevel, LodPackaging, LodParams, OpKind,
-    OptStack, ReduceParams, TargetMode, WeldParams, export,
+    ExportFileType, ExportOptions, GlbTangents, HierarchyMode, LodLevel, LodPackaging, LodParams,
+    OpKind, OptStack, ReduceParams, TargetMode, WeldParams, export,
 };
 
 mod common;
@@ -319,4 +319,47 @@ fn a_single_file_chain_names_each_level() {
             .filter(|node| node.name != "rig")
             .all(|node| node.parent == Some(rig))
     );
+}
+
+#[test]
+fn mikktspace_tangents_are_written_where_asked() {
+    let source = load(&kit("link"));
+    assert!(
+        !source.gltf.as_deref().unwrap().tangents,
+        "Blender wrote no tangents"
+    );
+    let options = ExportOptions {
+        glb_tangents: GlbTangents::MikkTSpace,
+        ..glb()
+    };
+    let written = load(
+        &write(
+            &source,
+            &no_op(),
+            &options,
+            &temp_dir("glb_mikk"),
+            "link.glb",
+        )[0],
+    );
+    assert!(
+        written.gltf.as_deref().unwrap().tangents,
+        "TANGENT is in the file"
+    );
+    for vertex in &written.vertices {
+        let tangent = vertex.tangent.truncate();
+        assert!((tangent.length() - 1.0).abs() < 1e-3, "unit: {tangent}");
+        assert!(tangent.dot(vertex.normal).abs() < 1e-2, "perpendicular");
+        assert!(vertex.tangent.w.abs() == 1.0, "handedness is a sign");
+    }
+    // The default leaves a file without tangents without them.
+    let plain = load(
+        &write(
+            &source,
+            &no_op(),
+            &glb(),
+            &temp_dir("glb_plain"),
+            "link.glb",
+        )[0],
+    );
+    assert!(!plain.gltf.as_deref().unwrap().tangents);
 }

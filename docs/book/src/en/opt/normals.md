@@ -94,3 +94,16 @@ two tangents, one for each side. It is split into two points there, exactly as
 an engine would split it. So a stack that changes the shape can show a few more
 points on the stats card than the same stack did before, and they are real: the
 export writes them, and a game would draw them.
+
+### Tangents in a glb
+
+A glTF file may leave its tangents out, and a reader then works them out itself
+with a method called MikkTSpace. The glb export's **Tangents** setting decides:
+
+- **As the source had them** (the default) - written where the source file had
+  tangents, left out where it had none.
+- **MikkTSpace** - worked out from the written file's own positions, normals and
+  first UV set, the way a glTF reader would, and written for every part with UVs.
+  Choose this when a normal map baked in MikkTSpace has to match exactly, or for
+  a reader that does not compute its own.
+- **None** - left out everywhere, for the reader to compute.

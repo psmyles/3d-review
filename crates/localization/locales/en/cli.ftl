@@ -51,6 +51,7 @@ cli-help-option-reduce = Simplify the model itself to this share of its triangle
 cli-help-option-packaging = single-file puts every LOD in one FBX; file-per-lod writes name_LOD0.fbx, name_LOD1.fbx and so on.
 cli-help-option-hierarchy = rebuild keeps the model's hierarchy; flat writes every mesh at the top level.
 cli-help-option-format = Write binary FBX (the default), ASCII FBX, or glb (binary glTF).
+cli-help-option-tangents = What a glb writes as tangents: the source's own (the default), MikkTSpace tangents worked out from the written mesh, or none.
 cli-help-option-strip-custom-attributes = Leave the custom vertex attributes (glTF names starting with _) out of a glb.
 cli-help-option-suffix = Add this to the end of each file name.
 cli-help-option-if-exists = When a file it would write is already there: fail that model (the default), skip it, or replace the file.
