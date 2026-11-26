@@ -1093,7 +1093,7 @@ fn the_rules_commands_check_and_explain() {
     assert_eq!(status(&output), 0);
     let catalog = asset_rules::catalog::Catalog::from_json(&stdout(&output)).expect("its JSON");
     assert_eq!(catalog.tool, "review3d-cli");
-    assert_eq!(catalog.rules.len(), 43);
+    assert_eq!(catalog.rules.len(), 48);
     assert_eq!(catalog.bases, ["unity", "unreal", "generic"]);
     assert!(catalog.check(catalog.version.as_deref()).is_empty());
 }

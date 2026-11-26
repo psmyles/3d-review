@@ -97,6 +97,8 @@ pub enum ParamKind {
     Axis,
     /// A list of glob patterns.
     Patterns,
+    /// On or off.
+    Flag,
 }
 
 impl ParamKind {
@@ -110,7 +112,7 @@ impl ParamKind {
             | ParamKind::SquarePixels { min, max }
             | ParamKind::PxPerMeter { min, max } => Some((min, max)),
             ParamKind::Unit => Some((1.0e-6, 1.0e6)),
-            ParamKind::Axis | ParamKind::Patterns => None,
+            ParamKind::Axis | ParamKind::Patterns | ParamKind::Flag => None,
         }
     }
 }
@@ -157,6 +159,7 @@ pub(crate) fn param_value(kind: ParamKind, value: &serde_json::Value) -> Option<
         ParamKind::Patterns => serde_json::from_value(value.clone())
             .ok()
             .map(ParamValue::Patterns),
+        ParamKind::Flag => value.as_bool().map(ParamValue::Flag),
         _ => value.as_f64().map(ParamValue::Number),
     }
 }
@@ -190,6 +193,14 @@ pub struct RuleConfig {
 impl RuleConfig {
     pub fn number(&self, key: &str) -> Option<f64> {
         self.params.get(key).and_then(ParamValue::as_number)
+    }
+
+    /// A flag parameter; `None` when it is unset or not a flag.
+    pub fn flag(&self, key: &str) -> Option<bool> {
+        match self.params.get(key) {
+            Some(ParamValue::Flag(flag)) => Some(*flag),
+            _ => None,
+        }
     }
 
     pub fn patterns(&self, key: &str) -> &[String] {
@@ -289,6 +300,7 @@ impl AuditProfile {
                         }
                     }
                     (Some(ParamValue::Axis(axis)), ParamKind::Axis) => Some(ParamValue::Axis(axis)),
+                    (Some(ParamValue::Flag(flag)), ParamKind::Flag) => Some(ParamValue::Flag(flag)),
                     (Some(ParamValue::Patterns(patterns)), ParamKind::Patterns) => {
                         Some(ParamValue::Patterns(
                             patterns

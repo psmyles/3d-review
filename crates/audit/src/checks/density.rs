@@ -149,6 +149,34 @@ pub(super) fn triangle_lod(ctx: &Context<'_>, config: &RuleConfig, scope: LodSco
     Outcome::judged(offenders, threshold).with_measured(measured)
 }
 
+/// Objects over their LOD level's triangle budget, the level read from a
+/// `_LOD<n>` name on the object or a parent (none is level 0); level 3's budget
+/// holds for every level past it, and a budget of 0 is none.
+pub(super) fn lod_budget(ctx: &Context<'_>, config: &RuleConfig) -> Outcome {
+    let budgets = ["lod0", "lod1", "lod2", "lod3"].map(|key| count_param(config, key, 0));
+    let model = ctx.model;
+    let offenders: Vec<Offender> = ctx
+        .node_triangles()
+        .iter()
+        .enumerate()
+        .filter(|(_, triangles)| !triangles.is_empty())
+        .filter_map(|(node, triangles)| {
+            let level = review_model::naming::node_lod(model, node as u32).unwrap_or(0) as usize;
+            let budget = budgets[level.min(3)];
+            let count = triangles.len() as u64;
+            (budget > 0 && count > budget).then(|| Offender {
+                detail: Some(Measured::Count(budget)),
+                ..Offender::node(node, Some(Measured::Count(count)))
+            })
+        })
+        .collect();
+    let measured = largest(&offenders, |m| match m {
+        Measured::Count(count) => Some(*count as f64),
+        _ => None,
+    });
+    Outcome::judged(offenders, Threshold::None).with_measured(measured)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

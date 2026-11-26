@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use glam::Vec3;
 use review_model::topology::{edge_uses_of_faces, group_edge_uses};
 
-use super::{Outcome, count_param, largest};
+use super::{Outcome, count_param, largest, offenders_from_flags};
 use crate::context::Context;
 use crate::finding::{ElementSet, Measured, Offender, RangeSet, Skip, Threshold};
 use crate::profile::RuleConfig;
@@ -487,4 +487,96 @@ pub(super) fn draw_call_budget(ctx: &Context<'_>, config: &RuleConfig) -> Outcom
     };
     Outcome::judged(offenders, Threshold::Max(Measured::Count(max)))
         .with_measured(Some(Measured::Count(count)))
+}
+
+/// Faces whose vertex colour channel is not one palette index: a value that is
+/// not a whole number of 255ths (to within one step of a 16-bit colour), an
+/// index at or past the palette's size, or corners that disagree. With `srgb`,
+/// the index was painted as an sRGB colour and stored linear (as Blender's byte
+/// colour attributes export), so it is read back through the sRGB curve.
+pub(super) fn indexed_color(ctx: &Context<'_>, config: &RuleConfig) -> Outcome {
+    let channel = count_param(config, "channel", 0).min(3) as usize;
+    let palette = count_param(config, "palette_size", 256).max(1);
+    let srgb = config.flag("srgb").unwrap_or(false);
+    let model = ctx.model;
+    // The index a stored value holds, when it holds one: the nearest whole
+    // index, kept if storing it again lands within a 16-bit step of the value.
+    let index_of = |value: f32| -> Option<u64> {
+        if !(0.0..=1.0).contains(&value) {
+            return None;
+        }
+        let encoded = if srgb {
+            review_model::color::linear_to_srgb(value)
+        } else {
+            value
+        };
+        let index = (f64::from(encoded) * 255.0).round();
+        let exact = index as f32 / 255.0;
+        let stored = if srgb {
+            review_model::color::srgb_to_linear(exact)
+        } else {
+            exact
+        };
+        (f64::from((stored - value).abs()) <= 1.0 / 65535.0 + 1.0e-7).then_some(index as u64)
+    };
+    let face_count = model.indices.len() / 3;
+    let flagged: Vec<bool> = (0..face_count)
+        .map(|triangle| {
+            let corners = &model.indices[triangle * 3..triangle * 3 + 3];
+            let values: Vec<f32> = corners
+                .iter()
+                .map(|&corner| {
+                    model
+                        .vertices
+                        .get(corner as usize)
+                        .map_or(1.0, |vertex| vertex.vertex_color[channel])
+                })
+                .collect();
+            let indices: Vec<Option<u64>> = values.iter().map(|&value| index_of(value)).collect();
+            indices
+                .iter()
+                .any(|index| index.is_none_or(|index| index >= palette))
+                || indices.windows(2).any(|pair| pair[0] != pair[1])
+        })
+        .collect();
+    let offenders = offenders_from_flags(ctx, &flagged);
+    Outcome::judged(offenders, Threshold::Max(Measured::Count(palette - 1)))
+}
+
+/// Collision meshes (by name) with more distinct positions than `max`.
+pub(super) fn collider_vertices(ctx: &Context<'_>, config: &RuleConfig) -> Outcome {
+    let Ok(colliders) = crate::glob::GlobSet::new(config.patterns("colliders")) else {
+        return Outcome::skip(Skip::InvalidPattern);
+    };
+    let max = count_param(config, "max", 32);
+    let model = ctx.model;
+    let offenders: Vec<Offender> = ctx
+        .node_triangles()
+        .iter()
+        .enumerate()
+        .filter(|(node, triangles)| {
+            !triangles.is_empty()
+                && model
+                    .nodes
+                    .get(*node)
+                    .is_some_and(|entry| colliders.matches(&entry.name))
+        })
+        .filter_map(|(node, triangles)| {
+            let points: HashSet<[u32; 3]> = triangles
+                .iter()
+                .flat_map(|&triangle| {
+                    model.indices[triangle as usize * 3..triangle as usize * 3 + 3].iter()
+                })
+                .filter_map(|&corner| model.vertices.get(corner as usize))
+                .map(|vertex| vertex.position.to_array().map(f32::to_bits))
+                .collect();
+            let count = points.len() as u64;
+            (count > max).then(|| Offender::node(node, Some(Measured::Count(count))))
+        })
+        .collect();
+    let measured = largest(&offenders, |m| match m {
+        Measured::Count(count) => Some(*count as f64),
+        _ => None,
+    });
+    Outcome::judged(offenders, Threshold::Max(Measured::Count(max))).with_measured(measured)
 }

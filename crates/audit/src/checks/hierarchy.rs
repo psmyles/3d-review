@@ -129,3 +129,114 @@ pub(super) fn materials_per_mesh(ctx: &Context<'_>, config: &RuleConfig) -> Outc
     });
     Outcome::judged(offenders, Threshold::Max(Measured::Count(max))).with_measured(measured)
 }
+
+/// The kind of value an extra holds, as a `key:type` entry names it.
+fn json_kind(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "bool",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+/// The same for an FBX user property, by its declared type.
+fn prop_kind(kind: review_model::extras::PropType) -> &'static str {
+    use review_model::extras::PropType;
+    match kind {
+        PropType::Boolean => "bool",
+        PropType::Integer | PropType::Number | PropType::Distance => "number",
+        PropType::Text | PropType::DateTime | PropType::Reference => "string",
+        PropType::Vector
+        | PropType::Color
+        | PropType::ColorWithAlpha
+        | PropType::Translation
+        | PropType::Rotation
+        | PropType::Scaling => "array",
+        PropType::Compound => "object",
+        _ => "unknown",
+    }
+}
+
+/// Objects matching `objects` that lack a required extra, or carry it as the
+/// wrong type. An extra is a glTF node's `extras` entry, or an FBX node's user
+/// property (a custom property, as Blender and Maya export them); a model with
+/// neither has every key missing.
+pub(super) fn required_extras(ctx: &Context<'_>, config: &RuleConfig) -> Outcome {
+    let Ok(objects) = GlobSet::new(config.patterns("objects")) else {
+        return Outcome::skip(Skip::InvalidPattern);
+    };
+    // `key` or `key:type`.
+    let required: Vec<(&str, Option<&str>)> = config
+        .patterns("keys")
+        .iter()
+        .map(|entry| match entry.split_once(':') {
+            Some((key, kind)) => (key.trim(), Some(kind.trim())),
+            None => (entry.trim(), None),
+        })
+        .filter(|(key, _)| !key.is_empty())
+        .collect();
+    const KINDS: [&str; 7] = [
+        "string", "number", "bool", "boolean", "array", "object", "null",
+    ];
+    if required
+        .iter()
+        .any(|(_, kind)| kind.is_some_and(|kind| !KINDS.contains(&kind)))
+    {
+        return Outcome::skip(Skip::InvalidPattern);
+    }
+    if required.is_empty() {
+        return Outcome::judged(Vec::new(), Threshold::None);
+    }
+    let model = ctx.model;
+    let offenders: Vec<Offender> = ctx
+        .authored_nodes()
+        .filter(|&index| objects.matches(&model.nodes[index].name))
+        .filter_map(|index| {
+            let gltf: Option<serde_json::Value> = model
+                .gltf
+                .as_deref()
+                .and_then(|gltf| gltf.nodes.get(index))
+                .and_then(|node| node.extras.as_deref())
+                .and_then(|text| serde_json::from_str(text).ok());
+            let props = ctx.extras.and_then(|extras| extras.nodes.get(index));
+            // The kind of value `key` holds on this node, when it has one.
+            let kind_of = |key: &str| -> Option<&'static str> {
+                gltf.as_ref()
+                    .and_then(|extras| extras.get(key))
+                    .map(json_kind)
+                    .or_else(|| {
+                        props?
+                            .props
+                            .iter()
+                            .find(|prop| prop.user_defined() && prop.name == key)
+                            .map(|prop| prop_kind(prop.kind))
+                    })
+            };
+            let wrong: Vec<String> = required
+                .iter()
+                .filter(|(key, kind)| match kind_of(key) {
+                    None => true,
+                    Some(found) => kind.is_some_and(|kind| {
+                        let kind = if kind == "boolean" { "bool" } else { kind };
+                        found != kind
+                    }),
+                })
+                .map(|(key, kind)| match kind {
+                    Some(kind) => format!("{key}:{kind}"),
+                    None => (*key).to_owned(),
+                })
+                .collect();
+            (!wrong.is_empty()).then(|| Offender {
+                detail: Some(Measured::Text(wrong.join(", "))),
+                ..Offender::node(index, None)
+            })
+        })
+        .collect();
+    Outcome::judged(
+        offenders,
+        Threshold::Patterns(config.patterns("keys").to_vec()),
+    )
+}

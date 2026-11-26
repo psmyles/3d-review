@@ -64,6 +64,7 @@ const VIEWS: &[&str] = &[
     "issues",
     "texel_density",
     "triangle_density",
+    "uv_stretch",
     "overdraw",
     "quad_overdraw",
 ];
@@ -205,7 +206,8 @@ fn method(out: &mut String, doc: &str, signature: &str, arms: &[String]) {
 /// - a whole number in pixels is `Pixels`, any other whole number `Count`;
 /// - a number with suggested options is a scene `Unit`; otherwise its unit picks `Meters`,
 ///   `Pixels`, `SquarePixels` or `PxPerMeter`, and no unit is a plain `Number`;
-/// - a choice is an `Axis` (the one choice 3D Review has), and patterns are `Patterns`.
+/// - a choice is an `Axis` (the one choice 3D Review has), patterns are `Patterns` and a
+///   flag is a `Flag`.
 fn param_kind(param: &Param) -> Result<String, String> {
     let range = || -> Result<String, String> {
         match (param.min, param.max) {
@@ -231,7 +233,8 @@ fn param_kind(param: &Param) -> Result<String, String> {
         }
         ParamKind::Choice => "ParamKind::Axis".to_owned(),
         ParamKind::Patterns => "ParamKind::Patterns".to_owned(),
-        ParamKind::Flag | ParamKind::Choices => {
+        ParamKind::Flag => "ParamKind::Flag".to_owned(),
+        ParamKind::Choices => {
             return Err(format!(
                 "3D Review has no {} parameter",
                 param.kind.as_str()

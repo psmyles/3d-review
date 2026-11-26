@@ -207,6 +207,11 @@ mod tests {
                 "hierarchy.multiple_roots",
                 "hierarchy.lights_cameras",
                 "hierarchy.materials_per_mesh",
+                "uv.stretch",
+                "geometry.indexed_color",
+                "hierarchy.required_extras",
+                "geometry.collider_vertices",
+                "density.lod_budget",
             ]
         );
     }

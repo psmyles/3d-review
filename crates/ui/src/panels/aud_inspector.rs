@@ -626,6 +626,9 @@ fn param_widget(ui: &mut egui::Ui, salt: (RuleId, &str), kind: ParamKind, value:
                 *patterns = parse_patterns(&text);
             }
         }
+        (ParamKind::Flag, ParamValue::Flag(flag)) => {
+            ui.checkbox(flag, "");
+        }
         (kind, ParamValue::Number(number)) => {
             let Some((min, max)) = kind.range() else {
                 return;

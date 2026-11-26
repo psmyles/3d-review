@@ -1247,3 +1247,194 @@ help = "The largest value that still passes."
 element = "node"
 marker = "object"
 view = "issues"
+
+[[rule]]
+id = "uv.stretch"
+category = "uv"
+since = "0.9.3"
+name = "UvStretch"
+title = "UV stretch"
+what = "Faces whose texture layout stretches them one way more than the other, past the limit."
+why = "A texture on a stretched face is smeared along one direction: lines go soft, circles go oval."
+how = "Unwrap the part again, or relax the stretched islands. The Opt workspace's Unwrap UVs can make fresh ones."
+
+[rule.default]
+enabled = false
+severity = "warning"
+
+[[rule.param]]
+key = "limit"
+kind = "number"
+min = 1.0
+max = 50.0
+default = 2.0
+label = "Limit"
+help = "The most a face's texture may be longer one way than the other: 2 lets one direction be twice the other."
+
+[rule.app]
+element = "face"
+marker = "fill"
+view = "uv_stretch"
+
+[[rule]]
+id = "geometry.indexed_color"
+category = "geometry"
+since = "0.9.3"
+title = "Indexed vertex color"
+what = "Faces whose vertex color channel is not one palette index: a value that is not a whole number of 255ths, an index past the palette's last, or corners that disagree."
+why = "A game that reads the channel as an index into its palette gets a blend of two colors, or none, wherever the value is not one exact index."
+how = "Paint each face with one palette color, and export the color without blending (16-bit or float vertex colors keep the index exact)."
+
+[rule.default]
+enabled = false
+severity = "error"
+
+[[rule.param]]
+key = "channel"
+kind = "count"
+min = 0
+max = 3
+default = 0
+label = "Channel"
+help = "The vertex color channel holding the index: 0 red, 1 green, 2 blue, 3 alpha."
+
+[[rule.param]]
+key = "palette_size"
+kind = "count"
+min = 1
+max = 256
+default = 256
+label = "Palette size"
+help = "How many colors the palette has: an index must be below this."
+
+[[rule.param]]
+key = "srgb"
+kind = "flag"
+default = false
+label = "Painted in sRGB"
+help = "The index was painted as an sRGB color and stored linear, as Blender's byte color attributes export it: read it back through the sRGB curve."
+
+[rule.app]
+element = "face"
+marker = "fill"
+view = "issues"
+
+[[rule]]
+id = "hierarchy.required_extras"
+category = "hierarchy"
+since = "0.9.3"
+title = "Required extras"
+what = "Objects whose names match a pattern but which lack an extra the game needs, or carry it as the wrong type. An extra is a glTF node's extras entry, or an FBX object's custom (user) property."
+why = "A game reading its gameplay data from an object's extras finds nothing there, or the wrong kind of value."
+how = "Add the property to the object in the modelling program, with a value of the right type, and export with custom properties on."
+
+[rule.default]
+enabled = false
+severity = "error"
+
+[[rule.param]]
+key = "objects"
+kind = "patterns"
+default = ["*"]
+label = "Objects"
+help = "Name patterns of the objects that must carry the extras."
+
+[[rule.param]]
+key = "keys"
+kind = "patterns"
+default = []
+label = "Keys"
+help = "Each extra an object must carry, as key or key:type, the type one of string, number, bool, array, object or null. An FBX vector or color property counts as an array."
+
+[rule.app]
+element = "node"
+marker = "object"
+view = "issues"
+
+[[rule]]
+id = "geometry.collider_vertices"
+category = "geometry"
+since = "0.9.3"
+title = "Collider vertex limit"
+what = "Collision meshes with more vertices than the limit."
+why = "A physics engine builds a convex hull from every vertex of a hull collider and limits how many it takes; past the limit it simplifies the shape itself, or refuses it."
+how = "Simplify the collider below the limit in the modelling program."
+
+[rule.default]
+enabled = false
+severity = "warning"
+
+[[rule.param]]
+key = "colliders"
+kind = "patterns"
+default = ["*_hull", "UCX_*"]
+label = "Colliders"
+help = "Name patterns that mark a collision mesh."
+
+[[rule.param]]
+key = "max"
+kind = "count"
+min = 4
+max = 65536
+default = 32
+label = "Most vertices"
+help = "The most vertices (distinct positions) a collision mesh may have."
+
+[rule.app]
+element = "node"
+marker = "object"
+view = "issues"
+
+[[rule]]
+id = "density.lod_budget"
+category = "density"
+since = "0.9.3"
+title = "LOD triangle budget"
+what = "Objects with more triangles than their LOD level's budget, the level read from a _LOD<n> name (no suffix is level 0)."
+why = "Each level of a chain exists to cost less than the one before; one over its budget spends what the chain was meant to save."
+how = "Generate the level again in the Opt workspace with a triangle target at or under its budget."
+
+[rule.default]
+enabled = false
+severity = "warning"
+
+[[rule.param]]
+key = "lod0"
+kind = "count"
+min = 0
+max = 10000000
+default = 0
+label = "LOD0"
+help = "The most triangles an object at level 0 may have; 0 for no budget."
+
+[[rule.param]]
+key = "lod1"
+kind = "count"
+min = 0
+max = 10000000
+default = 0
+label = "LOD1"
+help = "The same for level 1."
+
+[[rule.param]]
+key = "lod2"
+kind = "count"
+min = 0
+max = 10000000
+default = 0
+label = "LOD2"
+help = "The same for level 2."
+
+[[rule.param]]
+key = "lod3"
+kind = "count"
+min = 0
+max = 10000000
+default = 0
+label = "LOD3"
+help = "The same for level 3 and every level after it."
+
+[rule.app]
+element = "node"
+marker = "object"
+view = "issues"

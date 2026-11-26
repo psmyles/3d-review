@@ -967,3 +967,270 @@ fn the_json_report_names_polygons_the_way_the_dcc_does() {
         serde_json::json!([1])
     );
 }
+
+/// Set one parameter of `rule` in `profile`.
+fn set_param(profile: &mut AuditProfile, rule: RuleId, key: &str, value: ParamValue) {
+    profile
+        .rules
+        .get_mut(&rule)
+        .unwrap()
+        .params
+        .insert(key.into(), value);
+}
+
+/// Triangle indices a rule's offenders list, across every object.
+fn offending_triangles(report: &AuditReport, rule: RuleId) -> Vec<u32> {
+    let mut triangles: Vec<u32> = report
+        .result(rule)
+        .unwrap()
+        .offenders
+        .iter()
+        .flat_map(|offender| match &offender.elements {
+            ElementSet::Triangles(set) => set.iter().collect::<Vec<u32>>(),
+            _ => Vec::new(),
+        })
+        .collect();
+    triangles.sort_unstable();
+    triangles
+}
+
+#[test]
+fn uv_stretch_flags_faces_stretched_past_the_limit() {
+    // A square mapped to a square, and one squashed to a third of its height.
+    let mut squashed = quad(0, [2.0, 0.0, 0.0]);
+    for corner in &mut squashed.corners {
+        corner.1.y /= 3.0;
+    }
+    let model = build(
+        vec![mesh_node("A")],
+        vec![quad(0, [0.0, 0.0, 0.0]), squashed],
+    );
+    let report = audit_one(&model, RuleId::UvStretch, |_| {});
+    assert_eq!(offending_triangles(&report, RuleId::UvStretch), [2, 3]);
+    let result = report.result(RuleId::UvStretch).unwrap();
+    let Some(Measured::Ratio(worst)) = result.measured else {
+        panic!("{:?}", result.measured);
+    };
+    assert!((worst - 3.0).abs() < 1e-3, "{worst}");
+    // A limit above 3 lets it through.
+    let report = audit_one(&model, RuleId::UvStretch, |profile| {
+        set_param(profile, RuleId::UvStretch, "limit", ParamValue::Number(3.5));
+    });
+    assert_eq!(total(&report, RuleId::UvStretch), 0);
+}
+
+#[test]
+fn indexed_color_wants_one_whole_index_below_the_palette_per_face() {
+    let mut model = build(
+        vec![mesh_node("A")],
+        (0..5)
+            .map(|i| quad(0, [i as f32 * 2.0, 0.0, 0.0]))
+            .collect(),
+    );
+    // Per face (4 corners each): its corners' red channel.
+    let reds: [[f32; 4]; 5] = [
+        [3.0 / 255.0; 4],                                     // index 3: fine
+        [3.0 / 255.0, 3.0 / 255.0, 4.0 / 255.0, 3.0 / 255.0], // corners disagree
+        [0.5; 4],                                             // 127.5: between two
+        [5.0 / 255.0; 4],                                     // past a palette of 4
+        [(3.0f32 / 255.0 * 65535.0).round() / 65535.0; 4],    // 16-bit index 3: fine
+    ];
+    for (face, red) in reds.iter().enumerate() {
+        for (corner, &value) in red.iter().enumerate() {
+            model.vertices[face * 4 + corner].vertex_color.x = value;
+        }
+    }
+    let report = audit_one(&model, RuleId::IndexedColor, |profile| {
+        set_param(
+            profile,
+            RuleId::IndexedColor,
+            "palette_size",
+            ParamValue::Number(4.0),
+        );
+    });
+    assert_eq!(
+        offending_triangles(&report, RuleId::IndexedColor),
+        [2, 3, 4, 5, 6, 7]
+    );
+    // Index 1 painted in sRGB and stored linear in 16 bits, as Blender writes
+    // a byte color: an index only when read back through the sRGB curve.
+    let painted = (review_model::color::srgb_to_linear(1.0 / 255.0) * 65535.0).round() / 65535.0;
+    let mut srgb = model.clone();
+    for vertex in &mut srgb.vertices {
+        vertex.vertex_color.x = painted;
+    }
+    let indexed = |srgb_on: bool| {
+        let report = audit_one(&srgb, RuleId::IndexedColor, |profile| {
+            set_param(
+                profile,
+                RuleId::IndexedColor,
+                "srgb",
+                ParamValue::Flag(srgb_on),
+            );
+        });
+        total(&report, RuleId::IndexedColor)
+    };
+    assert_eq!(indexed(true), 0);
+    assert_eq!(indexed(false), 10);
+
+    // The green channel is all 1.0, index 255: fine in a palette of 256.
+    let report = audit_one(&model, RuleId::IndexedColor, |profile| {
+        set_param(
+            profile,
+            RuleId::IndexedColor,
+            "channel",
+            ParamValue::Number(1.0),
+        );
+    });
+    assert_eq!(total(&report, RuleId::IndexedColor), 0);
+}
+
+#[test]
+fn required_extras_are_read_from_gltf_extras_and_fbx_user_properties() {
+    use review_model::extras::{Prop, PropFlags, PropType};
+    let mut model = named(&[
+        ("Wheel", NodeKind::Mesh, None),
+        ("Axle", NodeKind::Mesh, None),
+        ("Bolt", NodeKind::Mesh, None),
+        ("Decor", NodeKind::Mesh, None),
+    ]);
+    model.gltf = Some(Box::new(review_model::GltfSource {
+        nodes: vec![
+            review_model::GltfNode {
+                extras: Some(r#"{"mass": 2.5, "joint": "hinge"}"#.into()),
+                ..Default::default()
+            },
+            review_model::GltfNode {
+                extras: Some(r#"{"mass": "heavy"}"#.into()),
+                ..Default::default()
+            },
+            review_model::GltfNode::default(),
+            review_model::GltfNode::default(),
+        ],
+        ..Default::default()
+    }));
+    let profile = |profile: &mut AuditProfile| {
+        set_param(
+            profile,
+            RuleId::RequiredExtras,
+            "objects",
+            ParamValue::Patterns(vec!["Wheel".into(), "Axle".into(), "Bolt".into()]),
+        );
+        set_param(
+            profile,
+            RuleId::RequiredExtras,
+            "keys",
+            ParamValue::Patterns(vec!["mass:number".into(), "joint".into()]),
+        );
+    };
+    let report = audit_one(&model, RuleId::RequiredExtras, profile);
+    let result = report.result(RuleId::RequiredExtras).unwrap();
+    let found: Vec<(Option<u32>, Option<Measured>)> = result
+        .offenders
+        .iter()
+        .map(|offender| (offender.node, offender.detail.clone()))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (Some(1), Some(Measured::Text("mass:number, joint".into()))),
+            (Some(2), Some(Measured::Text("mass:number, joint".into()))),
+        ]
+    );
+
+    // From an FBX file, the same keys as user properties.
+    model.gltf = None;
+    let mut extras = extras_with_geometric(&model, |_| Mat4::IDENTITY);
+    let prop = |name: &str, kind: PropType| Prop {
+        name: name.into(),
+        kind,
+        flags: PropFlags(PropFlags::USER_DEFINED),
+        value_int: 0,
+        value_real: [0.0; 4],
+        value_str: String::new(),
+        value_blob: Vec::new(),
+    };
+    extras.nodes[0].props = vec![
+        prop("mass", PropType::Number),
+        prop("joint", PropType::Text),
+    ];
+    extras.nodes[1].props = vec![prop("mass", PropType::Integer)];
+    let report = audit_one_with(&model, Some(&extras), RuleId::RequiredExtras, profile);
+    let result = report.result(RuleId::RequiredExtras).unwrap();
+    let nodes: Vec<Option<u32>> = result.offenders.iter().map(|o| o.node).collect();
+    assert_eq!(nodes, [Some(1), Some(2)]);
+
+    // A type the rule does not know is a broken profile, not a finding.
+    let report = audit_one(&model, RuleId::RequiredExtras, |profile| {
+        set_param(
+            profile,
+            RuleId::RequiredExtras,
+            "keys",
+            ParamValue::Patterns(vec!["mass:float".into()]),
+        );
+    });
+    assert_eq!(
+        report.result(RuleId::RequiredExtras).unwrap().status,
+        Status::NotEvaluated(review_audit::Skip::InvalidPattern)
+    );
+}
+
+#[test]
+fn collider_vertices_count_distinct_positions_of_colliders_only() {
+    let mut faces = grid(0, [0.0, 0.0, 0.0], 3);
+    // Offset in z, so the grid's sums round the same as at the origin.
+    faces.extend(grid(1, [0.0, 0.0, 2.0], 3));
+    faces.push(quad(2, [0.0, 4.0, 0.0]));
+    let model = build(
+        vec![
+            mesh_node("Box"),
+            mesh_node("Box_hull"),
+            mesh_node("UCX_Box"),
+        ],
+        faces,
+    );
+    let report = audit_one(&model, RuleId::ColliderVertices, |profile| {
+        set_param(
+            profile,
+            RuleId::ColliderVertices,
+            "max",
+            ParamValue::Number(8.0),
+        );
+    });
+    let result = report.result(RuleId::ColliderVertices).unwrap();
+    assert_eq!(result.offenders.len(), 1);
+    assert_eq!(result.offenders[0].node, Some(1));
+    assert_eq!(result.measured, Some(Measured::Count(16)));
+}
+
+#[test]
+fn lod_budgets_apply_by_level_and_the_last_holds_for_the_rest() {
+    let model = build(
+        vec![
+            mesh_node("Crate"),
+            mesh_node("Crate_LOD1"),
+            mesh_node("Crate_LOD4"),
+        ],
+        vec![
+            quad(0, [0.0, 0.0, 0.0]),
+            quad(0, [1.0, 0.0, 0.0]),
+            quad(1, [0.0, 2.0, 0.0]),
+            quad(1, [1.0, 2.0, 0.0]),
+            quad(2, [0.0, 4.0, 0.0]),
+        ],
+    );
+    let budgets = |lod0: f64, lod1: f64, lod3: f64| {
+        let report = audit_one(&model, RuleId::LodBudget, |profile| {
+            for (key, value) in [("lod0", lod0), ("lod1", lod1), ("lod3", lod3)] {
+                set_param(profile, RuleId::LodBudget, key, ParamValue::Number(value));
+            }
+        });
+        let result = report.result(RuleId::LodBudget).unwrap().clone();
+        result.offenders.iter().map(|o| o.node).collect::<Vec<_>>()
+    };
+    // No budgets, no findings.
+    assert!(budgets(0.0, 0.0, 0.0).is_empty());
+    // Level 0 (no suffix) has 4 triangles, level 1 has 4, level 4 has 2.
+    assert_eq!(budgets(3.0, 0.0, 0.0), [Some(0)]);
+    assert_eq!(budgets(4.0, 3.0, 1.0), [Some(1), Some(2)]);
+}

@@ -14,7 +14,7 @@ use glam::Vec2;
 use review_model::extras::UvSetExtras;
 use review_model::uv_islands::{UvIslands, uv_islands};
 
-use super::{Outcome, count_param};
+use super::{Outcome, count_param, offenders_from_flags};
 use crate::context::Context;
 use crate::finding::{ElementSet, Measured, Offender, RangeSet, Skip, Threshold};
 use crate::profile::RuleConfig;
@@ -38,23 +38,6 @@ fn has_channel(ctx: &Context<'_>, channel: usize) -> bool {
 fn triangle_uvs(ctx: &Context<'_>, triangle: usize, channel: usize) -> Option<[Vec2; 3]> {
     let corners = ctx.model.indices.get(triangle * 3..triangle * 3 + 3)?;
     Some([0, 1, 2].map(|i| ctx.model.uv_for_channel(corners[i] as usize, channel)))
-}
-
-/// One offender per node from a per-triangle flag.
-fn offenders_from_flags(ctx: &Context<'_>, flagged: &[bool]) -> Vec<Offender> {
-    ctx.node_triangles()
-        .iter()
-        .enumerate()
-        .filter_map(|(node, triangles)| {
-            let set = RangeSet::from_sorted(
-                triangles
-                    .iter()
-                    .copied()
-                    .filter(|&triangle| flagged.get(triangle as usize).copied().unwrap_or(false)),
-            );
-            (!set.is_empty()).then(|| Offender::elements(Some(node), ElementSet::Triangles(set)))
-        })
-        .collect()
 }
 
 /// Visit every texel whose centre triangle `uv` covers, on an
@@ -495,6 +478,33 @@ pub(super) fn lightmap_padding(ctx: &Context<'_>, config: &RuleConfig) -> Outcom
         .map(|(node, set)| Offender::elements(Some(node), ElementSet::Triangles(set)))
         .collect();
     Outcome::judged(offenders, Threshold::Min(Measured::Pixels(padding as f64)))
+}
+
+/// Faces (their triangles) whose UV set 0 stretches them past `limit`:
+/// `review_model::measure::uv_stretch`, the same measure the Unwrap operation
+/// and the viewer's stretch map use.
+pub(super) fn stretch(ctx: &Context<'_>, config: &RuleConfig) -> Outcome {
+    if !has_channel(ctx, 0) {
+        return Outcome::skip(Skip::NoUvSet);
+    }
+    let limit = config.number("limit").unwrap_or(2.0).max(1.0) as f32;
+    let model = ctx.model;
+    let triangle_count = model.indices.len() / 3;
+    let mut worst = 1.0f32;
+    let flagged: Vec<bool> = (0..triangle_count)
+        .map(|triangle| {
+            let stretch = review_model::measure::triangle_uv_stretch(model, triangle, 0);
+            let over = stretch.is_some_and(|value| value > limit);
+            if over {
+                worst = worst.max(stretch.unwrap_or(1.0));
+            }
+            over
+        })
+        .collect();
+    let offenders = offenders_from_flags(ctx, &flagged);
+    let measured = (!offenders.is_empty()).then(|| Measured::Ratio(f64::from(worst)));
+    Outcome::judged(offenders, Threshold::Max(Measured::Ratio(f64::from(limit))))
+        .with_measured(measured)
 }
 
 #[cfg(test)]

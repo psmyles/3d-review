@@ -15,7 +15,9 @@ mod uv;
 
 use crate::ELEMENT_CAP;
 use crate::context::Context;
-use crate::finding::{Measured, Offender, RuleResult, Skip, Status, Threshold};
+use crate::finding::{
+    ElementSet, Measured, Offender, RangeSet, RuleResult, Skip, Status, Threshold,
+};
 use crate::profile::RuleConfig;
 use crate::rule::RuleId;
 
@@ -125,6 +127,11 @@ pub(crate) fn evaluate(
         RuleId::UnusedBones => skin::unused_bones(ctx),
         RuleId::BindPoseMismatch => skin::bind_pose_mismatch(ctx),
         RuleId::TexelDensity => density::texel(ctx, config),
+        RuleId::UvStretch => uv::stretch(ctx, config),
+        RuleId::IndexedColor => geometry::indexed_color(ctx, config),
+        RuleId::ColliderVertices => geometry::collider_vertices(ctx, config),
+        RuleId::RequiredExtras => hierarchy::required_extras(ctx, config),
+        RuleId::LodBudget => density::lod_budget(ctx, config),
         RuleId::TriangleLod => {
             let scope = if profile.rule(RuleId::TriangleReduce).enabled {
                 density::LodScope::Lod
@@ -154,6 +161,23 @@ pub(crate) fn evaluate(
     } else {
         outcome
     }
+}
+
+/// One offender per node from a per-triangle flag.
+pub(super) fn offenders_from_flags(ctx: &Context<'_>, flagged: &[bool]) -> Vec<Offender> {
+    ctx.node_triangles()
+        .iter()
+        .enumerate()
+        .filter_map(|(node, triangles)| {
+            let set = RangeSet::from_sorted(
+                triangles
+                    .iter()
+                    .copied()
+                    .filter(|&triangle| flagged.get(triangle as usize).copied().unwrap_or(false)),
+            );
+            (!set.is_empty()).then(|| Offender::elements(Some(node), ElementSet::Triangles(set)))
+        })
+        .collect()
 }
 
 /// A count parameter as an integer.
