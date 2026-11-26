@@ -20,8 +20,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use review_optimize::{
-    BakeAoParams, LodLevel, LodParams, NormalParams, OpKind, OptStack, ReduceParams, RemeshParams,
-    ShrinkwrapParams, SimplifyFlags, SimplifySettings, UnwrapParams, WeldParams, preset,
+    BakeAoParams, BakeWearParams, LodLevel, LodParams, NormalParams, OpKind, OptStack,
+    ReduceParams, RemeshParams, ShrinkwrapParams, SimplifyFlags, SimplifySettings, UnwrapParams,
+    WeldParams, preset,
 };
 use sha2::{Digest, Sha256};
 
@@ -105,12 +106,15 @@ fn stacks() -> Vec<(&'static str, OptStack, Vec<&'static str>, Vec<&'static str>
     rebuild.push_op(OpKind::Remesh(RemeshParams::default()));
 
     // The glb run's chain also unwraps every level into CAD-face islands, the
-    // xatlas and as-rigid-as-possible paths among them.
+    // xatlas and as-rigid-as-possible paths among them, and bakes edge wear.
     let mut glb_chain = OptStack::default();
     for op in &chain.ops {
         glb_chain.push_op(op.kind.clone());
         if matches!(op.kind, OpKind::SimplifyLod(_)) {
             glb_chain.push_op(OpKind::Unwrap(UnwrapParams::cad_islands("_CAD_FACE")));
+        }
+        if matches!(op.kind, OpKind::BakeAo(_)) {
+            glb_chain.push_op(OpKind::BakeWear(BakeWearParams::default()));
         }
     }
 

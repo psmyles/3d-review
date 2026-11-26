@@ -63,6 +63,11 @@ labels-opt-op-bake-ao = Bake AO to Vertex Colors
         as a color on that point. Objects whose names end in _LOD and a number are shaded
         only by their own level, so a whole set of levels can bake in one go. Hidden
         objects are left out, so hide collision shapes first. Does not change the shape.
+labels-opt-op-bake-wear = Bake Edge Wear to Vertex Colors
+    .description = Works out how sharply the surface turns at each point, from the edges
+        around it, and stores it as a color on that point: full where an edge turns past
+        the full-wear angle, none below the start angle. Only edges that stick out count,
+        unless told otherwise. Does not change the shape.
 labels-opt-op-vertex-cache = Optimize Vertex Cache
     .description = Reorders the triangles so the GPU can reuse work it has just
         done. Does not change the shape; watch the ACMR and ATVR numbers on the stats

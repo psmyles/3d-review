@@ -506,6 +506,12 @@ pub(crate) fn apply_op(
         return SimplifyRun::NONE;
     }
 
+    // Edge wear is per object, so a material border is no edge.
+    if matches!(op.kind, OpKind::BakeWear(_)) {
+        crate::wear::bake_wear_submeshes(submeshes, op, stack, model, run);
+        return SimplifyRun::NONE;
+    }
+
     // Remesh does not edit pieces, it *replaces* them: a node's materials share
     // one surface, and the regenerated mesh may use a different set of them. So
     // like the two above it takes the whole scene at once — and unlike them it
@@ -557,6 +563,7 @@ pub(crate) fn apply_op(
             OpKind::Reduce(_)
             | OpKind::SimplifyLod(_)
             | OpKind::BakeAo(_)
+            | OpKind::BakeWear(_)
             | OpKind::Remesh(_)
             | OpKind::Shrinkwrap(_)
             | OpKind::RecalculateNormals(_)

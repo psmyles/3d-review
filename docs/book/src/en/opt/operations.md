@@ -50,6 +50,9 @@ with and without it.
   Does not change the shape.
 - **Bake AO to Vertex Colors** - works out [soft shadows](ao.md) for each point
   and stores them as colors on the points. Does not change the shape.
+- **Bake Edge Wear to Vertex Colors** - works out [how sharply the surface turns](wear.md)
+  at each point and stores it as a color, for a shader to wear paint off the
+  edges. Does not change the shape.
 - **Optimize Vertex Cache** - reorders the triangles so the GPU can
   reuse work it has just done. Watch the ACMR and ATVR numbers.
 - **Optimize Overdraw** - reorders the triangles so nearer ones tend to be

@@ -50,6 +50,7 @@
   - [Normals and tangents](opt/normals.md)
   - [Unwrapping UVs](opt/unwrap.md)
   - [Baking ambient occlusion](opt/ao.md)
+  - [Baking edge wear](opt/wear.md)
   - [Per-object overrides](opt/overrides.md)
   - [Comparing the result](opt/comparison.md)
   - [Exporting](opt/export.md)

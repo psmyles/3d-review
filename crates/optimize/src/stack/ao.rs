@@ -114,3 +114,37 @@ impl Default for BakeAoParams {
         }
     }
 }
+
+/// Settings for the [`OpKind::BakeWear`](crate::stack::OpKind::BakeWear)
+/// operation: edge wear from the shape alone, written into the vertex colour.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BakeWearParams {
+    /// In degrees, where two faces meet: an edge turning less than this wears
+    /// nothing.
+    pub angle_start: f32,
+    /// In degrees: an edge turning this much or more wears fully.
+    pub angle_full: f32,
+    /// The power on the ramp between them: 1 straight, above 1 holds the wear
+    /// back to the sharpest edges, below 1 brings it on early.
+    pub falloff: f32,
+    /// Count inward (concave) edges too. Off, only edges that stick out wear,
+    /// as knocks and rubbing wear them; crevices are what AO darkens.
+    pub concave: bool,
+    pub target: AoTarget,
+    /// sRGB-encode the written value. RGB-family targets only.
+    pub srgb: bool,
+}
+
+impl Default for BakeWearParams {
+    fn default() -> Self {
+        Self {
+            angle_start: 20.0,
+            angle_full: 90.0,
+            falloff: 1.0,
+            concave: false,
+            target: AoTarget::Blue,
+            srgb: false,
+        }
+    }
+}

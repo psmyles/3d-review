@@ -10,10 +10,10 @@
 use review_labels::opt::{op_description, op_kind};
 use review_model::ModelData;
 use review_optimize::{
-    AoQuality, AoTarget, AttributeWeights, BakeAoParams, ChartGrowth, ExportFileType,
-    ExportOptions, FbxFormat, Flattening, GlbTangents, HierarchyMode, LodLevel, LodPackaging,
-    LodParams, NormalMode, NormalParams, NormalWeighting, OpKind, ReduceParams, RemeshDensity,
-    RemeshParams, RemeshTopology, SeamSource, ShrinkwrapMethod, ShrinkwrapParams,
+    AoQuality, AoTarget, AttributeWeights, BakeAoParams, BakeWearParams, ChartGrowth,
+    ExportFileType, ExportOptions, FbxFormat, Flattening, GlbTangents, HierarchyMode, LodLevel,
+    LodPackaging, LodParams, NormalMode, NormalParams, NormalWeighting, OpKind, ReduceParams,
+    RemeshDensity, RemeshParams, RemeshTopology, SeamSource, ShrinkwrapMethod, ShrinkwrapParams,
     SimplifyAlgorithm, SimplifyFlags, SimplifySettings, TargetMode, UnwrapParams, UvLayout,
     VoxelTarget, WeldParams,
 };
@@ -40,7 +40,8 @@ use crate::state::{
         SHRINKWRAP_VOXEL_RESOLUTION_MIN, UNWRAP_CREASE_MAX, UNWRAP_CREASE_MIN, UNWRAP_DENSITY_MAX,
         UNWRAP_DENSITY_MIN, UNWRAP_ISLAND_STRETCH_MAX, UNWRAP_ISLAND_STRETCH_MIN,
         UNWRAP_PADDING_MAX, UNWRAP_RESOLUTION_MAX, UNWRAP_RESOLUTION_MIN, UV_SET_MAX,
-        VOLUME_CHANGE_MAX, VOLUME_CHANGE_MIN, WELD_TOLERANCE_MAX, WELD_TOLERANCE_MIN,
+        VOLUME_CHANGE_MAX, VOLUME_CHANGE_MIN, WEAR_ANGLE_MAX, WEAR_ANGLE_MIN, WEAR_FALLOFF_MAX,
+        WEAR_FALLOFF_MIN, WELD_TOLERANCE_MAX, WELD_TOLERANCE_MIN,
     },
 };
 use crate::theme;
@@ -106,6 +107,7 @@ fn operation_body(ui: &mut egui::Ui, state: &mut UiState, id: u64, model: &Model
         }
         OpKind::SimplifyLod(params) => lod_params(ui, params).map(OpKind::SimplifyLod),
         OpKind::BakeAo(params) => bake_ao_params(ui, params).map(OpKind::BakeAo),
+        OpKind::BakeWear(params) => bake_wear_params(ui, params).map(OpKind::BakeWear),
         OpKind::Unwrap(params) => unwrap_params(ui, &params, model).map(OpKind::Unwrap),
         // These three have nothing to configure — meshoptimizer exposes no knobs
         // for them, and inventing some would be worse than an honest note.
@@ -810,6 +812,75 @@ fn bake_ao_params(ui: &mut egui::Ui, params: BakeAoParams) -> Option<BakeAoParam
     ui.add_space(size::PANEL_ROW_GAP);
     ui.label(egui::RichText::from(keys::ui_opt::BAKE_AO_EXPLAINED).color(color::TEXT_MUTED));
 
+    (edited != params).then_some(edited)
+}
+
+fn bake_wear_params(ui: &mut egui::Ui, params: BakeWearParams) -> Option<BakeWearParams> {
+    let mut edited = params;
+    panel_grid(ui, "opt_bake_wear", |ui| {
+        labeled_slider_with_value(
+            ui,
+            Tip::new(keys::ui_opt::WEAR_ANGLE_START)
+                .describe(keys::ui_opt::WEAR_ANGLE_START_DESCRIPTION)
+                .page(Page::OptWear),
+            &mut edited.angle_start,
+            WEAR_ANGLE_MIN..=WEAR_ANGLE_MAX,
+            0,
+        );
+        labeled_slider_with_value(
+            ui,
+            Tip::new(keys::ui_opt::WEAR_ANGLE_FULL)
+                .describe(keys::ui_opt::WEAR_ANGLE_FULL_DESCRIPTION)
+                .page(Page::OptWear),
+            &mut edited.angle_full,
+            WEAR_ANGLE_MIN..=WEAR_ANGLE_MAX,
+            0,
+        );
+        labeled_slider_with_value(
+            ui,
+            Tip::new(keys::ui_opt::WEAR_FALLOFF)
+                .describe(keys::ui_opt::WEAR_FALLOFF_DESCRIPTION)
+                .page(Page::OptWear),
+            &mut edited.falloff,
+            WEAR_FALLOFF_MIN..=WEAR_FALLOFF_MAX,
+            2,
+        );
+        labeled_checkbox(
+            ui,
+            Tip::new(keys::ui_opt::WEAR_CONCAVE)
+                .describe(keys::ui_opt::WEAR_CONCAVE_DESCRIPTION)
+                .page(Page::OptWear),
+            &mut edited.concave,
+        );
+        labeled_combo(
+            ui,
+            Tip::new(keys::ui_opt::AO_WRITE_TO).page(Page::OptWear),
+            "opt_bake_wear_target",
+            labels::ao_target(edited.target),
+            |ui| {
+                for target in AoTarget::ALL {
+                    ui.selectable_value(&mut edited.target, target, labels::ao_target(target));
+                }
+            },
+        );
+        if edited.target.is_rgb() {
+            labeled_checkbox(
+                ui,
+                Tip::new(keys::ui_opt::AO_SRGB)
+                    .describe(keys::ui_opt::AO_SRGB_DESCRIPTION)
+                    .page(Page::OptWear),
+                &mut edited.srgb,
+            );
+        }
+    });
+    // An angle range the wrong way round wears nothing, which is never meant.
+    if edited.angle_full < edited.angle_start {
+        if edited.angle_full != params.angle_full {
+            edited.angle_start = edited.angle_full;
+        } else {
+            edited.angle_full = edited.angle_start;
+        }
+    }
     (edited != params).then_some(edited)
 }
 

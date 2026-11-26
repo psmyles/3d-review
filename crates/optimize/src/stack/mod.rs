@@ -495,6 +495,9 @@ pub enum OpKind {
     Unwrap(UnwrapParams),
     /// Bake raycast ambient occlusion into the vertex-color set.
     BakeAo(BakeAoParams),
+    /// Bake edge wear — how sharply the surface turns at each point — into the
+    /// vertex-color set.
+    BakeWear(BakeWearParams),
     /// Reorder triangles for the GPU's post-transform vertex cache.
     VertexCache,
     /// Reorder triangles front-to-back to reduce overdraw.
@@ -701,6 +704,27 @@ impl OpKind {
                     default.intensity,
                 );
             }
+            OpKind::BakeWear(params) => {
+                let default = BakeWearParams::default();
+                fit(
+                    &mut params.angle_start,
+                    WEAR_ANGLE_MIN,
+                    WEAR_ANGLE_MAX,
+                    default.angle_start,
+                );
+                fit(
+                    &mut params.angle_full,
+                    WEAR_ANGLE_MIN,
+                    WEAR_ANGLE_MAX,
+                    default.angle_full,
+                );
+                fit(
+                    &mut params.falloff,
+                    WEAR_FALLOFF_MIN,
+                    WEAR_FALLOFF_MAX,
+                    default.falloff,
+                );
+            }
             OpKind::Overdraw { threshold } => {
                 fit(
                     threshold,
@@ -716,7 +740,7 @@ impl OpKind {
     /// Every operation the "Add" menu offers, in menu order — cleanup first
     /// (what you almost always want before anything else), then the LOD
     /// generator, then the GPU reorder passes that belong at the end.
-    pub const ALL: [fn() -> OpKind; 13] = [
+    pub const ALL: [fn() -> OpKind; 14] = [
         || OpKind::Weld(WeldParams::default()),
         || OpKind::FilterTriangles,
         || OpKind::PruneComponents { error: 0.01 },
@@ -727,6 +751,7 @@ impl OpKind {
         || OpKind::SimplifyLod(LodParams::default()),
         || OpKind::Unwrap(UnwrapParams::default()),
         || OpKind::BakeAo(BakeAoParams::default()),
+        || OpKind::BakeWear(BakeWearParams::default()),
         || OpKind::VertexCache,
         || OpKind::Overdraw { threshold: 1.05 },
         || OpKind::VertexFetch,
@@ -745,6 +770,7 @@ impl OpKind {
             OpKind::SimplifyLod(_) => "Generate LODs",
             OpKind::Unwrap(_) => "Unwrap UVs",
             OpKind::BakeAo(_) => "Bake AO to Vertex Colors",
+            OpKind::BakeWear(_) => "Bake Edge Wear to Vertex Colors",
             OpKind::VertexCache => "Optimize Vertex Cache",
             OpKind::Overdraw { .. } => "Optimize Overdraw",
             OpKind::VertexFetch => "Optimize Vertex Fetch",
@@ -764,6 +790,7 @@ impl OpKind {
             | OpKind::Shrinkwrap(_)
             | OpKind::SimplifyLod(_) => true,
             OpKind::BakeAo(_)
+            | OpKind::BakeWear(_)
             | OpKind::RecalculateNormals(_)
             | OpKind::Unwrap(_)
             | OpKind::VertexCache
@@ -911,9 +938,9 @@ mod tests {
     }
 
     #[test]
-    fn the_add_menu_offers_thirteen_distinct_operations() {
+    fn the_add_menu_offers_fourteen_distinct_operations() {
         let labels: Vec<&str> = OpKind::ALL.iter().map(|build| build().label()).collect();
-        assert_eq!(labels.len(), 13);
+        assert_eq!(labels.len(), 14);
         for (index, label) in labels.iter().enumerate() {
             assert!(
                 !labels[index + 1..].contains(label),

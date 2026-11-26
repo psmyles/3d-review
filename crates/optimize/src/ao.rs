@@ -467,7 +467,7 @@ fn vertex_ao(
 /// multiplies the stored components by the encoded factor directly — the
 /// stored RGB's own encoding is unknown to this crate, so the AO factor
 /// honestly follows the user's chosen encoding.
-fn write_target(color: &mut Vec4, ao: f32, target: AoTarget, srgb: bool) {
+pub(crate) fn write_target(color: &mut Vec4, ao: f32, target: AoTarget, srgb: bool) {
     let encoded = if srgb && target.is_rgb() {
         linear_to_srgb(ao)
     } else {

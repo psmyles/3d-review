@@ -112,6 +112,12 @@ pub const UNWRAP_PADDING_MAX: u32 = 64;
 pub const UNWRAP_ISLAND_STRETCH_MIN: f32 = 1.0;
 pub const UNWRAP_ISLAND_STRETCH_MAX: f32 = 10.0;
 
+/// Bake Edge Wear: the angles in degrees, and the power on the ramp.
+pub const WEAR_ANGLE_MIN: f32 = 0.0;
+pub const WEAR_ANGLE_MAX: f32 = 180.0;
+pub const WEAR_FALLOFF_MIN: f32 = 0.1;
+pub const WEAR_FALLOFF_MAX: f32 = 8.0;
+
 /// `value` inside `min..=max`, or `fallback` when it is not a number at all.
 pub(crate) fn fit(value: &mut f32, min: f32, max: f32, fallback: f32) {
     *value = if value.is_nan() {
