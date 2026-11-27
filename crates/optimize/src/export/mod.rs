@@ -40,11 +40,11 @@ use std::path::{Path, PathBuf};
 
 use review_model::{ModelData, SourceExtras};
 
-use crate::OptError;
 use crate::notice::ExportNote;
 use crate::process::ProcessedLod;
 use crate::replace_file::Staged;
 use crate::stack::{ExportOptions, LodPackaging};
+use crate::{CancelToken, OptError};
 
 mod anim;
 mod build;
@@ -98,9 +98,36 @@ pub fn export(
     path: &Path,
     options: &ExportOptions,
 ) -> Result<ExportReport, OptError> {
+    export_cancellable(lods, source, extras, path, options, None)
+}
+
+/// [`export`] that gives up when `cancel` says so, returning
+/// [`OptError::Cancelled`] **without replacing any file**.
+///
+/// Checked before each file is built and once more before the first is put in
+/// place. A file being written is finished first - the writer is one call - but
+/// it is only ever a staging file, removed as it drops, so a cancel at any
+/// point leaves the user's files exactly as they were.
+pub fn export_cancellable(
+    lods: &[ProcessedLod],
+    source: &ModelData,
+    extras: Option<&SourceExtras>,
+    path: &Path,
+    options: &ExportOptions,
+    cancel: Option<&CancelToken>,
+) -> Result<ExportReport, OptError> {
     match options.file_type {
-        crate::stack::ExportFileType::Fbx => export_fbx(lods, source, extras, path, options),
-        crate::stack::ExportFileType::Glb => export_glb(lods, source, path, options),
+        crate::stack::ExportFileType::Fbx => fbx(lods, source, extras, path, options, cancel),
+        crate::stack::ExportFileType::Glb => glb::glb(lods, source, path, options, cancel),
+    }
+}
+
+/// [`OptError::Cancelled`] once `cancel` says the export is no longer wanted.
+fn check_cancel(cancel: Option<&CancelToken>) -> Result<(), OptError> {
+    if crate::cancel::cancelled(cancel) {
+        Err(OptError::Cancelled)
+    } else {
+        Ok(())
     }
 }
 
@@ -118,6 +145,18 @@ pub fn export_fbx(
     extras: Option<&SourceExtras>,
     path: &Path,
     options: &ExportOptions,
+) -> Result<ExportReport, OptError> {
+    fbx(lods, source, extras, path, options, None)
+}
+
+/// [`export_fbx`], checking `cancel` as [`export_cancellable`] describes.
+fn fbx(
+    lods: &[ProcessedLod],
+    source: &ModelData,
+    extras: Option<&SourceExtras>,
+    path: &Path,
+    options: &ExportOptions,
+    cancel: Option<&CancelToken>,
 ) -> Result<ExportReport, OptError> {
     let _z = crate::prof::zone!("Export FBX");
 
@@ -152,6 +191,7 @@ pub fn export_fbx(
     let paths = planned_files(lods.iter().map(|lod| lod.level), path, options);
     match options.packaging {
         LodPackaging::SingleFileSuffixed => {
+            check_cancel(cancel)?;
             let scene = build_scene(lods, generated, source, extras, options, &mut report)?;
             staged.push(Staged::write(&paths[0], |staging| {
                 write_scene(&scene, staging, options.format)
@@ -159,6 +199,7 @@ pub fn export_fbx(
         }
         LodPackaging::FilePerLod => {
             for (lod, file) in lods.iter().zip(&paths) {
+                check_cancel(cancel)?;
                 // Each file holds one level, so its meshes and their nodes keep
                 // their plain names rather than a suffix the filename already
                 // carries — and the level goes on the source node itself, not
@@ -177,6 +218,10 @@ pub fn export_fbx(
             }
         }
     }
+
+    // The last moment a cancel can leave everything as it was: the staged files
+    // are removed as they drop.
+    check_cancel(cancel)?;
 
     // Everything is written; put each file in its place. A rename this late is
     // rare — the directory is known writable, since the staging files are in it

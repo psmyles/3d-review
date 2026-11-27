@@ -61,6 +61,12 @@
 //! on-demand loop (invariant 6) wakes when a notice expires and at no other
 //! time — a sticky card costs nothing to leave up.
 //!
+//! **A running job can be cancelled.** The progress card has no ✕ - hiding a
+//! card would leave its job running unseen - and carries a **Cancel** button in
+//! its place. A click is an intent like any other (invariant 2): the card only
+//! records it, and `app` drains [`Notifications::take_cancel_requests`] after
+//! the egui pass, stops the job that owns the card and takes the card down.
+//!
 //! Per invariant 2 the UI never drives work: `app` owns this, calls
 //! [`Notifications::begin_activity`] / [`Notifications::end_activity`] around a
 //! background job, pushes the result, and calls [`Notifications::show`] once per
@@ -81,7 +87,8 @@ use crate::theme::{color, motion, size};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum NoticeKind {
     /// A background job is running. Only the activity card uses this; it is
-    /// never dismissible, since the job's own end is what takes it down.
+    /// never dismissed, since the job's own end is what takes it down - it is
+    /// *cancelled* instead, which stops the job too.
     Progress,
     /// Something worth saying that needs no action.
     Info,
@@ -226,6 +233,9 @@ pub struct Notifications {
     activities: Vec<(ActivityId, Activity)>,
     /// Source of [`ActivityId`]s.
     next_activity: u64,
+    /// Jobs whose Cancel was clicked, for `app` to stop
+    /// ([`Notifications::take_cancel_requests`]).
+    cancel_requests: Vec<ActivityId>,
     /// The egui timestamp of the previous [`Notifications::show`], so a hovered
     /// card's deadline can be pushed forward by exactly the elapsed time.
     last_now: f64,
@@ -235,7 +245,7 @@ pub struct Notifications {
 /// [`Notifications::begin_activity`]. A job reports and ends through its own id,
 /// so two jobs running at once cannot write into each other's card - a load's
 /// `Reading... 47%` under a texture decode's title, say.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ActivityId(u64);
 
 /// What the progress card is showing.
@@ -264,6 +274,7 @@ impl Notifications {
             next_id: 0,
             activities: Vec::new(),
             next_activity: 0,
+            cancel_requests: Vec::new(),
             last_now: 0.0,
         }
     }
@@ -446,6 +457,16 @@ impl Notifications {
         self.activities.last().map(|(_, activity)| activity)
     }
 
+    /// The jobs whose Cancel was clicked since the last call, oldest first.
+    ///
+    /// `app` drains this once per frame, after the egui pass: it stops each
+    /// job and ends its activity, which is what takes the card down. The card
+    /// stays up until then rather than vanishing on the click, so a job nobody
+    /// stops can't leave a card the user believes was cancelled.
+    pub fn take_cancel_requests(&mut self) -> Vec<ActivityId> {
+        std::mem::take(&mut self.cancel_requests)
+    }
+
     /// Draw the column. Call once per frame inside the egui pass.
     ///
     /// `insets` are the open side panels' widths, so the column centres on the
@@ -479,6 +500,7 @@ impl Notifications {
 
         let mut dismissed: Option<u64> = None;
         let mut hovered: Option<u64> = None;
+        let mut cancelled = false;
         // Anchored, so this Area is not movable; left interactable (the default)
         // so a click on a card — the ✕, or just a stray one — is consumed here
         // rather than falling through to the viewport behind it.
@@ -506,7 +528,7 @@ impl Notifications {
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing.y = size::NOTIFICATION_CARD_GAP;
                 if let Some(activity) = self.shown_activity() {
-                    activity_card(ui, activity, text_width);
+                    cancelled = activity_card(ui, activity, text_width);
                 }
                 for notice in &self.notices {
                     let card = notice_card(ui, notice, text_width);
@@ -521,6 +543,13 @@ impl Notifications {
 
         if let Some(id) = dismissed {
             self.notices.retain(|notice| notice.id != id);
+        }
+        // The card shows the newest job, so that is the one the click was for.
+        if cancelled
+            && let Some((id, _)) = self.activities.last()
+            && !self.cancel_requests.contains(id)
+        {
+            self.cancel_requests.push(*id);
         }
 
         // Resolve pending deadlines, push the hovered card's forward, and drop
@@ -622,7 +651,7 @@ fn notice_card(ui: &mut egui::Ui, notice: &Notice, text_width: f32) -> CardRespo
             dismissed = compact_row(ui, notice);
             return;
         }
-        dismissed = header(ui, notice.kind, true);
+        dismissed = header(ui, notice.kind, HeaderAction::Dismiss);
         body(ui, |ui| {
             // The message itself, wrapped. This is the part the user is here to
             // read, so it gets the room to be read in. It was the card's
@@ -657,11 +686,12 @@ fn notice_card(ui: &mut egui::Ui, notice: &Notice, text_width: f32) -> CardRespo
 
 /// Draw the progress card: the job in the body, the stage line under it, and a
 /// bar when the job knows its own denominator. No ✕ — the job's own end takes it
-/// down.
-fn activity_card(ui: &mut egui::Ui, activity: &Activity, text_width: f32) {
+/// down — but a Cancel where the ✕ would be. Returns whether it was clicked.
+fn activity_card(ui: &mut egui::Ui, activity: &Activity, text_width: f32) -> bool {
+    let mut cancelled = false;
     card_frame(ui).show(ui, |ui| {
         begin_card(ui, text_width);
-        header(ui, NoticeKind::Progress, false);
+        cancelled = header(ui, NoticeKind::Progress, HeaderAction::Cancel);
         body(ui, |ui| {
             ui.label(&activity.title);
             if !activity.detail.is_empty() {
@@ -679,11 +709,21 @@ fn activity_card(ui: &mut egui::Ui, activity: &Activity, text_width: f32) {
             }
         });
     });
+    cancelled
 }
 
-/// A card's header: what kind of thing this is, in that kind's colour, with the
-/// close glyph pinned to the right when the card is dismissible — then a
-/// hairline across the full width of the card. Returns whether the ✕ was
+/// What a card's header offers at its right.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HeaderAction {
+    /// The ✕, which takes the card away.
+    Dismiss,
+    /// The progress card's Cancel, which stops the job behind it.
+    Cancel,
+}
+
+/// A card's header: what kind of thing this is, in that kind's colour, with its
+/// one action pinned to the right — the ✕, or a running job's Cancel — then a
+/// hairline across the full width of the card. Returns whether the action was
 /// clicked.
 ///
 /// The header names the *kind* and nothing else. It used to carry the message,
@@ -699,8 +739,8 @@ fn activity_card(ui: &mut egui::Ui, activity: &Activity, text_width: f32) {
 /// strip the height of the window. Worse, it latched: an `egui::Area` lays each
 /// frame out inside its *previous* measured size, so once a card had claimed
 /// the height it kept claiming it, and every load pumped it further.
-fn header(ui: &mut egui::Ui, kind: NoticeKind, closable: bool) -> bool {
-    let mut dismissed = false;
+fn header(ui: &mut egui::Ui, kind: NoticeKind, action: HeaderAction) -> bool {
+    let mut clicked = false;
     egui::Frame::NONE.inner_margin(card_pad(ui)).show(ui, |ui| {
         // One heading row, which is exactly what `egui::Window` allocates for
         // its own title bar — it sizes the collapse and close buttons to the
@@ -712,9 +752,10 @@ fn header(ui: &mut egui::Ui, kind: NoticeKind, closable: bool) -> bool {
             ui.text_style_height(&egui::TextStyle::Heading),
         );
         ui.allocate_ui_with_layout(row, Layout::right_to_left(Align::Center), |ui| {
-            if closable {
-                dismissed = close_button(ui).clicked();
-            }
+            clicked = match action {
+                HeaderAction::Dismiss => close_button(ui).clicked(),
+                HeaderAction::Cancel => cancel_button(ui).clicked(),
+            };
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 let tint = kind.color(ui.visuals());
                 ui.label(
@@ -734,7 +775,14 @@ fn header(ui: &mut egui::Ui, kind: NoticeKind, closable: bool) -> bool {
     let (rule, _) =
         ui.allocate_exact_size(vec2(ui.available_width(), stroke.width), Sense::hover());
     ui.painter().rect_filled(rule, 0.0, stroke.color);
-    dismissed
+    clicked
+}
+
+/// The progress card's Cancel: egui's own button, at its small size — a body
+/// line with no vertical padding — so it fits the header's one heading-tall row
+/// as the ✕ does, rather than deepening the header past an option window's.
+fn cancel_button(ui: &mut egui::Ui) -> egui::Response {
+    ui.add(egui::Button::new(crate::keys::ui_notices::CANCEL).small())
 }
 
 /// A mode notice: one padded line, the message and its ✕, with no header and no
@@ -811,8 +859,19 @@ mod tests {
     /// without sleeping. Textures are cleared because the pass loads the font
     /// atlas and the delta is of no interest here.
     fn pass(ctx: &egui::Context, notifications: &mut Notifications, time: f64) {
+        pass_with(ctx, notifications, time, Vec::new());
+    }
+
+    /// [`pass`], with input events delivered to it.
+    fn pass_with(
+        ctx: &egui::Context,
+        notifications: &mut Notifications,
+        time: f64,
+        events: Vec<egui::Event>,
+    ) {
         ctx.begin_pass(egui::RawInput {
             time: Some(time),
+            events,
             // A real window, not egui's headless default: the layout bugs this
             // module has had were all "the card took the size of the screen",
             // which a default-sized context cannot show.
@@ -892,5 +951,57 @@ mod tests {
         notifications.update_activity(load, "late", None);
         notifications.end_activity(load);
         assert!(notifications.shown_activity().is_none());
+    }
+
+    /// Clicking the progress card's Cancel asks for the job it shows - the
+    /// newest - to stop, once, and leaves the card to the job's owner.
+    #[test]
+    fn cancel_asks_for_the_shown_job_to_stop() {
+        let ctx = context();
+        let mut notifications = Notifications::new();
+        let _load = notifications.begin_activity("Loading a.fbx");
+        let decode = notifications.begin_activity("Decoding b.png");
+        // Two frames: an `Area`'s first is an invisible sizing pass, whose
+        // widgets a click on the next frame cannot hit.
+        pass(&ctx, &mut notifications, 0.0);
+        pass(&ctx, &mut notifications, 0.05);
+
+        // The button is at the header's right, centred in its heading-tall row,
+        // where every other card has its ✕.
+        let column = egui::AreaState::load(&ctx, Id::new("notifications"))
+            .expect("the column was laid out")
+            .rect();
+        let style = ctx.global_style();
+        let pad = style.spacing.window_margin;
+        let heading = egui::TextStyle::Heading.resolve(&style);
+        let row = ctx.fonts_mut(|fonts| fonts.row_height(&heading));
+        let at = egui::pos2(
+            column.right() - f32::from(pad.right) - 4.0,
+            column.top() + f32::from(pad.top) + row * 0.5,
+        );
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        pass_with(
+            &ctx,
+            &mut notifications,
+            0.1,
+            vec![egui::Event::PointerMoved(at), button(true)],
+        );
+        pass_with(&ctx, &mut notifications, 0.2, vec![button(false)]);
+
+        assert_eq!(notifications.take_cancel_requests(), vec![decode]);
+        assert!(
+            notifications.take_cancel_requests().is_empty(),
+            "a request is handed over once"
+        );
+        // Only the job's owner ends it: the card is still up, showing the job.
+        assert_eq!(
+            notifications.shown_activity().map(|a| a.title.as_str()),
+            Some("Decoding b.png")
+        );
     }
 }

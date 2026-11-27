@@ -52,6 +52,11 @@ is on. Where a step works through the objects one at a time it names each as it
 finishes, with a count, so a long run is visibly moving rather than merely
 slow.
 
+**Cancel** on that notice stops the run. The view goes back to the last run that
+finished (or the original model, if none has), and nothing runs again until you
+change something in the list. An export has the same button: a cancelled export
+stops before it replaces any file, so whatever was on disk stays as it was.
+
 ## Watching a rebuild settle
 
 Two operations show their work as it happens. [Remesh](remesh.md) improves its

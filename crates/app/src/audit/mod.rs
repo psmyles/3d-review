@@ -197,6 +197,28 @@ impl App {
         self.persist_audit_profile_when_settled();
     }
 
+    /// The checking card's Cancel: stop the run in flight and start nothing
+    /// until the model or the profile changes. Whether `activity` was that card.
+    ///
+    /// The same cancel a profile edit makes — the worker's token reads this
+    /// counter — without the run that edit would owe: the pair stays covered,
+    /// so `wants_run` does not start it again, and the result is dropped as
+    /// superseded when the worker gives up.
+    pub(crate) fn cancel_audit(&mut self, activity: ActivityId) -> bool {
+        if self.audit.activity != Some(activity) {
+            return false;
+        }
+        self.audit.activity = None;
+        self.audit.generation.fetch_add(1, Ordering::Relaxed);
+        self.audit.dirty = false;
+        // Or the card is raised again next frame, for a worker still winding down.
+        self.audit.started_at = None;
+        log::info!("audit cancelled");
+        self.notifications
+            .info(review_localization::tr(keys::app_audit::CANCELLED).into_owned());
+        true
+    }
+
     /// Start a worker for the model and profile on screen.
     ///
     /// When none can be started the pair stays covered, as Opt's does: the

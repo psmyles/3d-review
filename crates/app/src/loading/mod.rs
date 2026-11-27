@@ -33,12 +33,13 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use review_import::ImportError;
 use review_model::ModelData;
 use review_render::Renderer;
+use review_ui::ActivityId;
 
 use crate::dialog::Dialog;
 use crate::{APP_NAME, App, keys};
@@ -94,6 +95,12 @@ pub(crate) struct LoadQueue {
     /// The id the next request gets.
     next_id: u64,
     waiting: VecDeque<LoadRequest>,
+    /// The loading card of the request being parsed, which its Cancel names.
+    parse_activity: Option<ActivityId>,
+    /// Every measuring job still running, by the loading card it carries, with
+    /// a counter of its own its worker stops on — so a card's Cancel stops that
+    /// job alone. An entry goes when its job says it is done.
+    measuring: Vec<(ActivityId, Arc<AtomicU64>)>,
     /// Model files dropped on the window this turn of the event loop. A drop of
     /// several files arrives as one event per file, so they are gathered here and
     /// opened together once the loop goes idle ([`App::flush_dropped_files`]).
@@ -280,6 +287,41 @@ impl App {
         next
     }
 
+    /// A loading card's Cancel. Whether `activity` was one.
+    ///
+    /// **While the files are read**, the request is superseded exactly as a
+    /// newer open would supersede it, but with nothing to replace it: the model
+    /// on screen stays, and its own measuring is untouched. The requests waiting
+    /// behind it go too, since each was to be decided against what this one put
+    /// on screen.
+    ///
+    /// **Once the model is on screen**, its measuring job stops before the next
+    /// measurement it has not started. The capture and the pick index are made
+    /// first and are not stopped (`measure::run`): the export, the audit and
+    /// picking need them, and they are a small share of the job. What a stop
+    /// skips is the clip envelopes and the stats card's draw-group table, which
+    /// the viewer already reads as "not measured".
+    pub(crate) fn cancel_load(&mut self, activity: ActivityId) -> bool {
+        if self.loads.parse_activity == Some(activity) {
+            self.loads.parse_activity = None;
+            self.supersede_loads();
+            self.loads.waiting.clear();
+            log::info!("load cancelled while reading");
+            return true;
+        }
+        if let Some((_, stop)) = self
+            .loads
+            .measuring
+            .iter()
+            .find(|(card, _)| *card == activity)
+        {
+            stop.fetch_add(1, Ordering::Relaxed);
+            log::info!("load cancelled while measuring");
+            return true;
+        }
+        false
+    }
+
     /// A request's files, parsed: report the ones that failed, decide what the
     /// rest become, and put that on screen.
     pub(crate) fn handle_files_parsed(&mut self, message: FilesParsed) {
@@ -292,6 +334,9 @@ impl App {
             files,
         } = message;
         self.finish_request(request);
+        if self.loads.parse_activity == Some(activity) {
+            self.loads.parse_activity = None;
+        }
         if generation != self.model_load_generation() {
             // A newer open superseded it while it was being read.
             log::debug!("load superseded, dropped: {} files", files.len());

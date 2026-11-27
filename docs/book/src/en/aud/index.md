@@ -7,7 +7,9 @@ workspace checks the model for problems like these and shows you where they
 are.
 
 The checks run by themselves every time you open a file, in the background,
-so the result is usually ready before you look. The **Aud** button in the
+so the result is usually ready before you look. A long check shows a progress
+card; its **Cancel** stops the check until you open a file or change the
+profile. The **Aud** button in the
 middle of the toolbar shows how many checks found an error or a warning,
 from whichever workspace you are in. Checks that only found something worth
 knowing (Info) are not counted there.

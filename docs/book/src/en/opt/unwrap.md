@@ -25,16 +25,16 @@ Put it after **Generate LODs** in the list and it runs on every level, so each
 level gets UVs made for its own triangles rather than ones stretched by the
 simplifier. It never changes the shape.
 
-## UV map and existing UVs
+## Which UVs to write and learn from
 
-**UV map** - which UV map to write: one of the model's own, listed by number
-and name and replaced, or **new set**, added after its last. In a glTF file,
-map 0 is `TEXCOORD_0`.
+**UV index to write** - which UV map the unwrap writes: one of the model's own,
+listed by number and name and replaced, or **new set**, added after its last.
+In a glTF file, map 0 is `TEXCOORD_0`.
 
-**Existing UVs** - the model's own UVs, if they are worth learning from. Their
-seams can guide the new ones or cut outright (**Existing seams**), and tiled
-islands can be turned to lie the way they did. Choose **None** for a model whose
-UVs are missing or no use.
+**Use existing UVs from** - which of the model's own UV maps to learn from, if
+they are worth learning from. Their seams can guide the new ones or cut outright
+(**Existing seams**), and tiled islands can be turned to lie the way they did.
+Choose **None** for a model whose UVs are missing or no use.
 
 ## Seams
 
@@ -128,7 +128,7 @@ unwrap. A long thin strip often unwraps better from its original parameters.
 
 ## Recipes
 
-**An organic model with no usable UVs** (a sculpt, a scan): Existing UVs None,
+**An organic model with no usable UVs** (a sculpt, a scan): Use existing UVs from None,
 Max stretch 1.20, Minimum stretch, Pack into 0-1. Raise Max stretch towards
 1.3 for fewer islands, lower it towards 1.10 for less stretch.
 
@@ -140,7 +140,7 @@ each panel its own island.
 resolution and **Padding** at 4 texels or more.
 
 **CAD parts for a tiling texture**: Layout Tile at texel density, Cut along
-attribute `_CAD_FACE`, Existing UVs 0 with Existing seams Cut, Match existing
+attribute `_CAD_FACE`, Use existing UVs from 0 with Existing seams Cut, Match existing
 orientation and Keep existing where better on, Texel density 1.0. Each CAD face
 becomes an island, cut again only where it won't lie flat, laid out at one texel
 density and turned as the CAD UVs ran.

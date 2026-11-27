@@ -42,12 +42,12 @@ use review_model::{AttributeFormat, ComponentType, GltfSource, ModelData};
 use serde::Serialize;
 use serde_json::value::RawValue;
 
-use super::{ExportReport, dedup_notes, planned_files};
-use crate::OptError;
+use super::{ExportReport, check_cancel, dedup_notes, planned_files};
 use crate::notice::ExportNote;
 use crate::process::ProcessedLod;
 use crate::replace_file::Staged;
 use crate::stack::{ExportOptions, GlbTangents, HierarchyMode, LodPackaging};
+use crate::{CancelToken, OptError};
 
 /// glTF's own axes: +X right, +Y up, +Z toward the viewer.
 const GLTF_AXES: review_model::CoordinateAxes = review_model::CoordinateAxes {
@@ -67,6 +67,17 @@ pub fn export_glb(
     source: &ModelData,
     path: &Path,
     options: &ExportOptions,
+) -> Result<ExportReport, OptError> {
+    glb(lods, source, path, options, None)
+}
+
+/// [`export_glb`], checking `cancel` as [`super::export_cancellable`] describes.
+pub(super) fn glb(
+    lods: &[ProcessedLod],
+    source: &ModelData,
+    path: &Path,
+    options: &ExportOptions,
+    cancel: Option<&CancelToken>,
 ) -> Result<ExportReport, OptError> {
     let _z = crate::prof::zone!("Export glb");
     if lods.is_empty() {
@@ -96,11 +107,13 @@ pub fn export_glb(
         LodPackaging::FilePerLod => lods.iter().map(|lod| vec![lod]).collect(),
     };
     for (levels, file) in files.iter().zip(&paths) {
+        check_cancel(cancel)?;
         let bytes = build_file(levels, generated, source, options, &mut report)?;
         staged.push(Staged::write(file, |staging| {
             std::fs::write(staging, &bytes).map_err(OptError::from)
         })?);
     }
+    check_cancel(cancel)?;
     for entry in staged {
         let destination = entry.destination().to_path_buf();
         match entry.commit() {

@@ -305,6 +305,7 @@ impl App {
             paths => keys::app_notifications::loading_files(paths.len() as f64),
         };
         let activity = self.notifications.begin_activity(title);
+        self.loads.parse_activity = Some(activity);
         self.redraw.requested = true;
         let LoadRequest { paths, intent } = request;
         let first_label = paths
@@ -376,6 +377,7 @@ impl App {
             // No worker, so no message will ever close the loading card or free
             // the queue.
             log::error!("could not start the import thread: {error}");
+            self.loads.parse_activity = None;
             self.notifications.end_activity(activity);
             self.notifications
                 .error(keys::app_notifications::couldnt_load(

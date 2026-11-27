@@ -10,11 +10,33 @@
 
 use review_render::TextureSlot;
 use review_shell_macos::{MenuCommand, MenuState};
-use review_ui::{AxisGizmoAction, MenuIntent, TextureIntent, UiOutput};
+use review_ui::{ActivityId, AxisGizmoAction, MenuIntent, TextureIntent, UiOutput};
 
 use crate::{App, keys};
 
 impl App {
+    /// Stop the job behind a Working card whose Cancel was clicked, and take
+    /// the card down.
+    ///
+    /// Each job knows its own cards and answers whether this is one of them;
+    /// what stopping means is the job's to decide, and is documented beside
+    /// each `cancel_*`. The card comes down here whoever claimed it, so a click
+    /// never leaves a card the user believes was cancelled; the job's own end,
+    /// when it comes, ends it again, which does nothing.
+    fn cancel_activity(&mut self, activity: ActivityId) {
+        let claimed = self.cancel_load(activity)
+            || self.cancel_opt_run(activity)
+            || self.cancel_opt_export(activity)
+            || self.cancel_audit(activity)
+            || self.cancel_imported_textures(activity)
+            || self.cancel_texture_decode(activity);
+        if !claimed {
+            log::warn!("a Working card's Cancel named no running job");
+        }
+        self.notifications.end_activity(activity);
+        self.request_redraw();
+    }
+
     pub(crate) fn apply_ui_output(&mut self, output: UiOutput) {
         // Mirror this frame's drag state for the undo observer (read at the top of
         // the next frame), so a continuous slider / color drag — a material
@@ -22,6 +44,12 @@ impl App {
         // even when the renderer isn't ready yet.
         self.drag_in_progress =
             output.material_edit_active || output.opt_edit_active || output.aud_edit_active;
+
+        // A Working card's Cancel: the card only recorded the click (it lives in
+        // `ui`, invariant 2), and the job behind it is stopped here.
+        for activity in self.notifications.take_cancel_requests() {
+            self.cancel_activity(activity);
+        }
 
         // Opt's file-dialog actions don't need the renderer, and must run even
         // before it exists.

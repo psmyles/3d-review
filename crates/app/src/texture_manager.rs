@@ -12,6 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -267,6 +268,10 @@ impl App {
                 activity,
             }));
         }));
+        // Registered once it is queued; its result lands on this thread later.
+        if submitted.is_ok() {
+            self.textures.decoding.insert(activity, false);
+        }
         if let Err(error) = submitted {
             // No worker, so this decode will never land: release its admission,
             // close its card, and say so.
@@ -277,6 +282,21 @@ impl App {
                 .error(keys::app_notifications::texture_failed(file_label(
                     &failed_path,
                 )));
+        }
+    }
+
+    /// A decoding or reloading card's Cancel. Whether `activity` was one.
+    ///
+    /// The decode cannot stop part way, so it is marked: it runs out on its
+    /// worker and [`Self::handle_texture_decoded`] drops what it read.
+    pub(crate) fn cancel_texture_decode(&mut self, activity: ActivityId) -> bool {
+        match self.textures.decoding.get_mut(&activity) {
+            Some(cancelled) => {
+                *cancelled = true;
+                log::info!("texture decode cancelled");
+                true
+            }
+            None => false,
         }
     }
 
@@ -298,6 +318,12 @@ impl App {
         let name = file_label(&path);
 
         let outcome = self.textures.finish_decode(generation, &path);
+        // Its card's Cancel was clicked while it ran: nothing it read is used,
+        // and a change to the file since is not read again either.
+        if self.textures.decoding.remove(&activity) == Some(true) {
+            log::debug!("texture decode cancelled, dropped: {}", path.display());
+            return;
+        }
         if outcome.respawn {
             // The file was written again while this decode was reading it, so
             // what just landed is already out of date. One more, which also
@@ -491,6 +517,11 @@ impl App {
         // same files without being coalesced into those workers.
         self.textures.generation = self.textures.generation.wrapping_add(1);
         self.textures.forget_in_flight();
+        // The outgoing model's own textures stop decoding, rather than finish
+        // only to be dropped by the generation above.
+        if let Some((_, stop)) = self.textures.imported_job.take() {
+            stop.fetch_add(1, Ordering::Relaxed);
+        }
         self.ui.texture_pool = Vec::new();
         self.ui.uv_texture = None;
         self.textures.watched_dirs.clear();
@@ -547,6 +578,14 @@ pub(crate) struct TextureSubsystem {
     /// change events and a large PSD takes long enough that every one of them
     /// used to start its own full decode.
     in_flight: HashMap<PathBuf, InFlight>,
+    /// Every decode on a worker, by the card it opened, and whether that card's
+    /// Cancel was clicked. A decode is one call and cannot stop part way, so a
+    /// cancelled one runs out and its result is dropped when it lands.
+    decoding: HashMap<ActivityId, bool>,
+    /// The model's own textures being found and decoded
+    /// (`imported_textures.rs`): the card they opened, and the counter their
+    /// worker's token reads. The card's Cancel and a new model both move it.
+    pub(crate) imported_job: Option<(ActivityId, Arc<AtomicU64>)>,
     /// The threads the decodes run on, started with the first one.
     workers: DecodeWorkers,
 }

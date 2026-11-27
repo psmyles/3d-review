@@ -11,6 +11,7 @@
 //! the model they play on.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Instant;
 
 use review_import::{
@@ -72,8 +73,9 @@ pub(crate) enum ModelMeasurement {
     /// The job is done: the loading card comes down. Exactly one message per
     /// job ends it, this or [`Self::Cancelled`].
     Finished,
-    /// The job stopped because its load was superseded. Carries nothing to apply;
-    /// it exists so the loading card still comes down.
+    /// The job stopped because its load was superseded, or its card's Cancel
+    /// stopped it. Carries nothing to apply; it exists so the loading card still
+    /// comes down.
     Cancelled,
 }
 
@@ -93,7 +95,10 @@ pub(crate) struct ModelMeasured {
 type Sink<'a> = &'a dyn Fn(UserEvent);
 
 /// Measure everything `job` asks for, sending each result as it lands.
-fn run(job: MeasureJob, cancel: &CancelToken, send: Sink<'_>) {
+///
+/// `cancel` is the measure generation's: a new model supersedes every job at
+/// once. `stop` is this job's own, which its loading card's Cancel moves.
+fn run(job: MeasureJob, cancel: &CancelToken, stop: Option<&CancelToken>, send: Sink<'_>) {
     let MeasureJob {
         generation,
         activity,
@@ -134,6 +139,23 @@ fn run(job: MeasureJob, cancel: &CancelToken, send: Sink<'_>) {
         measured(ModelMeasurement::Cancelled);
         true
     };
+    // The card's Cancel, which only the measurements nothing depends on obey:
+    // the capture and the pick index come first and always finish, because the
+    // export, the audit and every click on the model wait for them, and they are
+    // a small share of the job. What it skips is the clip envelopes and the
+    // draw-group table, which the viewer already reads as "not measured".
+    let stopped = || {
+        if superseded() {
+            return true;
+        }
+        if !stop.is_some_and(CancelToken::is_cancelled) {
+            return false;
+        }
+        clock.finish();
+        log::debug!("measuring {} stopped from its card", model.name);
+        measured(ModelMeasurement::Cancelled);
+        true
+    };
 
     if let Some(pending) = new_model {
         if superseded() {
@@ -161,7 +183,7 @@ fn run(job: MeasureJob, cancel: &CancelToken, send: Sink<'_>) {
                 &model,
             ))));
         }
-        if superseded() {
+        if stopped() {
             return;
         }
         {
@@ -170,7 +192,7 @@ fn run(job: MeasureJob, cancel: &CancelToken, send: Sink<'_>) {
         }
     }
     for (file, animation) in &attached {
-        if superseded() {
+        if stopped() {
             return;
         }
         let _z = prof::zone!("Measure Attached Clip Bounds");
@@ -183,7 +205,7 @@ fn run(job: MeasureJob, cancel: &CancelToken, send: Sink<'_>) {
     // Last: the slowest of them, and the one only a number on the stats card
     // waits for.
     if measure_groups {
-        if superseded() {
+        if stopped() {
             return;
         }
         let _z = prof::zone!("Measure Mesh Groups");
@@ -206,7 +228,7 @@ impl App {
         let cancel = CancelToken::new(Arc::clone(&self.measure_generation), job.generation);
         let Some(proxy) = self.textures.proxy.clone() else {
             let landed = std::cell::RefCell::new(Vec::new());
-            run(job, &cancel, &|event| landed.borrow_mut().push(event));
+            run(job, &cancel, None, &|event| landed.borrow_mut().push(event));
             for event in landed.into_inner() {
                 match event {
                     UserEvent::ModelMeasured(message) => self.handle_model_measured(*message),
@@ -219,12 +241,16 @@ impl App {
             return;
         };
         let activity = job.activity;
+        // This job's own stop, for its card's Cancel (`App::cancel_load`).
+        let counter = Arc::new(AtomicU64::new(0));
+        let stop = CancelToken::new(Arc::clone(&counter), 0);
+        self.loads.measuring.push((activity, counter));
         let spawned = std::thread::Builder::new()
             .name("model-measure".into())
             .spawn(move || {
                 prof::thread_name("model-measure");
                 // A send failure only means the event loop has exited.
-                run(job, &cancel, &|event| {
+                run(job, &cancel, Some(&stop), &|event| {
                     let _ = proxy.send_event(event);
                 });
             });
@@ -232,6 +258,7 @@ impl App {
             // No worker, so nothing will close the card; the model stays on screen
             // unmeasured, which every consumer already reads as "not yet".
             log::error!("could not start the measuring thread: {error}");
+            self.loads.measuring.retain(|(card, _)| *card != activity);
             self.notifications.end_activity(activity);
         }
     }
@@ -244,6 +271,9 @@ impl App {
             message.measurement,
             ModelMeasurement::Finished | ModelMeasurement::Cancelled
         ) {
+            self.loads
+                .measuring
+                .retain(|(card, _)| *card != message.activity);
             self.notifications.end_activity(message.activity);
         }
         if message.generation != self.measure_generation() {

@@ -19,8 +19,9 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use review_model::{MaterialMap, ModelData, SourceExtras};
+use review_model::{CancelToken, MaterialMap, ModelData, SourceExtras};
 use review_render::{DecodedImage, ImportedTexture, imported_textures};
 use review_ui::{ActivityId, NoticeKind};
 
@@ -67,9 +68,14 @@ impl App {
             keys::app_notifications::LOADING_TEXTURES,
         ));
         self.gate_textures_loading();
+        // A counter of this load's own, which its card's Cancel and a new model
+        // move (`cancel_imported_textures`, `reset_texture_state`).
+        let stop = Arc::new(AtomicU64::new(0));
+        let cancel = CancelToken::new(Arc::clone(&stop), 0);
+        self.textures.imported_job = Some((activity, stop));
         let Some(proxy) = self.textures.proxy.clone() else {
             // No event loop to post back through (a headless run): load in place.
-            let loaded = load(&model, &extras, model_path, generation, activity);
+            let loaded = load(&model, &extras, model_path, generation, activity, &cancel);
             self.handle_imported_textures_loaded(loaded);
             return;
         };
@@ -77,14 +83,32 @@ impl App {
             .name("model-textures".into())
             .spawn(move || {
                 prof::thread_name("model-textures");
-                let loaded = load(&model, &extras, model_path, generation, activity);
+                let loaded = load(&model, &extras, model_path, generation, activity, &cancel);
                 // A send failure only means the event loop has exited.
                 let _ = proxy.send_event(UserEvent::ImportedTexturesLoaded(Box::new(loaded)));
             });
         if let Err(error) = spawned {
             log::error!("could not start the model texture thread: {error}");
+            self.textures.imported_job = None;
             self.notifications.end_activity(activity);
             self.gate_textures_abandoned();
+        }
+    }
+
+    /// The model-textures card's Cancel: stop decoding them. Whether `activity`
+    /// was that card.
+    ///
+    /// No further image starts; those already decoding finish, and the whole
+    /// result is dropped when it lands. The model keeps the materials it
+    /// arrived with, untextured, as if its textures had not been found.
+    pub(crate) fn cancel_imported_textures(&mut self, activity: ActivityId) -> bool {
+        match &self.textures.imported_job {
+            Some((card, stop)) if *card == activity => {
+                stop.fetch_add(1, Ordering::Relaxed);
+                log::info!("model textures cancelled");
+                true
+            }
+            _ => false,
         }
     }
 
@@ -97,6 +121,21 @@ impl App {
             activity,
         } = message;
         self.notifications.end_activity(activity);
+        // Read here rather than on the worker: a Cancel clicked after the last
+        // image decoded but before this landed still means "don't".
+        let cancelled = match self
+            .textures
+            .imported_job
+            .take_if(|(card, _)| *card == activity)
+        {
+            Some((_, stop)) => stop.load(Ordering::Relaxed) != 0,
+            None => false,
+        };
+        if cancelled {
+            log::debug!("model textures cancelled, dropped");
+            self.gate_textures_abandoned();
+            return;
+        }
         if generation != self.textures.generation {
             log::debug!("model textures superseded, dropped");
             return;
@@ -190,9 +229,16 @@ fn load(
     model_path: Option<PathBuf>,
     generation: u64,
     activity: ActivityId,
+    cancel: &CancelToken,
 ) -> ImportedTexturesLoaded {
     let _z = prof::zone!("Load Model Textures");
-    let loaded = imported_textures::load(&model.materials, extras, model_path.as_deref(), None);
+    let loaded = imported_textures::load_cancellable(
+        &model.materials,
+        extras,
+        model_path.as_deref(),
+        None,
+        Some(cancel),
+    );
     for name in &loaded.planned.missing {
         log::warn!("model texture not found: {name}");
     }

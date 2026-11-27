@@ -2,6 +2,8 @@
 ### failures.
 
 app-audit-auditing = Checking the model...
+# The checking card's Cancel was clicked; nothing runs again on its own.
+app-audit-cancelled = Checking the model was cancelled. Change the profile to check it again.
 app-audit-summary-copied = Summary copied
 app-audit-profile-saved = Saved the audit profile to { $file }
 app-audit-profile-loaded = Loaded the audit profile { $file }

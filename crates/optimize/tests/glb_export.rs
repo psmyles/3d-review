@@ -12,11 +12,14 @@
 #![cfg(has_meshopt)]
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use review_model::{ComponentType, ModelData};
 use review_optimize::{
-    ExportFileType, ExportOptions, GlbTangents, HierarchyMode, LodLevel, LodPackaging, LodParams,
-    OpKind, OptStack, ReduceParams, TargetMode, WeldParams, export,
+    CancelToken, ExportFileType, ExportOptions, GlbTangents, HierarchyMode, LodLevel, LodPackaging,
+    LodParams, OpKind, OptError, OptStack, ReduceParams, TargetMode, WeldParams, export,
+    export_cancellable,
 };
 
 mod common;
@@ -69,6 +72,42 @@ fn write(
     export(&result.lods, model, None, &dir.join(name), options)
         .expect("the export succeeds")
         .files
+}
+
+/// A cancelled export gives up before it replaces anything: the file already
+/// at the destination keeps its bytes, and no staging file is left beside it.
+/// This is what the Working card's Cancel promises ("Nothing on disk was
+/// changed").
+#[test]
+fn a_cancelled_export_replaces_nothing() {
+    let model = hierarchy();
+    let result = run(&model, &no_op());
+    let dir = temp_dir("glb_cancelled");
+    let path = dir.join("asset.glb");
+    std::fs::write(&path, b"the previous export").expect("seed the destination");
+
+    // Already superseded: the counter has moved past the token's generation.
+    let generation = Arc::new(AtomicU64::new(1));
+    let cancel = CancelToken::new(Arc::clone(&generation), 0);
+    let error = export_cancellable(&result.lods, &model, None, &path, &glb(), Some(&cancel))
+        .expect_err("a cancelled export does not finish");
+
+    assert!(matches!(error, OptError::Cancelled), "got {error:?}");
+    assert_eq!(
+        std::fs::read(&path).expect("the destination is still there"),
+        b"the previous export",
+        "the previous export is untouched"
+    );
+    let names: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read the export directory")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["asset.glb".to_owned()],
+        "nothing else was written"
+    );
 }
 
 #[test]

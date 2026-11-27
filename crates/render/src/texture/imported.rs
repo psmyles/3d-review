@@ -11,7 +11,8 @@
 //!   are: embedded bytes, or the first of the authored paths that exists on
 //!   disk. It touches the file system (existence checks) and nothing else.
 //! * [`decode`] — every planned image, in parallel, optionally halved to fit a
-//!   size (a thumbnail never draws a 4K map at 4K).
+//!   size (a thumbnail never draws a 4K map at 4K), and stopping early when the
+//!   caller's cancel token says so.
 //! * [`TextureUse::binding`] — the slot binding, decided once the pixels are
 //!   in, because two of the choices depend on them: whether a Bump-slot image
 //!   is a normal map, and which channel an opacity map carries.
@@ -28,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use glam::Vec3;
-use review_model::{MaterialImportDefaults, MaterialMap, SourceExtras};
+use review_model::{CancelToken, MaterialImportDefaults, MaterialMap, SourceExtras};
 
 use super::{
     ChannelSelect, DecodedImage, TextureSlot, Upload, decode_bytes, decode_image, suggested_channel,
@@ -438,8 +439,21 @@ pub fn load(
     model_path: Option<&Path>,
     max_side: Option<u32>,
 ) -> LoadedTextures {
+    load_cancellable(materials, extras, model_path, max_side, None)
+}
+
+/// [`load`] that stops starting decodes once `cancel` says the textures are no
+/// longer wanted. An image already being decoded finishes; every one not yet
+/// started comes back as an error, so the result is only fit to be dropped.
+pub fn load_cancellable(
+    materials: &[MaterialImportDefaults],
+    extras: &SourceExtras,
+    model_path: Option<&Path>,
+    max_side: Option<u32>,
+    cancel: Option<&CancelToken>,
+) -> LoadedTextures {
     let planned = plan(materials, extras, model_path);
-    let images = decode(&planned, extras, max_side)
+    let images = decode(&planned, extras, max_side, cancel)
         .into_iter()
         .map(|image| image.map(std::sync::Arc::new))
         .collect();
@@ -448,11 +462,12 @@ pub fn load(
 
 /// Decode every planned texture, in parallel on [`decode_workers`](crate::decode_workers)
 /// threads, each halved to fit `max_side` when it is given. The result is parallel to `planned.textures`; a failure
-/// is the decoder's own message.
+/// is the decoder's own message. Once `cancel` says so, no further decode starts.
 pub fn decode(
     planned: &ImportedTextures,
     extras: &SourceExtras,
     max_side: Option<u32>,
+    cancel: Option<&CancelToken>,
 ) -> Vec<Result<DecodedImage, String>> {
     let count = planned.textures.len();
     let mut results: Vec<Option<Result<DecodedImage, String>>> = vec![None; count];
@@ -466,6 +481,9 @@ pub fn decode(
         for _ in 0..workers {
             scope.spawn(|| {
                 loop {
+                    if cancel.is_some_and(CancelToken::is_cancelled) {
+                        break;
+                    }
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     let Some(texture) = planned.textures.get(index) else {
                         break;

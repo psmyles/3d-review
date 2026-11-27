@@ -145,6 +145,27 @@ activity card: `ui`'s `begin_activity` returns an `ActivityId` that the job's
 messages carry and `update_activity` / `end_activity` take, so two jobs running
 at once (a load and an Opt rebuild, say) never write into each other's card.
 
+**Every activity card can be cancelled.** Its **Cancel** sits where the other
+cards' ✕ does, and a click is an intent (invariant 2): `ui` queues the
+`ActivityId`, and `ui_intents.rs`'s `cancel_activity` drains
+`take_cancel_requests` after the egui pass, asks each job owner in turn whether
+the card is its own (`cancel_load`, `cancel_opt_run`, `cancel_opt_export`,
+`cancel_audit`, `cancel_imported_textures`, `cancel_texture_decode`), and takes
+the card down whoever claims it. What stopping means is each owner's call:
+
+| Job | Cancel stops it by | What the user is left with |
+|---|---|---|
+| Model load, reading | superseding it, as a newer open would; the requests waiting behind it go too | the model that was on screen |
+| Model load, measuring | a counter of the job's own, checked before the clip envelopes and the draw-group table | the model with its capture and pick index (always made first); no clip envelopes or `GPU Verts` |
+| Opt run | bumping the generation, as an edit does, but owing no rerun | the last finished result; nothing reruns until the stack changes |
+| Opt export | `export_cancellable`, checked before each file and before the first replace | no file replaced (staging files drop); a run that had already replaced everything lands as a success |
+| Audit | bumping the generation, owing no rerun | no new report until the model or profile changes |
+| The model's textures | `imported_textures::load_cancellable` starts no further decode | the materials untextured, as if not found |
+| A texture decode or reload | marking it; a decode is one call, so its result is dropped on landing | the pool as it was |
+
+A job that was cancelled must not raise its card again: the Opt run and the audit
+clear `started_at`, since their worker is still `in_flight` until it notices.
+
 ### `model` — `review-model`
 
 Host-agnostic data only. Depends on `glam` and `libm` and nothing else: no GPU
@@ -646,7 +667,10 @@ lines)` with a body stay until dismissed. A keyed push (`mode`, `error_keyed`)
 rewrites its slot in place. Deadlines run on egui's clock and resolve on the first
 frame a card is shown, hovering pauses them, and one `request_repaint_after` per
 frame keeps a sticky card off the redraw loop. `begin_activity` names a background
-job; `update_activity` rewrites the stage line and the bar in place.
+job; `update_activity` rewrites the stage line and the bar in place. The Working
+card's header carries a small egui `Button` reading **Cancel** in place of the ✕,
+sized to the heading row as the ✕ is; see **Background work** above for what a
+click does.
 
 **Aud state.** `aud_state.rs` holds the active `AuditProfile` (behind an `Arc`,
 bumped through `edit_profile` so undo and `app` see one revision), the last

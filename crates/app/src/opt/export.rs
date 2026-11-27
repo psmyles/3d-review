@@ -3,10 +3,13 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use review_model::ModelData;
-use review_optimize::{ExportOptions, ExportReport, OptError, ProcessedResult, export};
+use review_optimize::{
+    CancelToken, ExportOptions, ExportReport, OptError, ProcessedResult, export_cancellable,
+};
 use review_ui::{ActivityId, NoticeKind};
 
 use super::*;
@@ -83,6 +86,13 @@ impl App {
         let activity = self.notifications.begin_activity(
             review_localization::tr(keys::app_notifications::EXPORTING).into_owned(),
         );
+        // A counter of the export's own, so its card's Cancel stops this export
+        // and no other: the token is live until the counter leaves 0.
+        let stop = Arc::new(AtomicU64::new(0));
+        let cancel = CancelToken::new(Arc::clone(&stop), 0);
+        if let Some(opt) = self.opt.as_mut() {
+            opt.exports.push((activity, stop));
+        }
 
         log::info!("exporting to {}", path.display());
         let spawned = std::thread::Builder::new()
@@ -92,7 +102,14 @@ impl App {
                 let started = Instant::now();
                 let outcome = {
                     let _z = prof::zone!("Export");
-                    export(&result.lods, &source, extras.as_deref(), &path, &options)
+                    export_cancellable(
+                        &result.lods,
+                        &source,
+                        extras.as_deref(),
+                        &path,
+                        &options,
+                        Some(&cancel),
+                    )
                 };
                 // The failures are logged where they are reported, on the main thread.
                 if let Ok(report) = &outcome {
@@ -116,6 +133,7 @@ impl App {
             });
         if let Err(error) = spawned {
             log::error!("could not start the export thread: {error}");
+            self.forget_export(activity);
             self.notifications.end_activity(activity);
             self.notifications.error(
                 review_localization::tr(keys::app_notifications::EXPORT_START_FAILED).into_owned(),
@@ -123,8 +141,35 @@ impl App {
         }
     }
 
+    /// An export card's Cancel: ask that export's worker to stop. Whether
+    /// `activity` was an export's card.
+    ///
+    /// The worker gives up before it replaces any file, and says so when it
+    /// lands; one that had already put every file in place lands as a success,
+    /// which is then the truth and is reported as one.
+    pub(crate) fn cancel_opt_export(&mut self, activity: ActivityId) -> bool {
+        let Some((_, stop)) = self
+            .opt
+            .as_ref()
+            .and_then(|opt| opt.exports.iter().find(|(card, _)| *card == activity))
+        else {
+            return false;
+        };
+        stop.fetch_add(1, Ordering::Relaxed);
+        log::info!("export cancel requested");
+        true
+    }
+
+    /// Stop tracking the export that opened `activity`.
+    fn forget_export(&mut self, activity: ActivityId) {
+        if let Some(opt) = self.opt.as_mut() {
+            opt.exports.retain(|(card, _)| *card != activity);
+        }
+    }
+
     /// Report a finished export on the main thread.
     pub(crate) fn handle_opt_exported(&mut self, exported: OptExported) {
+        self.forget_export(exported.activity);
         self.notifications.end_activity(exported.activity);
         match exported.outcome {
             Ok(report) => {
@@ -194,6 +239,13 @@ impl App {
                     review_localization::tr(keys::app_notifications::EXPORT_INCOMPLETE)
                         .into_owned(),
                     lines,
+                );
+            }
+            // Its card's Cancel, honoured before anything was replaced.
+            Err(OptError::Cancelled) => {
+                log::info!("export cancelled; nothing written");
+                self.notifications.info(
+                    review_localization::tr(keys::app_notifications::EXPORT_CANCELLED).into_owned(),
                 );
             }
             Err(error) => {

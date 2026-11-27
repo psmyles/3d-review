@@ -32,6 +32,12 @@ A few measurements that nothing on screen needs right away keep arriving after
 that, such as how far each animation moves and the `GPU Verts` number on the
 stats card. You do not have to wait for them; they simply fill in when ready.
 
+**Cancel** on the card stops the load. While the file is still being read, the
+model you had open stays. Once the new model is on screen it stays too, and only
+the measurements still to come are skipped: the animation movement and the
+`GPU Verts` number. Every progress card has the same button - an optimization,
+an export, the model check and texture loading stop the same way.
+
 If you open another file with **Open File...** while one is still loading,
 the new one wins, and you will never be shown the wrong model. A file you drop
 on the window while another is loading waits for it instead, so animations

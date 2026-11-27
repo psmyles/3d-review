@@ -174,6 +174,12 @@ app-notifications-dialog-failed = Couldn't open the file dialog
 app-notifications-dialog-already-open = A file dialog is already open. Finish or cancel it first.
 app-notifications-opt-start-failed = Couldn't start mesh optimization
 app-notifications-optimization-failed = Optimization failed: { $detail }
+# The optimizing card's Cancel was clicked; the view goes back to the last result
+# that finished, and nothing runs again on its own.
+app-notifications-optimization-cancelled = Optimization cancelled. Change anything in the list to run it again.
+# The export card's Cancel was clicked, and the export stopped before it replaced
+# any file.
+app-notifications-export-cancelled = Export cancelled. Nothing on disk was changed.
 app-notifications-nothing-to-export = Nothing to export yet - add an operation to the list first.
 app-notifications-export-start-failed = Couldn't start the export
 app-notifications-preset-build-failed = Couldn't build the preset: { $detail }

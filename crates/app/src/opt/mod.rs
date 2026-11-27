@@ -95,6 +95,10 @@ pub(crate) struct OptSubsystem {
     started_at: Option<Instant>,
     /// Whether the "still working" toast is currently up.
     activity: Option<ActivityId>,
+    /// Every export still being written, by the card it opened, with the
+    /// counter its worker's token reads: bumping it is what the card's Cancel
+    /// does. An entry goes when its export lands, finished or not.
+    exports: Vec<(ActivityId, Arc<AtomicU64>)>,
     /// The newest part-finished mesh.
     ///
     /// Drawn in place of the finished level while a run is going, so a rebuild
@@ -151,6 +155,7 @@ impl Default for OptSubsystem {
             dirty: false,
             started_at: None,
             activity: None,
+            exports: Vec::new(),
             preview: None,
             ran_without_capture: false,
             processed_without_capture: false,

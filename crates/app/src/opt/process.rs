@@ -12,7 +12,7 @@ use review_optimize::{
     OptWarning, ProcessInput, ProcessedResult, process_progressive,
 };
 
-use review_ui::{NoticeKind, OptLevelView, OptResultView};
+use review_ui::{ActivityId, NoticeKind, OptLevelView, OptResultView};
 
 use super::*;
 
@@ -550,6 +550,40 @@ impl App {
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
+    }
+
+    /// The optimizing card's Cancel: stop the run in flight and run nothing
+    /// until the stack changes. Whether `activity` was that card.
+    ///
+    /// Bumping the generation is the same cancel an edit makes, so the worker
+    /// stops at its next check and whatever it still posts is dropped as
+    /// superseded. What an edit does *next* is skipped: nothing is owed, the
+    /// revision stays covered (so `needs_run` does not start it again), and a
+    /// capture landing later is not a reason to either. The viewport goes back
+    /// to the last finished result at once, and the stats card already shows it.
+    pub(crate) fn cancel_opt_run(&mut self, activity: ActivityId) -> bool {
+        let Some(opt) = self.opt.as_mut() else {
+            return false;
+        };
+        if opt.activity != Some(activity) {
+            return false;
+        }
+        opt.activity = None;
+        opt.generation.fetch_add(1, Ordering::Relaxed);
+        opt.dirty = false;
+        opt.capture_owed = false;
+        opt.ran_without_capture = false;
+        // Without this the card would be raised again next frame: the worker is
+        // still `in_flight` until it notices, and has been for long enough.
+        opt.started_at = None;
+        opt.last_progress = None;
+        opt.preview = None;
+        log::info!("mesh optimization cancelled");
+        self.notifications.info(
+            review_localization::tr(keys::app_notifications::OPTIMIZATION_CANCELLED).into_owned(),
+        );
+        self.request_redraw();
+        true
     }
 
     /// Rewrite the optimizing card's stage line from a worker's progress report.
