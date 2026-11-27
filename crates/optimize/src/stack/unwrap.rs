@@ -42,30 +42,14 @@ pub enum SeamSource {
     UvSetU(u32),
 }
 
-/// How islands are grown before they are flattened.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ChartGrowth {
-    /// One island per region the seams bound, as far as it flattens without
-    /// folding over itself — the seams are the plan.
-    #[default]
-    Islands,
-    /// xatlas's own chart building, which may cut a region further where it
-    /// curves: for a mesh with no seams worth keeping.
-    Automatic,
-}
-
-impl ChartGrowth {
-    pub const ALL: [ChartGrowth; 2] = [ChartGrowth::Islands, ChartGrowth::Automatic];
-}
-
-/// How a tiled island is flattened.
+/// How each chart is flattened.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Flattening {
     /// Angles kept (LSCM); on a surface curved both ways the area, and so the
-    /// texel density, drifts across the island.
+    /// texel density, drifts across the chart.
     Conformal,
     /// Angle balanced against area (LSCM, then as-rigid-as-possible), as a
-    /// minimum-stretch unwrap does: an even density over curved islands.
+    /// minimum-stretch unwrap does: an even density over curved charts.
     #[default]
     MinimumStretch,
 }
@@ -93,15 +77,15 @@ pub struct UnwrapParams {
     pub split_at_creases: bool,
     /// In degrees.
     pub crease_angle: f32,
-    pub charts: ChartGrowth,
-    /// Tiled: how each island is flattened. (An atlas is flattened by xatlas
-    /// alone, before it packs.)
+    /// How each chart is flattened.
     pub flattening: Flattening,
-    /// Tiled, with whole islands: an island whose mean stretch flattened in one
-    /// piece is above this — a band all the way round a cylinder, which
-    /// flattens whole only as a ring — is cut further where that stretches it
-    /// less. 1 cuts at any stretch; higher keeps more islands whole.
-    pub island_stretch_limit: f32,
+    /// The most a chart may stretch, as the area-weighted mean over its
+    /// triangles of each one's worst stretch either way against the chart's
+    /// mean density. An island is kept whole when it flattens within this,
+    /// and cut into as few charts as do otherwise: 1 cuts at any stretch,
+    /// higher keeps charts larger, with fewer seams.
+    #[serde(alias = "island_stretch_limit")]
+    pub max_stretch: f32,
     /// Tiled: UV units per metre.
     pub density: f32,
     /// Tiled: turn each island to lie as its reference UVs did (rotation or
@@ -114,6 +98,9 @@ pub struct UnwrapParams {
     pub resolution: u32,
     /// Atlas: texels left between islands.
     pub padding: u32,
+    /// Let the packing turn charts to fit them tighter (and, for tiled
+    /// charts with no reference to turn them by, to lay them along U).
+    pub rotate: bool,
 }
 
 impl Default for UnwrapParams {
@@ -126,28 +113,28 @@ impl Default for UnwrapParams {
             split_at_reference_seams: true,
             split_at_creases: false,
             crease_angle: 60.0,
-            charts: ChartGrowth::Automatic,
             flattening: Flattening::MinimumStretch,
-            island_stretch_limit: 1.1,
+            max_stretch: 1.1,
             density: 1.0,
             align_to_reference: true,
             keep_better: true,
             resolution: 1024,
             padding: 4,
+            rotate: true,
         }
     }
 }
 
 impl UnwrapParams {
     /// The settings that rebuild a CAD part's UVs for a tiling texture (the
-    /// a CAD pipeline's): one island per CAD face, cut again only where
-    /// the CAD UVs are, each at one UV unit per metre and turned to lie as the
-    /// CAD UVs did, the CAD UVs kept where they stretch less.
+    /// a CAD pipeline's): one island per CAD face, cut again where the
+    /// CAD UVs are and where a face will not flatten within the stretch limit,
+    /// each at one UV unit per metre and turned to lie as the CAD UVs did, the
+    /// CAD UVs kept where they stretch less.
     pub fn cad_islands(attribute: &str) -> Self {
         Self {
             layout: UvLayout::Tiled,
             seams: SeamSource::Attribute(attribute.to_owned()),
-            charts: ChartGrowth::Islands,
             ..Self::default()
         }
     }

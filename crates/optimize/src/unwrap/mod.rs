@@ -1,24 +1,27 @@
-//! The Unwrap operation: rebuild a UV set by cutting the surface into islands,
-//! flattening each with xatlas, and laying them out tiled at a texel density or
-//! packed into an atlas.
+//! The Unwrap operation: rebuild a UV set the way an unwrap in Blender or
+//! Maya does — cut the surface into islands (**seams**), flatten each
+//! (**unfold**), and pack them into the 0-1 square or tile them at a texel
+//! density (**layout**).
 //!
 //! ## Per object
 //!
 //! An object's pieces (one per material) are unwrapped in one call, so an atlas
 //! holds the whole object; materials are always apart, each piece's islands
-//! numbered on from the last's. Within a piece, [`islands`] cuts the triangles into islands along the seams the settings
-//! name (a seam attribute such as `_CAD_FACE`, the reference UVs' own seams,
-//! sharp edges) and along open and non-manifold edges. xatlas then charts each
-//! island — never across two, since each is a "material" of its own to it — and
-//! flattens each chart: by orthogonal projection where it is flat, by LSCM
-//! where not, split further only where a flattening would fold over itself.
+//! numbered on from the last's. Within a piece, [`islands`] cuts the triangles
+//! into islands along the seams the settings name (a seam attribute such as
+//! `_CAD_FACE`, the reference UVs' own seams, sharp edges) and along open and
+//! non-manifold edges, and numbers the cut surface's vertices.
 //!
-//! [`layout`] then places each chart. **Tiled**: scaled to the texel density by
-//! its own area (`sqrt(3D area / UV area) * density`), turned by orthogonal
-//! Procrustes to lie as its reference UVs did (a mirror allowed) and centred
-//! where they were; and, per chart, the reference UVs scaled to the density
-//! about their centre are kept instead where their area-weighted mean stretch
-//! is lower. **Atlas**: xatlas's packing, scaled into the 0-1 square.
+//! [`charts`] then makes each island into as few charts as flatten within the
+//! stretch limit: the island whole where it can be, otherwise small, nearly
+//! flat pieces of it merged back greedily. Each chart is flattened by [`lscm`]
+//! and, for minimum stretch, refined by [`arap`], and comes out in model units.
+//!
+//! [`layout`] places the charts. **Atlas** (Pack into 0-1): xatlas's packer,
+//! scaled into the square. **Tiled**: each chart at the texel density, turned
+//! by orthogonal Procrustes to lie as its reference UVs did (a mirror allowed)
+//! and centred where they were, the reference UVs kept instead where they
+//! stretch less; with no reference to follow, packed apart at the density.
 //!
 //! The new UVs are per corner; the piece's vertices are split wherever two
 //! corners of one vertex got different UVs ([`Submesh::split_by_corner`]), with
@@ -26,10 +29,12 @@
 //!
 //! ## Determinism
 //!
-//! xatlas is compiled single-threaded with its transcendentals on `libm`
-//! (`third_party/xatlas/NOTICE.txt`); the pieces run in parallel, each in an
-//! atlas of its own, and land in slots merged in piece order. Island and chart
-//! numbering follow triangle order.
+//! The segmentation and flattening are this crate's own: `f64` with bounded
+//! iterations, the merge's order and maps all ordered. xatlas only packs, and
+//! is compiled single-threaded with its transcendentals on `libm`
+//! (`third_party/xatlas/NOTICE.txt`). The objects run
+//! in parallel, each on its own, and land in slots merged in object order.
+//! Island, chart and vertex numbering follow triangle order.
 
 use glam::{Vec2, Vec3};
 use review_model::ModelData;
@@ -37,12 +42,16 @@ use review_model::ModelData;
 use crate::Warnings;
 use crate::notice::OptWarning;
 use crate::process::{RunContext, is_excluded, resolve_op};
-use crate::stack::{ChartGrowth, OpInstance, OpKind, OptStack, SeamSource, UnwrapParams, UvLayout};
+use crate::stack::{OpInstance, OpKind, OptStack, SeamSource, UnwrapParams};
 use crate::submesh::Submesh;
 
 mod arap;
+mod charts;
+mod element;
 mod islands;
 mod layout;
+mod lscm;
+mod solve;
 #[cfg(test)]
 mod tests;
 
@@ -149,12 +158,13 @@ pub(crate) fn unwrap_submeshes(
     // assemble of the level. Only what is shown depends on the timing.
     let mut last_preview: Option<std::time::Instant> = None;
     let mut landed = 0;
+    let token = run.token();
     crate::parallel::solve_nodes(
         &jobs,
-        run.token(),
+        token,
         |(members, params, key), _: &dyn Fn(())| {
             let own: Vec<&Submesh> = members.iter().map(|&at| &pieces[at]).collect();
-            unwrap_node(&own, params, *key, uv_sets)
+            unwrap_node(&own, params, *key, uv_sets, token)
         },
         |index, result| {
             results[index] = Some(result);
@@ -176,6 +186,10 @@ pub(crate) fn unwrap_submeshes(
         },
         |_, ()| {},
     );
+    // A cancelled run is discarded whole: nothing it says is worth a warning.
+    if run.cancelled() {
+        return;
+    }
     for ((members, _, _), result) in jobs.iter().zip(results) {
         match result {
             Some(Ok(unwrapped)) => {
@@ -216,12 +230,14 @@ pub(crate) fn unwrap_node(
     params: &UnwrapParams,
     key: SeamKey,
     uv_sets: usize,
+    cancel: Option<&crate::cancel::CancelToken>,
 ) -> Result<Vec<Submesh>, String> {
     let mut out: Vec<Submesh> = pieces.iter().map(|&piece| piece.clone()).collect();
     let mut positions: Vec<Vec3> = Vec::new();
-    let mut normals: Vec<f32> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     let mut island: Vec<u32> = Vec::new();
+    let mut cut_vertex: Vec<u32> = Vec::new();
+    let mut cut_count: u32 = 0;
     let mut reference: Option<Vec<Vec2>> = Some(Vec::new());
     // Each piece's corners in the combined index buffer.
     let mut ranges = Vec::with_capacity(out.len());
@@ -251,70 +267,41 @@ pub(crate) fn unwrap_node(
         };
         let first = indices.len();
         indices.extend(piece.indices.iter().map(|&index| index + base));
-        island.extend(own.iter().map(|&id| id + island_base));
-        normals.extend(
-            piece
-                .vertices
-                .iter()
-                .flat_map(|vertex| vertex.normal.to_array()),
-        );
+        island.extend(own.island.iter().map(|&id| id + island_base));
+        cut_vertex.extend(own.vertex.iter().map(|&vertex| vertex + cut_count));
+        cut_count += own.vertex_count;
         positions.extend(own_positions);
         ranges.push(first..indices.len());
     }
     if indices.is_empty() {
         return Ok(out);
     }
+    let count = indices.len() / 3;
 
-    let flat: Vec<f32> = positions.iter().flat_map(|p| p.to_array()).collect();
-    let input = crate::xatlas::Input {
-        positions: &flat,
-        normals: &normals,
-        indices: &indices,
-        face_group: &island,
+    // The cut surface, its charts, and their layout.
+    let mut cut_positions = vec![Vec3::ZERO; cut_count as usize];
+    for (corner, &vertex) in cut_vertex.iter().enumerate() {
+        cut_positions[vertex as usize] = positions[indices[corner] as usize];
+    }
+    let triangles: Vec<[u32; 3]> = cut_vertex.as_chunks::<3>().0.to_vec();
+    let mesh = charts::CutMesh {
+        positions: &cut_positions,
+        triangles: &triangles,
+        island: &island,
     };
-    let charts = layout::chart_options(params.charts);
-    let pack = layout::pack_options(params, &positions, &indices);
-    // Whole islands may curve as far as they like (patch P3).
-    let whole_islands = params.charts == ChartGrowth::Islands;
-    let atlas = crate::xatlas::atlas(&input, &charts, &pack, whole_islands)?;
-
-    let corner_uv = match params.layout {
-        UvLayout::Atlas => layout::atlas_uvs(&atlas),
-        UvLayout::Tiled => {
-            let tiled = |atlas: &crate::xatlas::Output| {
-                layout::tiled_uvs(
-                    atlas,
-                    &positions,
-                    &indices,
-                    reference.as_deref(),
-                    params,
-                    pack.texels_per_unit,
-                )
-            };
-            let mut uvs = tiled(&atlas);
-            // An island that does not flatten in one piece — a band all the way
-            // round a cylinder, with no seam inside its face, flattens only as a
-            // ring — is cut where xatlas's own charting would cut it, where that
-            // stretches it clearly less. Only then: a whole island is the plan.
-            if whole_islands {
-                let before = layout::island_stretch(&positions, &indices, &island, &uvs);
-                let limit = params.island_stretch_limit;
-                if before.iter().any(|&stretch| stretch > limit) {
-                    let automatic = layout::chart_options(ChartGrowth::Automatic);
-                    let cut = tiled(&crate::xatlas::atlas(&input, &automatic, &pack, false)?);
-                    let after = layout::island_stretch(&positions, &indices, &island, &cut);
-                    for (face, &own) in island.iter().enumerate() {
-                        let own = own as usize;
-                        if before[own] > limit && after[own] + layout::CLEARLY_LESS < before[own] {
-                            uvs[face * 3..face * 3 + 3]
-                                .copy_from_slice(&cut[face * 3..face * 3 + 3]);
-                        }
-                    }
-                }
-            }
-            uvs
-        }
+    let settings = charts::Settings {
+        flattening: params.flattening,
+        max_stretch: params.max_stretch,
     };
+    let charts = charts::charts(&mesh, settings, cancel).ok_or_else(|| "cancelled".to_owned())?;
+    let corner_uv = layout::lay_out(
+        &charts,
+        count,
+        &positions,
+        &indices,
+        reference.as_deref(),
+        params,
+    )?;
     for (piece, range) in out.iter_mut().zip(ranges) {
         write_set(
             piece,

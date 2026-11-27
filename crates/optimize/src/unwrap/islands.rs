@@ -11,8 +11,15 @@
 //! when they meet sharper than the crease angle (when that is asked for), or
 //! when it is not shared by exactly two triangles.
 //!
-//! Islands are numbered in the order of their first triangle, so the numbering
-//! is a function of the piece alone.
+//! The same joins, made at the corners either end of each joined edge, number
+//! the cut surface's vertices: two corners share one only where a chain of
+//! joined edges round their position links them, so a seam that runs into an
+//! island and stops (a cylinder's slit) stays cut even though the island does
+//! not fall apart along it.
+//!
+//! Islands are numbered in the order of their first triangle, and vertices in
+//! the order of their first corner, so the numbering is a function of the piece
+//! alone.
 
 use std::collections::HashMap;
 
@@ -28,7 +35,20 @@ use crate::submesh::Submesh;
 /// by far less.
 pub(super) const REFERENCE_SEAM_GAP: f32 = 1.0e-4;
 
-/// One island id per triangle.
+/// A piece cut along its seams.
+pub(super) struct Cut {
+    /// Per triangle, its island.
+    pub island: Vec<u32>,
+    /// Per corner, its vertex in the cut surface: two corners share one only
+    /// where they are at one position and joined round it by edges no seam
+    /// runs along. Numbered in order of first corner.
+    pub vertex: Vec<u32>,
+    /// How many cut vertices there are.
+    pub vertex_count: u32,
+}
+
+/// Cut a piece along its seams: its islands, and its corners' vertices in the
+/// cut surface.
 pub(super) fn islands(
     piece: &Submesh,
     positions: &[Vec3],
@@ -36,7 +56,7 @@ pub(super) fn islands(
     key: SeamKey,
     params: &UnwrapParams,
     uv_sets: usize,
-) -> Vec<u32> {
+) -> Cut {
     let triangles = piece.indices.as_chunks::<3>().0;
 
     // Each vertex's position, as an id shared by every vertex there.
@@ -112,6 +132,15 @@ pub(super) fn islands(
     };
 
     let mut parent: Vec<u32> = (0..triangles.len() as u32).collect();
+    // Corners, joined as the triangles are: across each edge, the corners at
+    // either end of it.
+    let mut corner_parent: Vec<u32> = (0..piece.indices.len() as u32).collect();
+    let corner_at = |triangle: usize, at: u32| -> u32 {
+        let k = (0..3)
+            .find(|&k| point[triangles[triangle][k] as usize] == at)
+            .unwrap_or(0);
+        (triangle * 3 + k) as u32
+    };
     fn root(parent: &mut [u32], mut at: u32) -> u32 {
         while parent[at as usize] != at {
             parent[at as usize] = parent[parent[at as usize] as usize];
@@ -173,18 +202,41 @@ pub(super) fn islands(
                 // edge joined two islands first.
                 parent[x.max(y) as usize] = x.min(y);
             }
+            for at in [a, b] {
+                let (x, y) = (
+                    root(&mut corner_parent, corner_at(triangle, at)),
+                    root(&mut corner_parent, corner_at(other, at)),
+                );
+                if x != y {
+                    corner_parent[x.max(y) as usize] = x.min(y);
+                }
+            }
         }
     }
 
-    // Number the islands by their first triangle.
+    // Number the islands by their first triangle, the vertices by their first
+    // corner.
     let mut number: HashMap<u32, u32> = HashMap::new();
-    (0..triangles.len() as u32)
+    let island = (0..triangles.len() as u32)
         .map(|triangle| {
             let at = root(&mut parent, triangle);
             let next = number.len() as u32;
             *number.entry(at).or_insert(next)
         })
-        .collect()
+        .collect();
+    let mut number: HashMap<u32, u32> = HashMap::new();
+    let vertex = (0..piece.indices.len() as u32)
+        .map(|corner| {
+            let at = root(&mut corner_parent, corner);
+            let next = number.len() as u32;
+            *number.entry(at).or_insert(next)
+        })
+        .collect();
+    Cut {
+        island,
+        vertex,
+        vertex_count: number.len() as u32,
+    }
 }
 
 /// `-0.0` and `+0.0` as one position.

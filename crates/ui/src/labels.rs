@@ -16,10 +16,9 @@ use review_localization::Key;
 use review_log::Level;
 use review_model::{NodeKind, SkinningMethod};
 use review_optimize::{
-    AoQuality, AoTarget, BakeSource, ChartGrowth, ExportFileType, FbxFormat, Flattening,
-    GlbTangents, HierarchyMode, LodPackaging, NormalMode, NormalWeighting, RemeshDensity,
-    RemeshTopology, SeamSource, Shortfall, ShrinkwrapMethod, SimplifyAlgorithm, TargetMode,
-    UvLayout, VoxelTarget,
+    AoQuality, AoTarget, BakeSource, ExportFileType, FbxFormat, Flattening, GlbTangents,
+    HierarchyMode, LodPackaging, NormalMode, NormalWeighting, RemeshDensity, RemeshTopology,
+    SeamSource, Shortfall, ShrinkwrapMethod, SimplifyAlgorithm, TargetMode, UvLayout, VoxelTarget,
 };
 use review_render::{
     AlphaMode, BufferView, ChannelSelect, CheckerTexture, EnvironmentMap, GtaoQuality,
@@ -351,13 +350,6 @@ pub(crate) fn uv_layout(layout: UvLayout) -> Key {
     }
 }
 
-pub(crate) fn chart_growth(growth: ChartGrowth) -> Key {
-    match growth {
-        ChartGrowth::Islands => keys::ui_enums::CHARTS_ISLANDS,
-        ChartGrowth::Automatic => keys::ui_enums::CHARTS_AUTOMATIC,
-    }
-}
-
 pub(crate) fn flattening(flattening: Flattening) -> Key {
     match flattening {
         Flattening::MinimumStretch => keys::ui_enums::FLATTENING_MINIMUM_STRETCH,
@@ -544,9 +536,6 @@ mod tests {
         }
         for value in BakeSource::ALL {
             assert_resolves(bake_source(value));
-        }
-        for value in ChartGrowth::ALL {
-            assert_resolves(chart_growth(value));
         }
         for value in Flattening::ALL {
             assert_resolves(flattening(value));

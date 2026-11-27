@@ -1,6 +1,6 @@
 --- a/xatlas.cpp
 +++ b/xatlas.cpp
-@@ -53,6 +53,49 @@
+@@ -53,6 +53,31 @@
  #include <stdio.h>
  #include <string.h>
  
@@ -29,28 +29,10 @@
 +#define REVIEW_XATLAS_ORTHO_MAX_STRETCH 1.01f
 +// end review patch P2
 +
-+// review patch P3: chart growth stops at two things that split every island
-+// that curves far, even when told to grow over whole islands: a face whose
-+// normal is ~75 degrees or more from the chart's (1 - cos >= 0.707), and a face
-+// whose chart would fold over itself when projected onto its best-fit plane
-+// (a half cylinder does). Both are right for xatlas's own segmentation; for an
-+// island the seams already decided, the LSCM flattening and its own validity
-+// check (with the piecewise fallback) are the test. Both are per thread (xatlas
-+// runs on its caller's, single-threaded), set before each atlas by
-+// `review_xatlas_set_growth`; upstream's are 0.707 and checked.
-+static thread_local float review_xatlas_normal_limit = 0.707f;
-+static thread_local bool review_xatlas_check_projection = true;
-+extern "C" void review_xatlas_set_growth(float normal_limit, bool check_projection)
-+{
-+	review_xatlas_normal_limit = normal_limit;
-+	review_xatlas_check_projection = check_projection;
-+}
-+// end review patch P3
-+
  #ifndef XA_DEBUG
  #ifdef NDEBUG
  #define XA_DEBUG 0
-@@ -4114,10 +4157,21 @@
+@@ -4114,10 +4139,21 @@
  	NL_DELETE_ARRAY(c->coeff);
  }
  
@@ -73,25 +55,7 @@
  
  static void nlRowColumnSort(NLRowColumn* c)
  {
-@@ -5767,7 +5821,7 @@
- 			parameterizeChart(chart);
- 			for (uint32_t i = oldFaceCount; i < faceCount; i++)
- 				m_faceCharts[chart->faces[i]] = chart->id;
--			if (!isChartParameterizationValid(chart)) {
-+			if (review_xatlas_check_projection && !isChartParameterizationValid(chart)) { // review patch P3
- 				for (uint32_t i = oldFaceCount; i < faceCount; i++)
- 					m_faceCharts[chart->faces[i]] = -1;
- 				chart->faces.resize(oldFaceCount);
-@@ -5854,7 +5908,7 @@
- 		// Compute metrics.
- 		float cost = 0.0f;
- 		const float normalDeviation = computeNormalDeviationMetric(chart, face);
--		if (normalDeviation >= 0.707f) // ~75 degrees
-+		if (normalDeviation >= review_xatlas_normal_limit) // ~75 degrees upstream; review patch P3
- 			return FLT_MAX;
- 		cost += m_data.options.normalDeviationWeight * normalDeviation;
- 		// Penalize faces that cross seams, reward faces that close seams or reach boundaries.
-@@ -7285,7 +7339,7 @@
+@@ -7285,7 +7321,7 @@
  				m_quality.computeMetrics(m_unifiedMesh);
  				XA_PROFILE_END(parameterizeChartsEvaluateQuality)
  				// Use orthogonal parameterization if quality is acceptable.
@@ -100,3 +64,41 @@
  					m_type = ChartType::Ortho;
  			}
  			if (m_type == ChartType::LSCM) {
+@@ -8412,7 +8448,7 @@
+ 		// chartImage: result from conservative rasterization
+ 		// chartImageBilinear: chartImage plus any texels that would be sampled by bilinear filtering.
+ 		// chartImagePadding: either chartImage or chartImageBilinear depending on options, with a dilate filter applied options.padding times.
+-		// Rotated versions swap x and y.
++		// Rotated versions are turned a quarter (review patch P5).
+ 		BitImage chartImage, chartImageBilinear, chartImagePadding;
+ 		BitImage chartImageRotated, chartImageBilinearRotated, chartImagePaddingRotated;
+ 		UniformGrid2 boundaryEdgeGrid;
+@@ -8589,7 +8625,9 @@
+ 				Vector2 t = texcoord;
+ 				if (best_r) {
+ 					XA_DEBUG_ASSERT(options.rotateCharts);
+-					swap(t.x, t.y);
++					// review patch P5: a quarter turn, not a transpose (a mirror).
++					t = Vector2((float)chartImage.height() - texcoord.y, texcoord.x);
++					// end review patch P5
+ 				}
+ 				texcoord.x = best_x + t.x;
+ 				texcoord.y = best_y + t.y;
+@@ -8834,7 +8872,7 @@
+ 			setPixel:
+ 				dest->set(x, y);
+ 				if (destRotated)
+-					destRotated->set(y, x);
++					destRotated->set(destRotated->width() - 1 - y, x); // review patch P5
+ 			}
+ 		}
+ 	}
+@@ -8849,7 +8887,7 @@
+ 		auto args = (DrawTriangleCallbackArgs *)param;
+ 		args->chartBitImage->set(x, y);
+ 		if (args->chartBitImageRotated)
+-			args->chartBitImageRotated->set(y, x);
++			args->chartBitImageRotated->set(args->chartBitImageRotated->width() - 1 - y, x); // review patch P5
+ 		return true;
+ 	}
+ 

@@ -4,8 +4,8 @@
 //! `optimize` runs over the CAD kit's fine parts
 //! (`experiments/cad-kit/inputs`) and the committed fixtures,
 //! through stacks that between them take every floating-point path a run has —
-//! welding, both simplifiers, normals, the AO bake, the reorders, the remesher
-//! and the shrinkwrap — the kit once more as glb, written as glb, and every
+//! welding, both simplifiers, normals, the AO bake, the reorders, the remesher,
+//! the shrinkwrap and the unwrap — the kit once more as glb, written as glb, and every
 //! file written is hashed against
 //! `determinism.sha256`, which was recorded on another OS. A mismatch means this
 //! OS's compiler or maths library rounds something differently from the one
@@ -118,6 +118,14 @@ fn stacks() -> Vec<(&'static str, OptStack, Vec<&'static str>, Vec<&'static str>
         }
     }
 
+    // A fresh atlas with no seams given: xatlas's charts merged back by this
+    // repository's LSCM and as-rigid-as-possible flattening, then packed.
+    let mut unwrap = OptStack::default();
+    unwrap.push_op(OpKind::Unwrap(UnwrapParams {
+        reference_set: None,
+        ..UnwrapParams::default()
+    }));
+
     let everything = KIT.iter().chain(FIXTURES).copied().collect();
     let rebuildable = KIT
         .iter()
@@ -129,6 +137,15 @@ fn stacks() -> Vec<(&'static str, OptStack, Vec<&'static str>, Vec<&'static str>
         ("rebuild", rebuild, rebuildable, Vec::new()),
         // The glb writer, and custom attributes through every operation.
         ("glb", glb_chain, KIT_GLB.to_vec(), vec!["--format", "glb"]),
+        (
+            "unwrap",
+            unwrap,
+            vec![
+                "assets/test_models/monkey.fbx",
+                "assets/test_models/SM_Wall_Break_4x3m.fbx",
+            ],
+            Vec::new(),
+        ),
     ]
 }
 

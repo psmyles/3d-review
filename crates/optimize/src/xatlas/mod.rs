@@ -5,7 +5,7 @@
 mod ffi;
 
 #[cfg(has_xatlas)]
-pub(crate) use ffi::{ChartOptions, Input, NO_CHART, Output, PackOptions, atlas};
+pub(crate) use ffi::{PackOptions, pack};
 
 /// Whether this build has xatlas compiled in.
 pub(crate) const fn available() -> bool {

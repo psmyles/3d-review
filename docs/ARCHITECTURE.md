@@ -852,26 +852,40 @@ triangles because a simplify rebuilt it, an unmapped animation target, an export
 issued before the capture landed. Output is written in the source file's own
 unit (`UnitScale`), since import normalizes every file to meters.
 
-`unwrap/` is the Unwrap operation, over the vendored xatlas (`xatlas/`, whose
-`ffi.rs` is the only `unsafe`; `third_party/xatlas/NOTICE.txt` says what its three
-patches change and why). Per object, all its material pieces in one call:
-`islands.rs` cuts each piece's triangles into islands by a union-find over
-position-matched edges, the seams being a change of the seam key (a custom
-attribute's words, or a UV set's U rounded to the whole number an id is), a
-reference-UV gap over `REFERENCE_SEAM_GAP` (the simplifier refits each copy of a
-hard-edge vertex alone, so exact comparison over-cuts), a crease, and every
-border and non-manifold edge; the island ids are xatlas's per-face material, so
-no chart crosses one. With Charts on Islands, patch P3 lifts xatlas's chart-growth
-limits so a chart takes its whole island, and P2 keeps xatlas from settling for
-an orthogonal projection that stretches. `layout.rs` places the charts: an atlas
-straight from xatlas's packing; tiled, each chart refined as rigidly as possible
-(`arap.rs`, Liu et al. 2008: closed-form 2x2 rotations, a cotangent-Laplacian
-solve by Jacobi-preconditioned CG in `f64`) then scaled to the density by its
-area, turned by closed-form 2x2 Procrustes onto its reference UVs and centred
-there, or replaced by the reference UVs scaled to the density where those stretch
-less; an island whose mean stretch flattened whole is over
-`island_stretch_limit` (a band round a cylinder, which flattens whole only as a
-ring) takes xatlas's own charting instead where that is clearly less stretched.
+`unwrap/` is the Unwrap operation, a seams / unfold / layout pipeline of our
+own that uses the vendored xatlas only to pack (`xatlas/`, whose `ffi.rs` is
+the only `unsafe`; `third_party/xatlas/NOTICE.txt` says what its patches change
+and why). Per
+object, all its material pieces in one call. **Seams:** `islands.rs` cuts each
+piece by a union-find over position-matched edges, the seams being a change of
+the seam key (a custom attribute's words, or a UV set's U rounded to the whole
+number an id is), a reference-UV gap over `REFERENCE_SEAM_GAP` (the simplifier
+refits each copy of a hard-edge vertex alone, so exact comparison over-cuts), a
+crease, and every border and non-manifold edge; it numbers the islands and, by
+the same joins at the corners, the *cut vertices* (a seam inside an island, a
+cylinder's slit, stays cut). **Charts:** `charts.rs` tries each island whole;
+one that is not a disc, or will not flatten within `max_stretch`, is cut into
+atoms (triangles flooded out from a seed while their normals stay within 30
+degrees of its, at most 64; an atom that is not a disc starts as its triangles)
+and grown back greedily (Sander et al. 2001): the pair sharing the most of the
+smaller one's border first, kept when the union is a disc flattened without a fold, a self-crossing
+border, a mean stretch `max(σ₁, 1/σ₂)` over the limit or a triangle past ten
+times as far. A merge of up to `WHOLE_TEST_TRIANGLES` is flattened whole; a
+larger one holds the larger chart and flattens the smaller onto their one shared
+border path (two discs glued along one arc are a disc), so a test costs the
+smaller chart and a dense mesh merges in near-linear time. **Unfold:** LSCM
+(`lscm.rs`, Lévy et al. 2002, pinned, from a similarity-fitted projection) then,
+for minimum stretch, as-rigid-as-possible passes (`arap.rs`, Liu et al. 2008:
+closed-form 2x2 rotations), both on one Jacobi-preconditioned CG in `f64`
+(`solve.rs`) with iteration caps that grow with the chart; four passes while
+testing, the rest once a chart is kept; each chart scaled to its area. **Layout:**
+`layout.rs` packs the charts through xatlas's UV-mesh packer (`ffi::pack`, each
+chart its own "material" so none join, in texels so a tiny triangle is not
+dropped as zero-area), or tiles them: scaled to the density, turned by
+closed-form 2x2 Procrustes onto the reference UVs and centred there, or replaced
+by the reference scaled to the density where that stretches less; without a
+reference, packed apart at the density. Every chart winds counter-clockwise, as
+authored UVs do (patch P5 makes the packer's quarter turn a turn, not a mirror).
 The per-corner UVs go back through `Submesh::split_by_corner`, and a set past the
 model's last is added (assembly and the level's stats count it).
 
@@ -1330,8 +1344,8 @@ list of unsafe modules:
   launch hint and the startup window's show), `tracy_alloc.rs` (the `GlobalAlloc` wrapper). The marshallers are
   `deny`, and read only through `raw.rs`'s safe accessors.
 - `optimize`: `ffi.rs` + `meshopt/`, `export_ffi.rs` + `export/write.rs`,
-  `xatlas/ffi.rs` (the xatlas C API, its one checked call, and the `libm`
-  functions its patch calls back into), and the test-only `probe.rs`.
+  `xatlas/ffi.rs` (the xatlas C API, its one checked call - pack charts
+  flattened elsewhere - and the `libm` functions its patch calls back into), and the test-only `probe.rs`.
 - `render`: `rhi/backend/{d3d11,metal,vulkan}.rs` and the `extern "C"` logger callback
   in `rhi/sokol_log.rs`.
 - `shell-windows`: `com.rs` (the DLL exports and the class factory),
@@ -1622,7 +1636,7 @@ one settled.
 | D27 | The same input and settings write the same bytes: on every run, at any thread count and on every OS. Nothing written may depend on the clock (the FBX export pins every date to the Unix epoch), on `HashMap` order, or on how work fell across threads (`parallel.rs`'s fixed chunks), and nothing on the platform's maths library: a sine, arccosine, power or logarithm whose value reaches a file or a report goes through `review_model::exact` (the pure-Rust `libm` crate) rather than `f32::sin` and its kin, which call glibc, the Windows CRT or Apple's libm, free to round the last bit differently. The vendored C and C++ (ufbx, ufbx_write, meshoptimizer) build with `-ffp-contract=off` (MSVC: `/fp:precise`), so no compiler fuses `a * b + c` into one FMA - Clang's default on Apple Silicon - where another does not. Rust never fuses on its own. `review-cli`'s `tests/determinism.rs` runs `optimize` over the CAD kit and the fixtures and checks every file's SHA-256 against `tests/determinism.sha256`, recorded on one OS and checked on the others; a mismatch there is a rounding difference between two compilers or maths libraries, to be found and removed, not re-recorded. |
 | D28 | The renderer on Linux is sokol_gfx's **Vulkan** backend (1.3, plus `VK_EXT_descriptor_buffer`), on a third leaf, `rhi/backend/vulkan.rs` (over `ash`), twin of the other two — not GL. Its SPIR-V is compiled by glslang inside sokol-shdc when `scripts/gen-shaders` runs, into a reflection of its own (`generated/review_vk.rs`, the only one Linux compiles, so no other OS carries it), which keeps D4/D5's promises — a broken shader fails before the build and nothing compiles one at run time — with no blob for `build.rs` to make. The vendored sokol-rust's build script gains the backend (vendor/NOTICE.txt), since upstream's has none. A device is picked the way D3D11 falls back to WARP: discrete GPU, integrated, then a software rasterizer such as Mesa's lavapipe, which is also what renders on a machine with no GPU at all. sokol names no native image here, so the IBL bake's readback (D19) is unavailable and the bake stays a Windows job; the windowless backbuffer is an image of the leaf's own. HEIC / HEIF / AVIF decode only where fire-decode vendors libheif (Windows, macOS), and are reported unsupported on Linux until it vendors a Linux stack. |
 | D29 | **glTF is a first-class format, read in safe Rust** (`gltf` crate, `import/src/gltf/`) beside ufbx, into the same `ModelData`. Its application attributes (names starting `_`, any component type) are carried exactly as raw 32-bit words (`ModelData::custom_attributes`), never blended: the optimizer keeps them as a fixed-width table on every `Submesh` and in `row_ids`, so vertices that differ in one are never merged and the line between them is a seam the simplifier keeps; Remesh and Shrinkwrap give each new face the words of the source triangle nearest its centre, as they do its material. What glTF says that `ModelData` has no field for - `COLOR_0`'s stored type, extras, materials with their textures, each vertex as stored - is kept verbatim in `GltfSource` as text and numbers (invariant 10), for the glb writer to write back unchanged. The writer (`export/glb.rs`) writes an untouched vertex with the values the file stored rather than undoing the world bake and the V flip, neither of which is exact in floating point; so a glb through a stack that changes nothing reproduces itself byte for byte (`optimize/tests/glb_export.rs`), and the CAD parts Blender wrote come back with every triangle, attribute, transform and extra as they were. |
-| D30 | **UV unwrapping is xatlas, patched, behind our own islands and layout.** xatlas (MIT) charts, flattens (LSCM, with its own validity check and piecewise fallback) and packs; it is compiled single-threaded with `XA_DEBUG=0` and `NDEBUG` in every profile, its four transcendentals redirected to `libm` (patch P1) so its bytes are the same on every OS. Two more patches serve CAD islands: an orthogonal projection is kept only when all but exact (P2, upstream allows 10% stretch), and a per-thread switch lifts the chart-growth limits that split every island curving past ~75 degrees (P3). P4 fixes OpenNL's row comparator, which never returned a negative value: glibc's `qsort` sorted the solver's matrix rows with it anyway and MSVC's left some unsorted, so the rows were summed in another order and Windows wrote different UVs (the determinism test caught it on link and shell). The islands, the tiled layout (density, Procrustes alignment, keep-the-better) and the as-rigid-as-possible refinement are ours, in safe Rust. On the CAD kit, against Blender's minimum-stretch baseline (plan section 3): stretch p95 1.000 on every mechanical part's levels and 1.16-1.25 on the shell (Blender 1.26-1.33), density spread no wider anywhere; `optimize/tests/unwrap.rs` holds it. |
+| D30 | **UV unwrapping is our own pipeline; xatlas only packs.** Seams, segmentation, chart growth, flattening (LSCM, then as-rigid-as-possible) and the tiled layout are ours, in safe Rust, deterministic in `f64`; xatlas (MIT) packs the finished charts through its UV-mesh API. It is compiled single-threaded with `XA_DEBUG=0` and `NDEBUG` in every profile, its four transcendentals redirected to `libm` (patch P1) so its bytes are the same on every OS. P5 makes the packer's 90-degree option a rotation: it was a transpose, which mirrored a chart, and a mirrored chart flips its tangent space and paints backwards. P2 (an orthogonal projection kept only when all but exact) and P4 (OpenNL's row comparator, which never returned a negative value, so MSVC's `qsort` left rows unsorted and Windows wrote different UVs) sit on xatlas's own charting and LSCM, which the Unwrap no longer calls; P3, which let that charting grow whole islands, is withdrawn. xatlas's segmentation was the slow part and the poor one: 324 s on a 614,000-triangle scan, and 148 charts on the Suzanne test model, 95 of them slivers; merged back within a stretch limit from our own atoms, Suzanne is 22 islands, every triangle within 2:1. On the CAD kit, against Blender's minimum-stretch baseline (plan section 3): stretch p95 1.000 on every mechanical part's levels and 1.07-1.17 on the shell (Blender 1.26-1.33; xatlas's own islands were 1.16-1.25), density spread narrower everywhere; `optimize/tests/unwrap.rs` holds it. |
 | D31 | **`review3d-cli render` runs a separate render engine** (`crates/snapshot`, shipped as `review3d-render`; `review-snapshot` in a development build) found beside the CLI, passing its arguments through. Linking the renderer into the CLI would make every command load the GPU stack - on Linux, the Vulkan loader - so `optimize` on a headless build machine would need a library it never uses. The engine's messages are its own, in English, as the developer tool's always were; moving them into the CLI's catalog is the price of making it the CLI's own process, not yet paid. |
 
 The structural rules the decisions add up to:

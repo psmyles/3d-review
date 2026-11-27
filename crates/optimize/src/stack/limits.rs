@@ -109,8 +109,8 @@ pub const UNWRAP_CREASE_MAX: f32 = 179.0;
 pub const UNWRAP_RESOLUTION_MIN: u32 = 64;
 pub const UNWRAP_RESOLUTION_MAX: u32 = 16384;
 pub const UNWRAP_PADDING_MAX: u32 = 64;
-pub const UNWRAP_ISLAND_STRETCH_MIN: f32 = 1.0;
-pub const UNWRAP_ISLAND_STRETCH_MAX: f32 = 10.0;
+pub const UNWRAP_MAX_STRETCH_MIN: f32 = 1.0;
+pub const UNWRAP_MAX_STRETCH_MAX: f32 = 2.0;
 
 /// Bake Edge Wear: the angles in degrees, and the power on the ramp.
 pub const WEAR_ANGLE_MIN: f32 = 0.0;

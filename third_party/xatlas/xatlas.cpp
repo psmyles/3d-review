@@ -78,24 +78,6 @@ extern "C" float review_xatlas_atan2f(float y, float x);
 #define REVIEW_XATLAS_ORTHO_MAX_STRETCH 1.01f
 // end review patch P2
 
-// review patch P3: chart growth stops at two things that split every island
-// that curves far, even when told to grow over whole islands: a face whose
-// normal is ~75 degrees or more from the chart's (1 - cos >= 0.707), and a face
-// whose chart would fold over itself when projected onto its best-fit plane
-// (a half cylinder does). Both are right for xatlas's own segmentation; for an
-// island the seams already decided, the LSCM flattening and its own validity
-// check (with the piecewise fallback) are the test. Both are per thread (xatlas
-// runs on its caller's, single-threaded), set before each atlas by
-// `review_xatlas_set_growth`; upstream's are 0.707 and checked.
-static thread_local float review_xatlas_normal_limit = 0.707f;
-static thread_local bool review_xatlas_check_projection = true;
-extern "C" void review_xatlas_set_growth(float normal_limit, bool check_projection)
-{
-	review_xatlas_normal_limit = normal_limit;
-	review_xatlas_check_projection = check_projection;
-}
-// end review patch P3
-
 #ifndef XA_DEBUG
 #ifdef NDEBUG
 #define XA_DEBUG 0
@@ -5821,7 +5803,7 @@ private:
 			parameterizeChart(chart);
 			for (uint32_t i = oldFaceCount; i < faceCount; i++)
 				m_faceCharts[chart->faces[i]] = chart->id;
-			if (review_xatlas_check_projection && !isChartParameterizationValid(chart)) { // review patch P3
+			if (!isChartParameterizationValid(chart)) {
 				for (uint32_t i = oldFaceCount; i < faceCount; i++)
 					m_faceCharts[chart->faces[i]] = -1;
 				chart->faces.resize(oldFaceCount);
@@ -5908,7 +5890,7 @@ private:
 		// Compute metrics.
 		float cost = 0.0f;
 		const float normalDeviation = computeNormalDeviationMetric(chart, face);
-		if (normalDeviation >= review_xatlas_normal_limit) // ~75 degrees upstream; review patch P3
+		if (normalDeviation >= 0.707f) // ~75 degrees
 			return FLT_MAX;
 		cost += m_data.options.normalDeviationWeight * normalDeviation;
 		// Penalize faces that cross seams, reward faces that close seams or reach boundaries.
@@ -8466,7 +8448,7 @@ struct Atlas
 		// chartImage: result from conservative rasterization
 		// chartImageBilinear: chartImage plus any texels that would be sampled by bilinear filtering.
 		// chartImagePadding: either chartImage or chartImageBilinear depending on options, with a dilate filter applied options.padding times.
-		// Rotated versions swap x and y.
+		// Rotated versions are turned a quarter (review patch P5).
 		BitImage chartImage, chartImageBilinear, chartImagePadding;
 		BitImage chartImageRotated, chartImageBilinearRotated, chartImagePaddingRotated;
 		UniformGrid2 boundaryEdgeGrid;
@@ -8643,7 +8625,9 @@ struct Atlas
 				Vector2 t = texcoord;
 				if (best_r) {
 					XA_DEBUG_ASSERT(options.rotateCharts);
-					swap(t.x, t.y);
+					// review patch P5: a quarter turn, not a transpose (a mirror).
+					t = Vector2((float)chartImage.height() - texcoord.y, texcoord.x);
+					// end review patch P5
 				}
 				texcoord.x = best_x + t.x;
 				texcoord.y = best_y + t.y;
@@ -8888,7 +8872,7 @@ private:
 			setPixel:
 				dest->set(x, y);
 				if (destRotated)
-					destRotated->set(y, x);
+					destRotated->set(destRotated->width() - 1 - y, x); // review patch P5
 			}
 		}
 	}
@@ -8903,7 +8887,7 @@ private:
 		auto args = (DrawTriangleCallbackArgs *)param;
 		args->chartBitImage->set(x, y);
 		if (args->chartBitImageRotated)
-			args->chartBitImageRotated->set(y, x);
+			args->chartBitImageRotated->set(args->chartBitImageRotated->width() - 1 - y, x); // review patch P5
 		return true;
 	}
 

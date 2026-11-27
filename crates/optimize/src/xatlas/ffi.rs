@@ -1,9 +1,10 @@
 //! The vendored xatlas, through its C API (`third_party/xatlas/xatlas_c.h`):
 //! the raw declarations, the maths functions its patch calls back into, and
-//! [`atlas`], the one checked call the rest of the crate makes.
+//! [`pack`], the one checked call the rest of the crate makes: pack charts
+//! flattened elsewhere (the Unwrap operation segments and flattens its own).
 //!
 //! This is the crate's xatlas `unsafe` surface (invariant 9), and the only one:
-//! [`atlas`] validates every buffer and index before the call, owns the atlas
+//! [`pack`] validates every buffer and index before the call, owns the atlas
 //! for exactly as long as it reads it, and copies the output into owned
 //! vectors, re-checking each count and index against the input.
 //!
@@ -64,25 +65,17 @@ struct RawAtlas {
 const INDEX_FORMAT_UINT32: i32 = 1;
 const ADD_MESH_SUCCESS: i32 = 0;
 
-/// `xatlasMeshDecl`.
+/// `xatlasUvMeshDecl`.
 #[repr(C)]
-struct MeshDecl {
-    vertex_position_data: *const c_void,
-    vertex_normal_data: *const c_void,
+struct UvMeshDecl {
     vertex_uv_data: *const c_void,
     index_data: *const c_void,
-    face_ignore_data: *const bool,
     face_material_data: *const u32,
-    face_vertex_count: *const u8,
     vertex_count: u32,
-    vertex_position_stride: u32,
-    vertex_normal_stride: u32,
-    vertex_uv_stride: u32,
+    vertex_stride: u32,
     index_count: u32,
     index_offset: i32,
-    face_count: u32,
     index_format: i32,
-    epsilon: f32,
 }
 
 /// `xatlasChartOptions`.
@@ -122,14 +115,12 @@ pub(crate) struct PackOptions {
 unsafe extern "C" {
     fn xatlasCreate() -> *mut RawAtlas;
     fn xatlasDestroy(atlas: *mut RawAtlas);
-    fn xatlasAddMesh(atlas: *mut RawAtlas, decl: *const MeshDecl, mesh_count_hint: u32) -> i32;
+    fn xatlasAddUvMesh(atlas: *mut RawAtlas, decl: *const UvMeshDecl) -> i32;
     fn xatlasComputeCharts(atlas: *mut RawAtlas, options: *const ChartOptions);
     fn xatlasPackCharts(atlas: *mut RawAtlas, options: *const PackOptions);
-    fn xatlasMeshDeclInit(decl: *mut MeshDecl);
+    fn xatlasUvMeshDeclInit(decl: *mut UvMeshDecl);
     fn xatlasChartOptionsInit(options: *mut ChartOptions);
     fn xatlasPackOptionsInit(options: *mut PackOptions);
-    /// Patch P3's: the chart growth's limits, for this thread.
-    fn review_xatlas_set_growth(normal_limit: f32, check_projection: bool);
 }
 
 impl Default for ChartOptions {
@@ -185,85 +176,44 @@ pub extern "C" fn review_xatlas_atan2f(y: f32, x: f32) -> f32 {
     review_model::exact::atan2(y, x)
 }
 
-/// What [`atlas`] unwraps: a triangle mesh, and per face the group a chart may
-/// not leave (xatlas's "material").
-pub(crate) struct Input<'a> {
-    /// `x, y, z` per vertex.
-    pub positions: &'a [f32],
-    /// `x, y, z` per vertex, or empty.
-    pub normals: &'a [f32],
-    pub indices: &'a [u32],
-    pub face_group: &'a [u32],
-}
-
-/// One output vertex: the input vertex it came from, its chart ([`NO_CHART`]
-/// for a vertex of a face xatlas left out, such as one with no area), and its
-/// UV in the atlas's texels.
-pub(crate) const NO_CHART: u32 = u32::MAX;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct OutputVertex {
-    pub xref: u32,
-    pub chart: u32,
-    pub uv: [f32; 2],
-}
-
-/// The unwrapped mesh: the faces in input order, over new vertices (one input
-/// vertex is split wherever charts meet at it).
+/// Charts flattened elsewhere, packed: per vertex its UV in the atlas's texels
+/// (`None` for a vertex of no chart: one only zero-area faces use), and the
+/// atlas's size.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Output {
-    pub vertices: Vec<OutputVertex>,
-    pub indices: Vec<u32>,
-    pub chart_count: u32,
-    /// Per chart, how xatlas flattened it: 0 planar, 1 orthogonal projection,
-    /// 2 LSCM, 3 piecewise (an island it had to cut further), 4 invalid.
-    pub chart_kinds: Vec<i32>,
+pub(crate) struct Packed {
+    pub uvs: Vec<Option<[f32; 2]>>,
     pub width: u32,
     pub height: u32,
 }
 
-/// Chart, parameterize and pack `input`. `Err` says what was wrong with it, or
-/// what xatlas refused.
-/// `whole_islands` lifts the two limits xatlas's chart growth has beyond its
-/// costs (patch P3): a chart then grows over everything its face group allows,
-/// and only its flattening can split it.
-pub(crate) fn atlas(
-    input: &Input<'_>,
-    charts: &ChartOptions,
-    pack: &PackOptions,
-    whole_islands: bool,
-) -> Result<Output, String> {
-    let vertex_count = input.positions.len() / 3;
-    if !input.positions.len().is_multiple_of(3) || vertex_count == 0 {
-        return Err("no vertices".to_owned());
-    }
-    if !input.normals.is_empty() && input.normals.len() != input.positions.len() {
-        return Err("normals do not match the positions".to_owned());
-    }
-    if !input.indices.len().is_multiple_of(3) || input.indices.is_empty() {
+/// Pack charts already flattened: `uvs` per vertex, in texels (`texels_per_unit`
+/// in `options` should be 1), `indices` three per face, `chart` one per face.
+/// A face's chart keeps it apart from every other chart's, even where their
+/// UVs meet.
+pub(crate) fn pack(
+    uvs: &[[f32; 2]],
+    indices: &[u32],
+    chart: &[u32],
+    options: &PackOptions,
+) -> Result<Packed, String> {
+    let vertex_count = uvs.len();
+    if vertex_count == 0 || indices.is_empty() || !indices.len().is_multiple_of(3) {
         return Err("no whole triangles".to_owned());
     }
-    if input.face_group.len() != input.indices.len() / 3 {
-        return Err("one group per face is needed".to_owned());
+    if chart.len() != indices.len() / 3 {
+        return Err("one chart per face is needed".to_owned());
     }
-    if input
-        .indices
-        .iter()
-        .any(|&index| index as usize >= vertex_count)
-    {
+    if indices.iter().any(|&index| index as usize >= vertex_count) {
         return Err("an index addresses no vertex".to_owned());
     }
-    if input.positions.iter().any(|value| !value.is_finite()) {
-        return Err("a position is not finite".to_owned());
+    if uvs.iter().flatten().any(|value| !value.is_finite()) {
+        return Err("a UV is not finite".to_owned());
     }
-    let (Ok(vertex_count_u32), Ok(index_count_u32)) = (
-        u32::try_from(vertex_count),
-        u32::try_from(input.indices.len()),
-    ) else {
+    let (Ok(vertex_count_u32), Ok(index_count_u32)) =
+        (u32::try_from(vertex_count), u32::try_from(indices.len()))
+    else {
         return Err("too large for xatlas".to_owned());
     };
-    let mut charts = *charts;
-    charts.param_func = std::ptr::null();
 
     /// Destroys the atlas on every path out.
     struct Owned(*mut RawAtlas);
@@ -274,7 +224,6 @@ pub(crate) fn atlas(
             unsafe { xatlasDestroy(self.0) }
         }
     }
-
     // SAFETY: `xatlasCreate` takes nothing and returns a new atlas or null.
     let raw = unsafe { xatlasCreate() };
     if raw.is_null() {
@@ -282,102 +231,57 @@ pub(crate) fn atlas(
     }
     let owned = Owned(raw);
 
-    let mut decl = std::mem::MaybeUninit::<MeshDecl>::uninit();
-    // SAFETY: `xatlasMeshDeclInit` writes every field of the declaration.
+    let mut decl = std::mem::MaybeUninit::<UvMeshDecl>::uninit();
+    // SAFETY: `xatlasUvMeshDeclInit` writes every field of the declaration.
     let mut decl = unsafe {
-        xatlasMeshDeclInit(decl.as_mut_ptr());
+        xatlasUvMeshDeclInit(decl.as_mut_ptr());
         decl.assume_init()
     };
-    decl.vertex_position_data = input.positions.as_ptr().cast();
-    decl.vertex_position_stride = 12;
-    if !input.normals.is_empty() {
-        decl.vertex_normal_data = input.normals.as_ptr().cast();
-        decl.vertex_normal_stride = 12;
-    }
-    decl.index_data = input.indices.as_ptr().cast();
-    decl.index_format = INDEX_FORMAT_UINT32;
+    decl.vertex_uv_data = uvs.as_ptr().cast();
+    decl.vertex_stride = 8;
     decl.vertex_count = vertex_count_u32;
+    decl.index_data = indices.as_ptr().cast();
     decl.index_count = index_count_u32;
-    decl.face_material_data = input.face_group.as_ptr();
-
+    decl.index_format = INDEX_FORMAT_UINT32;
+    decl.face_material_data = chart.as_ptr();
     // SAFETY: every pointer in `decl` points into a slice that outlives the
-    // call, sized as its count says (checked above: positions and normals are
-    // `vertex_count * 3` floats, the indices `index_count` `u32`s all below
-    // `vertex_count`, the groups one per face); xatlas copies them before
-    // returning. `owned.0` is a live atlas.
-    let added = unsafe { xatlasAddMesh(owned.0, &decl, 1) };
+    // call, sized as its count says (checked above); xatlas copies them.
+    let added = unsafe { xatlasAddUvMesh(owned.0, &decl) };
     if added != ADD_MESH_SUCCESS {
-        return Err(format!("xatlas refused the mesh (error {added})"));
+        return Err(format!("xatlas refused the charts (error {added})"));
     }
-    // SAFETY: a live atlas holding one mesh, and option structs laid out as
-    // the C API's, with no parameterization callback. The limit is a plain
-    // thread-local store, read by the chart growth on this same thread.
+    let charts = ChartOptions::default();
+    // SAFETY: a live atlas holding one UV mesh, and option structs laid out as
+    // the C API's, with no parameterization callback.
     unsafe {
-        if whole_islands {
-            review_xatlas_set_growth(2.0, false);
-        } else {
-            review_xatlas_set_growth(0.707, true);
-        }
         xatlasComputeCharts(owned.0, &charts);
-        xatlasPackCharts(owned.0, pack);
+        xatlasPackCharts(owned.0, options);
     }
-
     // SAFETY: `owned.0` is live; after `xatlasPackCharts` its fields describe
     // `mesh_count` meshes, each with `vertex_count` vertices and `index_count`
     // indices, valid until the atlas is destroyed (which `owned` does after
     // this function has copied everything out).
     let atlas = unsafe { &*owned.0 };
-    if atlas.mesh_count != 1 || atlas.meshes.is_null() {
-        return Err("xatlas produced no mesh".to_owned());
+    if atlas.mesh_count != 1 || atlas.meshes.is_null() || atlas.atlas_count > 1 {
+        return Err("xatlas did not pack into one atlas".to_owned());
     }
     // SAFETY: `meshes` holds `mesh_count` (1) meshes.
     let mesh = unsafe { &*atlas.meshes };
-    if mesh.index_count as usize != input.indices.len() {
-        return Err("xatlas changed the face count".to_owned());
-    }
-    if mesh.vertex_array.is_null() || mesh.index_array.is_null() {
-        return Err("xatlas produced an empty mesh".to_owned());
-    }
-    // SAFETY: the arrays hold `vertex_count` vertices and `index_count`
-    // indices (xatlas's output contract), both non-null (checked).
-    let (raw_vertices, raw_indices) = unsafe {
-        (
-            std::slice::from_raw_parts(mesh.vertex_array, mesh.vertex_count as usize),
-            std::slice::from_raw_parts(mesh.index_array, mesh.index_count as usize),
-        )
-    };
-    let mut vertices = Vec::with_capacity(raw_vertices.len());
-    for vertex in raw_vertices {
-        if vertex.xref as usize >= vertex_count {
-            return Err("xatlas produced a vertex from no input vertex".to_owned());
-        }
-        vertices.push(OutputVertex {
-            xref: vertex.xref,
-            chart: u32::try_from(vertex.chart_index).unwrap_or(NO_CHART),
-            uv: vertex.uv,
-        });
-    }
-    if raw_indices
-        .iter()
-        .any(|&index| index as usize >= vertices.len())
+    if mesh.vertex_count as usize != vertex_count
+        || mesh.index_count as usize != indices.len()
+        || mesh.vertex_array.is_null()
     {
-        return Err("xatlas produced an index past its vertices".to_owned());
+        return Err("xatlas changed the charts' vertices".to_owned());
     }
-    let chart_kinds = if mesh.chart_array.is_null() {
-        Vec::new()
-    } else {
-        // SAFETY: `chart_array` holds `chart_count` charts (xatlas's output
-        // contract), non-null (checked).
-        unsafe { std::slice::from_raw_parts(mesh.chart_array, mesh.chart_count as usize) }
+    // SAFETY: the array holds `vertex_count` vertices (xatlas's output
+    // contract), non-null (checked).
+    let raw_vertices =
+        unsafe { std::slice::from_raw_parts(mesh.vertex_array, mesh.vertex_count as usize) };
+    Ok(Packed {
+        uvs: raw_vertices
             .iter()
-            .map(|chart| chart.kind)
-            .collect()
-    };
-    Ok(Output {
-        vertices,
-        indices: raw_indices.to_vec(),
-        chart_count: atlas.chart_count,
-        chart_kinds,
+            .map(|vertex| (vertex.chart_index >= 0).then_some(vertex.uv))
+            .collect(),
         width: atlas.width,
         height: atlas.height,
     })

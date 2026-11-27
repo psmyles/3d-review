@@ -10,7 +10,7 @@
 use review_labels::opt::{op_description, op_kind};
 use review_model::ModelData;
 use review_optimize::{
-    AoQuality, AoTarget, AttributeWeights, BakeAoParams, BakeSource, BakeWearParams, ChartGrowth,
+    AoQuality, AoTarget, AttributeWeights, BakeAoParams, BakeSource, BakeWearParams,
     ExportFileType, ExportOptions, FbxFormat, Flattening, GlbTangents, HierarchyMode, HullParams,
     LodLevel, LodPackaging, LodParams, NormalMode, NormalParams, NormalWeighting, OpKind,
     ReduceParams, RemeshDensity, RemeshParams, RemeshTopology, SeamSource, ShrinkwrapMethod,
@@ -38,10 +38,10 @@ use crate::state::{
         SHRINKWRAP_TARGET_RATIO_MIN, SHRINKWRAP_TARGET_TRIANGLES_MAX,
         SHRINKWRAP_TARGET_TRIANGLES_MIN, SHRINKWRAP_VOXEL_RESOLUTION_MAX,
         SHRINKWRAP_VOXEL_RESOLUTION_MIN, UNWRAP_CREASE_MAX, UNWRAP_CREASE_MIN, UNWRAP_DENSITY_MAX,
-        UNWRAP_DENSITY_MIN, UNWRAP_ISLAND_STRETCH_MAX, UNWRAP_ISLAND_STRETCH_MIN,
-        UNWRAP_PADDING_MAX, UNWRAP_RESOLUTION_MAX, UNWRAP_RESOLUTION_MIN, UV_SET_MAX,
-        VOLUME_CHANGE_MAX, VOLUME_CHANGE_MIN, WEAR_ANGLE_MAX, WEAR_ANGLE_MIN, WEAR_FALLOFF_MAX,
-        WEAR_FALLOFF_MIN, WELD_TOLERANCE_MAX, WELD_TOLERANCE_MIN,
+        UNWRAP_DENSITY_MIN, UNWRAP_MAX_STRETCH_MAX, UNWRAP_MAX_STRETCH_MIN, UNWRAP_PADDING_MAX,
+        UNWRAP_RESOLUTION_MAX, UNWRAP_RESOLUTION_MIN, UV_SET_MAX, VOLUME_CHANGE_MAX,
+        VOLUME_CHANGE_MIN, WEAR_ANGLE_MAX, WEAR_ANGLE_MIN, WEAR_FALLOFF_MAX, WEAR_FALLOFF_MIN,
+        WELD_TOLERANCE_MAX, WELD_TOLERANCE_MIN,
     },
 };
 use crate::theme;
@@ -561,9 +561,13 @@ fn remesh_params(ui: &mut egui::Ui, params: RemeshParams) -> Option<RemeshParams
     (edited != params).then_some(edited)
 }
 
-/// The Unwrap operation's settings. The seam choice lists what `model` carries:
-/// its custom attributes and its UV sets, plus whatever the settings name that
-/// it does not (a preset made for another model).
+/// The Unwrap operation's settings, in the order an unwrap runs and the way
+/// Blender's and Maya's unwrap options read: which UV map to write and which
+/// existing UVs to learn from, then where to cut (**Seams**), how to flatten
+/// (**Unfold**) and where the islands go (**Layout**). The attribute choice
+/// lists what `model` carries — its custom attributes and its UV sets — plus
+/// whatever the settings name that it does not (a preset made for another
+/// model).
 fn unwrap_params(
     ui: &mut egui::Ui,
     params: &UnwrapParams,
@@ -584,105 +588,93 @@ fn unwrap_params(
     }
 
     panel_grid(ui, "opt_unwrap", |ui| {
-        labeled_combo(
-            ui,
-            Tip::new(keys::ui_opt::UNWRAP_LAYOUT)
-                .describe(keys::ui_opt::UNWRAP_LAYOUT_DESCRIPTION)
-                .page(Page::OptUnwrap),
-            "opt_unwrap_layout",
-            labels::uv_layout(edited.layout),
-            |ui| {
-                for layout in UvLayout::ALL {
-                    ui.selectable_value(&mut edited.layout, layout, labels::uv_layout(layout));
-                }
-            },
-        );
         uv_set_row(
             ui,
-            Tip::new(keys::ui_opt::UNWRAP_TARGET_SET)
-                .describe(keys::ui_opt::UNWRAP_TARGET_SET_DESCRIPTION)
+            Tip::new(keys::ui_opt::UNWRAP_UV_MAP)
+                .describe(keys::ui_opt::UNWRAP_UV_MAP_DESCRIPTION)
                 .page(Page::OptUnwrap),
             "opt_unwrap_target_set",
             &mut edited.target_set,
             model,
             true,
         );
-        let mut referenced = edited.reference_set.is_some();
-        labeled_checkbox(
-            ui,
-            Tip::new(keys::ui_opt::UNWRAP_USE_REFERENCE)
-                .describe(keys::ui_opt::UNWRAP_USE_REFERENCE_DESCRIPTION)
-                .page(Page::OptUnwrap),
-            &mut referenced,
-        );
-        edited.reference_set = match (referenced, edited.reference_set) {
-            (true, Some(mut set)) => {
-                uv_set_row(
+        existing_uvs_row(ui, &mut edited.reference_set, model);
+    });
+    let existing = edited.reference_set.is_some();
+
+    unwrap_section(
+        ui,
+        keys::ui_opt::UNWRAP_SECTION_SEAMS,
+        "opt_unwrap_seams_section",
+        |ui| {
+            panel_grid(ui, "opt_unwrap_seams", |ui| {
+                if existing {
+                    labeled_checkbox(
+                        ui,
+                        Tip::new(keys::ui_opt::UNWRAP_KEEP_SEAMS)
+                            .describe(keys::ui_opt::UNWRAP_KEEP_SEAMS_DESCRIPTION)
+                            .page(Page::OptUnwrap),
+                        &mut edited.split_at_reference_seams,
+                    );
+                }
+                labeled_checkbox(
                     ui,
-                    Tip::new(keys::ui_opt::UNWRAP_REFERENCE_SET).page(Page::OptUnwrap),
-                    "opt_unwrap_reference_set",
-                    &mut set,
-                    model,
-                    false,
+                    Tip::new(keys::ui_opt::UNWRAP_SHARP_EDGES)
+                        .describe(keys::ui_opt::UNWRAP_SHARP_EDGES_DESCRIPTION)
+                        .page(Page::OptUnwrap),
+                    &mut edited.split_at_creases,
                 );
-                Some(set)
-            }
-            (true, None) => Some(0),
-            (false, _) => None,
-        };
-        labeled_combo(
-            ui,
-            Tip::new(keys::ui_opt::UNWRAP_SEAMS)
-                .describe(keys::ui_opt::UNWRAP_SEAMS_DESCRIPTION)
-                .page(Page::OptUnwrap),
-            "opt_unwrap_seams",
-            labels::seam_source(&edited.seams),
-            |ui| {
-                for seam in &seams {
-                    ui.selectable_value(&mut edited.seams, seam.clone(), labels::seam_source(seam));
+                if edited.split_at_creases {
+                    labeled_slider_with_value(
+                        ui,
+                        Tip::new(keys::ui_opt::UNWRAP_SHARP_ANGLE)
+                            .describe(keys::ui_opt::UNWRAP_SHARP_ANGLE_DESCRIPTION)
+                            .page(Page::OptUnwrap),
+                        &mut edited.crease_angle,
+                        UNWRAP_CREASE_MIN..=UNWRAP_CREASE_MAX,
+                        0,
+                    );
                 }
-            },
-        );
-        labeled_checkbox(
-            ui,
-            Tip::new(keys::ui_opt::UNWRAP_SPLIT_REFERENCE)
-                .describe(keys::ui_opt::UNWRAP_SPLIT_REFERENCE_DESCRIPTION)
-                .page(Page::OptUnwrap),
-            &mut edited.split_at_reference_seams,
-        );
-        labeled_checkbox(
-            ui,
-            Tip::new(keys::ui_opt::UNWRAP_SPLIT_CREASES).page(Page::OptUnwrap),
-            &mut edited.split_at_creases,
-        );
-        if edited.split_at_creases {
-            labeled_slider_with_value(
-                ui,
-                Tip::new(keys::ui_opt::NORMAL_CREASE_ANGLE).page(Page::OptUnwrap),
-                &mut edited.crease_angle,
-                UNWRAP_CREASE_MIN..=UNWRAP_CREASE_MAX,
-                0,
-            );
-        }
-        labeled_combo(
-            ui,
-            Tip::new(keys::ui_opt::UNWRAP_CHARTS)
-                .describe(keys::ui_opt::UNWRAP_CHARTS_DESCRIPTION)
-                .page(Page::OptUnwrap),
-            "opt_unwrap_charts",
-            labels::chart_growth(edited.charts),
-            |ui| {
-                for charts in ChartGrowth::ALL {
-                    ui.selectable_value(&mut edited.charts, charts, labels::chart_growth(charts));
-                }
-            },
-        );
-        match edited.layout {
-            UvLayout::Tiled => {
                 labeled_combo(
                     ui,
-                    Tip::new(keys::ui_opt::UNWRAP_FLATTENING)
-                        .describe(keys::ui_opt::UNWRAP_FLATTENING_DESCRIPTION)
+                    Tip::new(keys::ui_opt::UNWRAP_ATTRIBUTE)
+                        .describe(keys::ui_opt::UNWRAP_ATTRIBUTE_DESCRIPTION)
+                        .page(Page::OptUnwrap),
+                    "opt_unwrap_seams",
+                    labels::seam_source(&edited.seams),
+                    |ui| {
+                        for seam in &seams {
+                            ui.selectable_value(
+                                &mut edited.seams,
+                                seam.clone(),
+                                labels::seam_source(seam),
+                            );
+                        }
+                    },
+                );
+                labeled_slider_with_value(
+                    ui,
+                    Tip::new(keys::ui_opt::UNWRAP_MAX_STRETCH)
+                        .describe(keys::ui_opt::UNWRAP_MAX_STRETCH_DESCRIPTION)
+                        .page(Page::OptUnwrap),
+                    &mut edited.max_stretch,
+                    UNWRAP_MAX_STRETCH_MIN..=UNWRAP_MAX_STRETCH_MAX,
+                    2,
+                );
+            });
+        },
+    );
+
+    unwrap_section(
+        ui,
+        keys::ui_opt::UNWRAP_SECTION_UNFOLD,
+        "opt_unwrap_unfold_section",
+        |ui| {
+            panel_grid(ui, "opt_unwrap_unfold", |ui| {
+                labeled_combo(
+                    ui,
+                    Tip::new(keys::ui_opt::UNWRAP_METHOD)
+                        .describe(keys::ui_opt::UNWRAP_METHOD_DESCRIPTION)
                         .page(Page::OptUnwrap),
                     "opt_unwrap_flattening",
                     labels::flattening(edited.flattening),
@@ -696,62 +688,147 @@ fn unwrap_params(
                         }
                     },
                 );
-                if edited.charts == ChartGrowth::Islands {
-                    labeled_slider_with_value(
-                        ui,
-                        Tip::new(keys::ui_opt::UNWRAP_ISLAND_STRETCH)
-                            .describe(keys::ui_opt::UNWRAP_ISLAND_STRETCH_DESCRIPTION)
-                            .page(Page::OptUnwrap),
-                        &mut edited.island_stretch_limit,
-                        UNWRAP_ISLAND_STRETCH_MIN..=UNWRAP_ISLAND_STRETCH_MAX,
-                        2,
-                    );
+            });
+        },
+    );
+
+    unwrap_section(
+        ui,
+        keys::ui_opt::UNWRAP_SECTION_LAYOUT,
+        "opt_unwrap_layout_section",
+        |ui| {
+            panel_grid(ui, "opt_unwrap_layout", |ui| {
+                labeled_combo(
+                    ui,
+                    Tip::new(keys::ui_opt::UNWRAP_LAYOUT)
+                        .describe(keys::ui_opt::UNWRAP_LAYOUT_DESCRIPTION)
+                        .page(Page::OptUnwrap),
+                    "opt_unwrap_layout",
+                    labels::uv_layout(edited.layout),
+                    |ui| {
+                        for layout in UvLayout::ALL {
+                            ui.selectable_value(
+                                &mut edited.layout,
+                                layout,
+                                labels::uv_layout(layout),
+                            );
+                        }
+                    },
+                );
+                match edited.layout {
+                    UvLayout::Atlas => {
+                        labeled_log_slider_with_value(
+                            ui,
+                            Tip::new(keys::ui_opt::UNWRAP_TEXTURE_SIZE)
+                                .describe(keys::ui_opt::UNWRAP_TEXTURE_SIZE_DESCRIPTION)
+                                .page(Page::OptUnwrap),
+                            &mut edited.resolution,
+                            UNWRAP_RESOLUTION_MIN..=UNWRAP_RESOLUTION_MAX,
+                            0,
+                        );
+                        labeled_slider_with_value(
+                            ui,
+                            Tip::new(keys::ui_opt::UNWRAP_PADDING)
+                                .describe(keys::ui_opt::UNWRAP_PADDING_DESCRIPTION)
+                                .page(Page::OptUnwrap),
+                            &mut edited.padding,
+                            0..=UNWRAP_PADDING_MAX,
+                            0,
+                        );
+                        rotate_row(ui, &mut edited.rotate);
+                    }
+                    UvLayout::Tiled => {
+                        labeled_log_slider_with_value(
+                            ui,
+                            Tip::new(keys::ui_opt::UNWRAP_DENSITY)
+                                .describe(keys::ui_opt::UNWRAP_DENSITY_DESCRIPTION)
+                                .page(Page::OptUnwrap),
+                            &mut edited.density,
+                            UNWRAP_DENSITY_MIN..=UNWRAP_DENSITY_MAX,
+                            3,
+                        );
+                        if existing {
+                            labeled_checkbox(
+                                ui,
+                                Tip::new(keys::ui_opt::UNWRAP_ALIGN)
+                                    .describe(keys::ui_opt::UNWRAP_ALIGN_DESCRIPTION)
+                                    .page(Page::OptUnwrap),
+                                &mut edited.align_to_reference,
+                            );
+                        }
+                        if existing && edited.align_to_reference {
+                            labeled_checkbox(
+                                ui,
+                                Tip::new(keys::ui_opt::UNWRAP_KEEP_BETTER)
+                                    .describe(keys::ui_opt::UNWRAP_KEEP_BETTER_DESCRIPTION)
+                                    .page(Page::OptUnwrap),
+                                &mut edited.keep_better,
+                            );
+                        } else {
+                            rotate_row(ui, &mut edited.rotate);
+                        }
+                    }
                 }
-                labeled_log_slider_with_value(
-                    ui,
-                    Tip::new(keys::ui_opt::UNWRAP_DENSITY)
-                        .describe(keys::ui_opt::UNWRAP_DENSITY_DESCRIPTION)
-                        .page(Page::OptUnwrap),
-                    &mut edited.density,
-                    UNWRAP_DENSITY_MIN..=UNWRAP_DENSITY_MAX,
-                    3,
-                );
-                labeled_checkbox(
-                    ui,
-                    Tip::new(keys::ui_opt::UNWRAP_ALIGN)
-                        .describe(keys::ui_opt::UNWRAP_ALIGN_DESCRIPTION)
-                        .page(Page::OptUnwrap),
-                    &mut edited.align_to_reference,
-                );
-                labeled_checkbox(
-                    ui,
-                    Tip::new(keys::ui_opt::UNWRAP_KEEP_BETTER)
-                        .describe(keys::ui_opt::UNWRAP_KEEP_BETTER_DESCRIPTION)
-                        .page(Page::OptUnwrap),
-                    &mut edited.keep_better,
-                );
-            }
-            UvLayout::Atlas => {
-                labeled_log_slider_with_value(
-                    ui,
-                    Tip::new(keys::ui_opt::UNWRAP_RESOLUTION).page(Page::OptUnwrap),
-                    &mut edited.resolution,
-                    UNWRAP_RESOLUTION_MIN..=UNWRAP_RESOLUTION_MAX,
-                    0,
-                );
-                labeled_slider_with_value(
-                    ui,
-                    Tip::new(keys::ui_opt::UNWRAP_PADDING)
-                        .describe(keys::ui_opt::UNWRAP_PADDING_DESCRIPTION)
-                        .page(Page::OptUnwrap),
-                    &mut edited.padding,
-                    0..=UNWRAP_PADDING_MAX,
-                    0,
-                );
+            });
+        },
+    );
+    (edited != *params).then_some(edited)
+}
+
+/// One of the Unwrap's sections: a header that folds, open to start with.
+fn unwrap_section(
+    ui: &mut egui::Ui,
+    title: review_localization::Key,
+    salt: &str,
+    contents: impl FnOnce(&mut egui::Ui),
+) {
+    ui.add_space(size::PANEL_ROW_GAP);
+    egui::CollapsingHeader::new(title)
+        .id_salt(salt)
+        .default_open(true)
+        .show(ui, contents);
+}
+
+fn rotate_row(ui: &mut egui::Ui, rotate: &mut bool) {
+    labeled_checkbox(
+        ui,
+        Tip::new(keys::ui_opt::UNWRAP_ROTATE)
+            .describe(keys::ui_opt::UNWRAP_ROTATE_DESCRIPTION)
+            .page(Page::OptUnwrap),
+        rotate,
+    );
+}
+
+/// The existing UVs the unwrap learns from: none, or one of the model's sets
+/// (or one the stack names that the model lacks, so the dropdown never hides
+/// what the operation will do).
+fn existing_uvs_row(ui: &mut egui::Ui, reference: &mut Option<u32>, model: &ModelData) {
+    let count = (model.stats.uv_set_count as u32).min(UV_SET_MAX + 1);
+    let name = |set: Option<u32>| -> String {
+        match set {
+            None => review_localization::tr(keys::ui_opt::UNWRAP_EXISTING_NONE).into_owned(),
+            Some(set) => {
+                keys::ui_opt::unwrap_uv_set(f64::from(set), model.uv_set_label(set as usize))
             }
         }
-    });
-    (edited != *params).then_some(edited)
+    };
+    let mut choices: Vec<Option<u32>> = std::iter::once(None).chain((0..count).map(Some)).collect();
+    if !choices.contains(reference) {
+        choices.push(*reference);
+    }
+    labeled_combo(
+        ui,
+        Tip::new(keys::ui_opt::UNWRAP_EXISTING)
+            .describe(keys::ui_opt::UNWRAP_EXISTING_DESCRIPTION)
+            .page(Page::OptUnwrap),
+        "opt_unwrap_reference_set",
+        name(*reference),
+        |ui| {
+            for choice in choices {
+                ui.selectable_value(reference, choice, name(choice));
+            }
+        },
+    );
 }
 
 /// A UV set dropdown: each of the model's sets by its name, and, where a set

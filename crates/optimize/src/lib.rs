@@ -88,7 +88,7 @@ pub use stack::{
     ShrinkwrapMethod, ShrinkwrapParams, SimplifyAlgorithm, SimplifyFlags, SimplifySettings,
     StackRepairs, TargetMode, VoxelTarget, WeldParams,
 };
-pub use stack::{ChartGrowth, Flattening, SeamSource, UnwrapParams, UvLayout};
+pub use stack::{Flattening, SeamSource, UnwrapParams, UvLayout};
 
 /// Everything that can go wrong in this crate.
 #[derive(Debug, thiserror::Error)]

@@ -11,92 +11,61 @@
 //! Laplacian, solved by conjugate gradients). What comes out balances angle
 //! against area much as a minimum-stretch unwrap does.
 //!
-//! Everything is `f64`, with a fixed number of passes and iterations and only
-//! `sqrt`, so the result is the same on every machine.
+//! Everything is `f64`, with a fixed number of passes, iterations bounded by
+//! the chart's size and only `sqrt`, so the result is the same on every
+//! machine.
 
 use glam::{DVec2, Vec2, Vec3};
 
-/// Local/global passes.
-const PASSES: usize = 12;
-/// Conjugate-gradient iterations per solve, at most.
-const ITERATIONS: usize = 400;
+use super::element::elements;
+use super::solve::{Sparse, conjugate_gradients};
+
+/// Local/global passes a chart is refined with, in all.
+pub(super) const PASSES: usize = 12;
+/// Conjugate-gradient iterations per solve for a chart of `n` vertices, at
+/// most: each solve starts from the last pass's answer, so few are needed.
+fn iterations(n: usize) -> usize {
+    ((8.0 * (n as f64).sqrt()) as usize).clamp(50, 400)
+}
 
 /// Refine `uvs` (one per chart vertex) for the chart's `triangles` (indices into
-/// `points` and `uvs`, which are parallel). A chart too small or too degenerate
-/// to refine is left as it is.
-pub(super) fn refine(points: &[Vec3], triangles: &[[u32; 3]], uvs: &mut [Vec2]) {
+/// `points` and `uvs`, which are parallel) over `passes` local/global passes,
+/// the vertices `held` marks held where they are (or, with none given, vertex
+/// 0, which fixes the translation the energy cannot see). A chart too small or
+/// too degenerate to refine is left as it is.
+pub(super) fn refine(
+    points: &[Vec3],
+    triangles: &[[u32; 3]],
+    uvs: &mut [Vec2],
+    passes: usize,
+    held: Option<&[bool]>,
+) {
     let n = uvs.len();
     if n < 3 || triangles.is_empty() {
         return;
     }
-    // Each triangle in its own plane: area, and the gradients of its three
-    // barycentric functions (what turns its UVs into its 2x2 map).
-    struct Element {
-        corners: [usize; 3],
-        area: f64,
-        gradients: [DVec2; 3],
-    }
-    let mut elements = Vec::with_capacity(triangles.len());
-    for corners in triangles {
-        let [a, b, c] = corners.map(|corner| points[corner as usize].as_dvec3());
-        let (e1, e2) = (b - a, c - a);
-        let normal = e1.cross(e2);
-        let (Some(x), Some(n_hat)) = (e1.try_normalize(), normal.try_normalize()) else {
-            continue;
-        };
-        let y = n_hat.cross(x);
-        let (p00, p01, p10, p11) = (e1.dot(x), e2.dot(x), e1.dot(y), e2.dot(y));
-        let det = p00 * p11 - p01 * p10;
-        if det.abs() <= 1.0e-30 {
-            continue;
-        }
-        // Rows of P^-1, with P's columns the triangle's two edges.
-        let m0 = DVec2::new(p11, -p01) / det;
-        let m1 = DVec2::new(-p10, p00) / det;
-        elements.push(Element {
-            corners: corners.map(|corner| corner as usize),
-            area: 0.5 * normal.length(),
-            gradients: [-(m0 + m1), m0, m1],
-        });
-    }
+    let elements = elements(points, triangles);
     if elements.is_empty() {
         return;
     }
 
-    // The system's matrix, as per-row (column, value) lists; vertex 0 is held
-    // where it is, which fixes the translation the energy cannot see.
-    let mut rows: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
-    let mut add = |i: usize, j: usize, value: f64| match rows[i]
-        .iter_mut()
-        .find(|(column, _)| *column == j)
-    {
-        Some((_, existing)) => *existing += value,
-        None => rows[i].push((j, value)),
-    };
+    let mut matrix = Sparse::new(n);
     for element in &elements {
         for i in 0..3 {
             for j in 0..3 {
                 let value = element.area * element.gradients[i].dot(element.gradients[j]);
-                add(element.corners[i], element.corners[j], value);
+                matrix.add(element.corners[i], element.corners[j], value);
             }
         }
     }
-    for row in &mut rows {
-        row.sort_unstable_by_key(|(column, _)| *column);
-    }
-    let diagonal: Vec<f64> = rows
-        .iter()
-        .enumerate()
-        .map(|(i, row)| {
-            row.iter()
-                .find(|(column, _)| *column == i)
-                .map_or(1.0, |(_, value)| value.max(1.0e-30))
-        })
-        .collect();
+    matrix.finish();
+    let fixed: Vec<bool> = match held {
+        Some(held) if held.iter().any(|&held| held) => held.to_vec(),
+        _ => (0..n).map(|vertex| vertex == 0).collect(),
+    };
 
     let mut current: Vec<DVec2> = uvs.iter().map(|uv| uv.as_dvec2()).collect();
-    let pinned = current[0];
-    for _ in 0..PASSES {
+    for _ in 0..passes {
         // Local: each triangle's nearest rotation.
         let rotations: Vec<[DVec2; 2]> = elements
             .iter()
@@ -127,8 +96,7 @@ pub(super) fn refine(points: &[Vec3], triangles: &[[u32; 3]], uvs: &mut [Vec2]) 
                 }
             }
             let mut x: Vec<f64> = current.iter().map(|uv| uv[axis]).collect();
-            let pin = pinned[axis];
-            solve(&rows, &diagonal, &rhs, &mut x, pin);
+            conjugate_gradients(&matrix, &rhs, &mut x, &fixed, iterations(n));
             for (uv, value) in current.iter_mut().zip(&x) {
                 uv[axis] = *value;
             }
@@ -138,74 +106,6 @@ pub(super) fn refine(points: &[Vec3], triangles: &[[u32; 3]], uvs: &mut [Vec2]) 
         for (uv, refined) in uvs.iter_mut().zip(&current) {
             *uv = refined.as_vec2();
         }
-    }
-}
-
-/// Jacobi-preconditioned conjugate gradients on `rows x = rhs`, with `x[0]`
-/// held at `pin`. Starts from `x` as given.
-fn solve(rows: &[Vec<(usize, f64)>], diagonal: &[f64], rhs: &[f64], x: &mut [f64], pin: f64) {
-    let n = x.len();
-    x[0] = pin;
-    let multiply = |v: &[f64], out: &mut [f64]| {
-        for (i, row) in rows.iter().enumerate() {
-            out[i] = if i == 0 {
-                0.0
-            } else {
-                row.iter()
-                    .filter(|(column, _)| *column != 0)
-                    .map(|&(column, value)| value * v[column])
-                    .sum()
-            };
-        }
-    };
-    // The pinned vertex's column moves to the right-hand side.
-    let mut b = vec![0.0f64; n];
-    for (i, row) in rows.iter().enumerate().skip(1) {
-        let pinned: f64 = row
-            .iter()
-            .filter(|(column, _)| *column == 0)
-            .map(|&(_, value)| value * pin)
-            .sum();
-        b[i] = rhs[i] - pinned;
-    }
-    let mut ax = vec![0.0f64; n];
-    multiply(x, &mut ax);
-    let mut r: Vec<f64> = (0..n)
-        .map(|i| if i == 0 { 0.0 } else { b[i] - ax[i] })
-        .collect();
-    let mut z: Vec<f64> = (0..n).map(|i| r[i] / diagonal[i]).collect();
-    let mut p = z.clone();
-    let mut rz: f64 = (0..n).map(|i| r[i] * z[i]).sum();
-    let scale: f64 = b
-        .iter()
-        .map(|value| value * value)
-        .sum::<f64>()
-        .max(1.0e-60);
-    let mut ap = vec![0.0f64; n];
-    for _ in 0..ITERATIONS {
-        if rz.abs() <= 1.0e-24 * scale {
-            break;
-        }
-        multiply(&p, &mut ap);
-        let pap: f64 = (0..n).map(|i| p[i] * ap[i]).sum();
-        if pap <= 0.0 {
-            break;
-        }
-        let alpha = rz / pap;
-        for i in 1..n {
-            x[i] += alpha * p[i];
-            r[i] -= alpha * ap[i];
-        }
-        for i in 1..n {
-            z[i] = r[i] / diagonal[i];
-        }
-        let next: f64 = (0..n).map(|i| r[i] * z[i]).sum();
-        let beta = next / rz;
-        rz = next;
-        for i in 1..n {
-            p[i] = z[i] + beta * p[i];
-        }
-        p[0] = 0.0;
     }
 }
 
@@ -234,7 +134,7 @@ mod tests {
             triangles.push([a, c, b]);
             triangles.push([b, c, d]);
         }
-        refine(&points, &triangles, &mut uvs);
+        refine(&points, &triangles, &mut uvs, PASSES, None);
         for corners in &triangles {
             let p = corners.map(|corner| points[corner as usize]);
             let q = corners.map(|corner| uvs[corner as usize]);

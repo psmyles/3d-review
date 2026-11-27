@@ -59,12 +59,12 @@ labels-opt-op-simplify-lod = Generate LODs
         to show at a distance. Each level is made from the model as it stands at this
         point in the list.
 labels-opt-op-unwrap = Unwrap UVs
-    .description = Makes a fresh set of UVs. The surface is cut into islands where the
-        settings say (a custom attribute such as a CAD face id, the existing UV seams, sharp
-        edges) and always between materials; each island is flattened, then either laid out
-        at one texel density and turned to lie as the old UVs did, for textures that repeat,
-        or packed into the square without overlapping, for baking. Runs on every level when
-        it comes after Generate LODs. Does not change the shape.
+    .description = Makes a fresh set of UVs, as an unwrap in Blender or Maya does. The
+        surface is cut into islands where the seam settings say, and further wherever an
+        island would stretch more than the limit; each island is flattened, then packed into
+        the square without overlapping, for baking, or laid out at one texel density, for
+        textures that repeat. Runs on every level when it comes after Generate LODs. Does
+        not change the shape.
 labels-opt-op-bake-ao = Bake AO to Vertex Colors
     .description = Works out how much light reaches each point of the model and stores it
         as a color on that point. Objects whose names end in _LOD and a number are shaded

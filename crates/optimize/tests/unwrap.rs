@@ -11,7 +11,7 @@ use std::path::Path;
 use glam::{Vec2, Vec3};
 use review_model::ModelData;
 use review_optimize::{
-    ChartGrowth, LodLevel, LodParams, OpKind, OptStack, ReduceParams, SeamSource, SimplifyFlags,
+    LodLevel, LodParams, OpKind, OptStack, ReduceParams, SeamSource, SimplifyFlags,
     SimplifySettings, TargetMode, UnwrapParams, UvLayout,
 };
 
@@ -203,7 +203,6 @@ fn an_atlas_fills_the_unit_square_in_its_own_set() {
     stack.push_op(OpKind::Unwrap(UnwrapParams {
         layout: UvLayout::Atlas,
         target_set: 1,
-        charts: ChartGrowth::Automatic,
         ..UnwrapParams::default()
     }));
     let result = common::run(&model, &stack);
@@ -234,4 +233,124 @@ fn an_atlas_fills_the_unit_square_in_its_own_set() {
             .map(|vertex| vertex.uv)
             .collect::<Vec<_>>()
     );
+}
+
+/// Whether two UV triangles overlap: an edge of one crosses an edge of the
+/// other, or one's centre is inside the other.
+fn triangles_overlap(a: [Vec2; 3], b: [Vec2; 3]) -> bool {
+    let side = |p: Vec2, q: Vec2, r: Vec2| (q - p).perp_dot(r - p);
+    let crosses = |p: Vec2, q: Vec2, r: Vec2, s: Vec2| {
+        let eps = 1.0e-9;
+        let (d1, d2) = (side(r, s, p), side(r, s, q));
+        let (d3, d4) = (side(p, q, r), side(p, q, s));
+        ((d1 > eps && d2 < -eps) || (d1 < -eps && d2 > eps))
+            && ((d3 > eps && d4 < -eps) || (d3 < -eps && d4 > eps))
+    };
+    let inside = |p: Vec2, t: [Vec2; 3]| {
+        let sign = side(t[0], t[1], t[2]).signum();
+        (0..3).all(|k| side(t[k], t[(k + 1) % 3], p) * sign > 1.0e-9)
+    };
+    (0..3).any(|i| (0..3).any(|j| crosses(a[i], a[(i + 1) % 3], b[j], b[(j + 1) % 3])))
+        || inside((a[0] + a[1] + a[2]) / 3.0, b)
+        || inside((b[0] + b[1] + b[2]) / 3.0, a)
+}
+
+/// An organic model with no seams worth keeping (Blender's Suzanne,
+/// flat-shaded, so every face has vertices of its own) unwraps into a few
+/// islands — not the hundred-odd slivers xatlas's segmentation leaves — none
+/// overlapping, none folded, all wound one way, every triangle within the
+/// stretch the limit allows.
+#[test]
+fn an_organic_model_unwraps_into_few_clean_islands() {
+    let Some(model) = common::fixture("monkey.fbx") else {
+        return;
+    };
+    let mut stack = OptStack::default();
+    stack.push_op(OpKind::Unwrap(UnwrapParams {
+        reference_set: None,
+        ..UnwrapParams::default()
+    }));
+    let result = common::run(&model, &stack);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    let level = &result.lods[0].model;
+    let count = level.indices.len() / 3;
+    let corners = |triangle: usize| &level.indices[triangle * 3..triangle * 3 + 3];
+    let uvs: Vec<[Vec2; 3]> = (0..count)
+        .map(|triangle| {
+            corners(triangle)
+                .iter()
+                .map(|&corner| level.uv_for_channel(corner as usize, 0))
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap()
+        })
+        .collect();
+
+    for uv in uvs.iter().flatten() {
+        assert!(
+            (0.0..=1.0).contains(&uv.x) && (0.0..=1.0).contains(&uv.y),
+            "{uv} is outside the square"
+        );
+    }
+    for (triangle, uv) in uvs.iter().enumerate() {
+        let area = (uv[1] - uv[0]).perp_dot(uv[2] - uv[0]);
+        assert!(
+            area > 0.0,
+            "triangle {triangle} is folded or wound the other way"
+        );
+    }
+
+    // Islands: triangles joined by an edge with the same positions and UVs.
+    let key = |corner: u32| {
+        let vertex = corner as usize;
+        let p = level.vertices[vertex].position;
+        let uv = level.uv_for_channel(vertex, 0);
+        [p.x, p.y, p.z, uv.x, uv.y].map(f32::to_bits)
+    };
+    let mut parent: Vec<usize> = (0..count).collect();
+    fn root(parent: &mut [usize], mut at: usize) -> usize {
+        while parent[at] != at {
+            parent[at] = parent[parent[at]];
+            at = parent[at];
+        }
+        at
+    }
+    let mut first: std::collections::HashMap<[u32; 5], usize> = Default::default();
+    for triangle in 0..count {
+        for &corner in corners(triangle) {
+            let other = *first.entry(key(corner)).or_insert(triangle);
+            let (x, y) = (root(&mut parent, triangle), root(&mut parent, other));
+            parent[x] = y;
+        }
+    }
+    let island: Vec<usize> = (0..count)
+        .map(|triangle| root(&mut parent, triangle))
+        .collect();
+    let islands: std::collections::HashSet<usize> = island.iter().copied().collect();
+    assert!(islands.len() <= 40, "{} islands", islands.len());
+
+    for a in 0..count {
+        for b in a + 1..count {
+            let touching = (0..3).any(|i| (0..3).any(|j| uvs[a][i] == uvs[b][j]));
+            if touching && island[a] == island[b] {
+                continue;
+            }
+            assert!(
+                !triangles_overlap(uvs[a], uvs[b]),
+                "triangles {a} and {b} overlap"
+            );
+        }
+    }
+
+    let (stretch, _, _) = measure(level);
+    assert!(stretch < 1.35, "stretch p95 {stretch}");
+    for (triangle, uv) in uvs.iter().enumerate() {
+        let p = corners(triangle)
+            .iter()
+            .map(|&corner| level.vertices[corner as usize].position)
+            .collect::<Vec<Vec3>>();
+        if let Some(stretch) = review_model::measure::uv_stretch([p[0], p[1], p[2]], *uv) {
+            assert!(stretch < 2.05, "triangle {triangle} stretches {stretch}");
+        }
+    }
 }

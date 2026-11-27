@@ -688,10 +688,10 @@ impl OpKind {
                     .clamp(UNWRAP_RESOLUTION_MIN, UNWRAP_RESOLUTION_MAX);
                 params.padding = params.padding.min(UNWRAP_PADDING_MAX);
                 fit(
-                    &mut params.island_stretch_limit,
-                    UNWRAP_ISLAND_STRETCH_MIN,
-                    UNWRAP_ISLAND_STRETCH_MAX,
-                    default.island_stretch_limit,
+                    &mut params.max_stretch,
+                    UNWRAP_MAX_STRETCH_MIN,
+                    UNWRAP_MAX_STRETCH_MAX,
+                    default.max_stretch,
                 );
             }
             OpKind::BakeAo(params) => {

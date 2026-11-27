@@ -44,8 +44,12 @@ P2  An orthogonal projection of a chart is kept only when it is all but exact
     (`REVIEW_XATLAS_ORTHO_STRETCH`, `REVIEW_XATLAS_ORTHO_MAX_STRETCH`); the rest
     are flattened by LSCM.
 
-P3  Chart growth's normal-deviation limit and its parameterization check are
-    set per thread (`review_xatlas_set_growth`), so islands can be grown whole.
+P3  (Withdrawn 2026-11-27.) Chart growth's limits were set per thread so islands
+    could be grown whole. The Unwrap operation now segments and grows its
+    charts itself (`crates/optimize/src/unwrap/charts.rs`) and calls only
+    xatlas's packer, so the patch was taken out and those lines are upstream's
+    again. P2 and P4 are on xatlas's charting and LSCM, which the crate no
+    longer calls; they stay, so a refresh does not have to work them out again.
 
 P4  OpenNL's `nlCoeffCompare`, the comparator the solver's `qsort` sorts each
     matrix row with, returned 1 or 0 and never a negative value. glibc's sort
@@ -57,3 +61,13 @@ P4  OpenNL's `nlCoeffCompare`, the comparator the solver's `qsort` sorts each
     Modified by the 3D Review project on 2026-11-27, for the reason above. This
     change is to OpenNL's own code (BSD 3-Clause, Copyright (c) 2004-2010, Bruno
     Levy).
+
+P5  Packing's "rotate charts" option placed a chart turned by transposing it
+    (swapping U and V), which is a mirror, not a turn. A mirrored chart winds
+    the other way: its tangent space flips and a texture painted on it reads
+    backwards. The rotated bitmaps and the placed coordinates are now a quarter
+    turn, (x, y) to (h - y, x) within the chart's image, so every chart keeps
+    the winding it was flattened with.
+
+    Modified by the 3D Review project on 2026-11-27, for the reason above (the
+    modified lines are not in OpenNL's own code).
