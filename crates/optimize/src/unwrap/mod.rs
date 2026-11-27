@@ -10,12 +10,18 @@
 //! numbered on from the last's. Within a piece, [`islands`] cuts the triangles
 //! into islands along the seams the settings name (a seam attribute such as
 //! `_CAD_FACE`, the reference UVs' own seams, sharp edges) and along open and
-//! non-manifold edges, and numbers the cut surface's vertices.
+//! non-manifold edges, and numbers the cut surface's vertices. It never cuts
+//! inside a source polygon, and numbers the polygons so nothing later does.
 //!
 //! [`charts`] then makes each island into as few charts as flatten within the
-//! stretch limit: the island whole where it can be, otherwise small, nearly
-//! flat pieces of it merged back greedily. Each chart is flattened by [`lscm`]
-//! and, for minimum stretch, refined by [`arap`], and comes out in model units.
+//! stretch limit, **placing seams** rather than growing charts ([`cuts`]): the
+//! island whole where it can be; a closed or handled one opened; then
+//! branches run in from where it stretches most along the cheapest paths
+//! ([`paths`]) — cheapest along creases, hollows, crevices and the reference
+//! UVs' seams ([`cost`]) — and the island split only when they cannot bring it
+//! within the limit, or a flap of it lies over the rest. [`surface`] is the
+//! island as the planner sees it; [`flatten`] flattens and judges one chart,
+//! by [`lscm`] and, for minimum stretch, [`arap`], in model units.
 //!
 //! [`layout`] places the charts. **Atlas** (Pack into 0-1): xatlas's packer,
 //! scaled into the square. **Tiled**: each chart at the texel density, turned
@@ -29,12 +35,14 @@
 //!
 //! ## Determinism
 //!
-//! The segmentation and flattening are this crate's own: `f64` with bounded
-//! iterations, the merge's order and maps all ordered. xatlas only packs, and
-//! is compiled single-threaded with its transcendentals on `libm`
-//! (`third_party/xatlas/NOTICE.txt`). The objects run
-//! in parallel, each on its own, and land in slots merged in object order.
-//! Island, chart and vertex numbering follow triangle order.
+//! The seam planning and flattening are this crate's own: `f64` with bounded
+//! iterations, every search with its ties broken by index, every map only
+//! looked up. xatlas only packs, and is compiled single-threaded with its
+//! transcendentals on `libm` (`third_party/xatlas/NOTICE.txt`). The objects
+//! run in parallel, each on its own, and land in slots merged in object order;
+//! within one, its islands run side by side on its share of the cores, each a
+//! function of its island alone. Island, chart and vertex numbering follow
+//! triangle order.
 
 use glam::{Vec2, Vec3};
 use review_model::ModelData;
@@ -42,16 +50,22 @@ use review_model::ModelData;
 use crate::Warnings;
 use crate::notice::OptWarning;
 use crate::process::{RunContext, is_excluded, resolve_op};
+use crate::remesh::nodes::ThreadBudget;
 use crate::stack::{OpInstance, OpKind, OptStack, SeamSource, UnwrapParams};
 use crate::submesh::Submesh;
 
 mod arap;
 mod charts;
+mod cost;
+mod cuts;
 mod element;
+mod flatten;
 mod islands;
 mod layout;
 mod lscm;
+mod paths;
 mod solve;
+mod surface;
 #[cfg(test)]
 mod tests;
 
@@ -159,12 +173,17 @@ pub(crate) fn unwrap_submeshes(
     let mut last_preview: Option<std::time::Instant> = None;
     let mut landed = 0;
     let token = run.token();
+    // An object's islands run side by side on its share of the cores, which
+    // grows as the objects around it finish.
+    let budget = ThreadBudget::for_jobs(jobs.len());
     crate::parallel::solve_nodes(
         &jobs,
         token,
         |(members, params, key), _: &dyn Fn(())| {
             let own: Vec<&Submesh> = members.iter().map(|&at| &pieces[at]).collect();
-            unwrap_node(&own, params, *key, uv_sets, token)
+            let result = unwrap_node(&own, params, *key, uv_sets, budget.now(), token);
+            budget.finished_one();
+            result
         },
         |index, result| {
             results[index] = Some(result);
@@ -230,14 +249,18 @@ pub(crate) fn unwrap_node(
     params: &UnwrapParams,
     key: SeamKey,
     uv_sets: usize,
+    threads: usize,
     cancel: Option<&crate::cancel::CancelToken>,
 ) -> Result<Vec<Submesh>, String> {
     let mut out: Vec<Submesh> = pieces.iter().map(|&piece| piece.clone()).collect();
     let mut positions: Vec<Vec3> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     let mut island: Vec<u32> = Vec::new();
+    let mut face: Vec<u32> = Vec::new();
+    let mut preferred: Vec<u8> = Vec::new();
     let mut cut_vertex: Vec<u32> = Vec::new();
     let mut cut_count: u32 = 0;
+    let mut face_count: u32 = 0;
     let mut reference: Option<Vec<Vec2>> = Some(Vec::new());
     // Each piece's corners in the combined index buffer.
     let mut ranges = Vec::with_capacity(out.len());
@@ -268,6 +291,9 @@ pub(crate) fn unwrap_node(
         let first = indices.len();
         indices.extend(piece.indices.iter().map(|&index| index + base));
         island.extend(own.island.iter().map(|&id| id + island_base));
+        face.extend(own.face.iter().map(|&id| id + face_count));
+        face_count += own.face_count;
+        preferred.extend_from_slice(&own.preferred);
         cut_vertex.extend(own.vertex.iter().map(|&vertex| vertex + cut_count));
         cut_count += own.vertex_count;
         positions.extend(own_positions);
@@ -288,12 +314,15 @@ pub(crate) fn unwrap_node(
         positions: &cut_positions,
         triangles: &triangles,
         island: &island,
+        face: &face,
+        preferred: &preferred,
     };
     let settings = charts::Settings {
         flattening: params.flattening,
         max_stretch: params.max_stretch,
     };
-    let charts = charts::charts(&mesh, settings, cancel).ok_or_else(|| "cancelled".to_owned())?;
+    let charts =
+        charts::charts(&mesh, settings, threads, cancel).ok_or_else(|| "cancelled".to_owned())?;
     let corner_uv = layout::lay_out(
         &charts,
         count,

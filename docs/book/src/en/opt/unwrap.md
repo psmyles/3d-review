@@ -9,10 +9,12 @@ same order:
 3. **Layout** - where the islands go: packed into the 0-1 square, or tiled at
    one texel density.
 
-You don't have to mark any seams: wherever an island won't lie flat without
-stretching, the unwrap cuts it further on its own. Islands never overlap
-themselves or fold over, and they all wind the same way, so normal maps and
-painted text come out the right way round.
+You don't have to mark any seams: the unwrap places them itself, the way an
+artist would - as few as each part needs, where they show least. Islands never
+overlap themselves or fold over, and they all wind the same way, so normal maps
+and painted text come out the right way round. No seam ever runs through the
+middle of a quad or other polygon: a polygon's corners always share one UV each,
+so an exported quad keeps its shape in the texture.
 
 Adding the operation switches the comparison to the
 [UV view](comparison.md#layouts): the result under the checker beside its
@@ -30,17 +32,23 @@ and name and replaced, or **new set**, added after its last. In a glTF file,
 map 0 is `TEXCOORD_0`.
 
 **Existing UVs** - the model's own UVs, if they are worth learning from. Their
-seams can be kept (**Keep existing seams**), and tiled islands can be turned to
-lie the way they did. Choose **None** for a model whose UVs are missing or no
-use.
+seams can guide the new ones or cut outright (**Existing seams**), and tiled
+islands can be turned to lie the way they did. Choose **None** for a model whose
+UVs are missing or no use.
 
 ## Seams
 
 An island never crosses a change of material, an open edge, or an edge shared
-by more than two faces. On top of that:
+by more than two faces. The settings below add seams of their own; then the
+unwrap places the rest.
 
-**Keep existing seams** - cut wherever the existing UVs are cut, so their
-islands stay apart. This also gives a full cylinder the seam that opens it.
+**Existing seams** - what the existing UVs' seams do:
+
+- **Prefer** - the seams the unwrap needs go along them where they can, and
+  nowhere else is cut for them. Good for a model whose UVs are roughly right
+  but cut into too many pieces.
+- **Cut** - cut wherever the existing UVs are cut, so their islands stay apart.
+- **Ignore** - place seams as if the model had no UVs.
 
 **Cut sharp edges** and **Sharp angle** - cut along every edge sharper than the
 angle, as a hard-surface model wants.
@@ -50,12 +58,34 @@ changes: a CAD face id (`_CAD_FACE` in a glTF file), or the U of a UV map when
 a pipeline carries the id that way in an FBX file.
 
 **Max stretch** - how far an island may stretch the texture before the unwrap
-cuts it further. Each region the seams above bound is first flattened whole. If
-that region can't lie flat (a closed shape, a band all the way round), or would
-stretch more than this, it is cut into the fewest pieces that do. The value is an
-average over the island: 1.10 means a texel is stretched about 10% at most on
-average, and any single triangle at most 2:1. Lower it for less stretch and more
-seams; raise it for fewer, larger islands.
+adds seams to it. The value is an average over the island: 1.20 means a texel
+is stretched about 20% at most on average, and any single triangle at most 2:1
+(five times as far past 1). Lower it for less stretch and more seams; raise it
+for fewer, larger islands.
+
+### Where the unwrap places seams
+
+Each region the seams above bound is first flattened whole. A region with holes
+in it - an eye socket, say - flattens with the holes left as holes. When a region
+can't lie flat or stretches more than **Max stretch**, the unwrap cuts it the way
+an artist would:
+
+1. A closed shape is opened along one seam between its two far ends. A shape
+   with a handle (a mug's) is cut through the handle.
+2. While it still stretches too much, a seam is run from where it stretches most
+   - the tip of an ear, the top of a head - to the nearest seam or edge. It
+   splits the surface open there without making a new island. The open end of a
+   tube (a sleeve, a trunk) is first tried cut straight along its length, which
+   unrolls it into a strip.
+3. Only when seams can't bring it within the limit, or a part laid flat would
+   fold over the rest (an ear over the head), is the region split in two, along
+   the cheapest line between the parts.
+
+A seam costs least where it shows least: along a sharp crease, in a hollow (where
+an ear meets the head), in a crevice the light barely reaches, and along the
+existing UVs' seams. It costs most across a smooth, open, rounded surface, which
+is where it would be seen. Seams also prefer to run straight along the model's
+edge loops rather than zig-zag across them.
 
 ## Unfold
 
@@ -99,17 +129,18 @@ unwrap. A long thin strip often unwraps better from its original parameters.
 ## Recipes
 
 **An organic model with no usable UVs** (a sculpt, a scan): Existing UVs None,
-Max stretch 1.10, Minimum stretch, Pack into 0-1. Raise Max stretch towards
-1.2 for fewer islands.
+Max stretch 1.20, Minimum stretch, Pack into 0-1. Raise Max stretch towards
+1.3 for fewer islands, lower it towards 1.10 for less stretch.
 
-**A hard-surface model**: add **Cut sharp edges** at about 60 degrees, so each
-panel is its own island.
+**A hard-surface model**: the seams already prefer sharp edges, so a box comes
+out cut along its edges. Add **Cut sharp edges** at about 60 degrees to make
+each panel its own island.
 
 **Lightmaps or a bake**: Pack into 0-1, with **Texture size** set to the bake's
 resolution and **Padding** at 4 texels or more.
 
 **CAD parts for a tiling texture**: Layout Tile at texel density, Cut along
-attribute `_CAD_FACE`, Existing UVs 0 with Keep existing seams, Match existing
+attribute `_CAD_FACE`, Existing UVs 0 with Existing seams Cut, Match existing
 orientation and Keep existing where better on, Texel density 1.0. Each CAD face
 becomes an island, cut again only where it won't lie flat, laid out at one texel
 density and turned as the CAD UVs ran.

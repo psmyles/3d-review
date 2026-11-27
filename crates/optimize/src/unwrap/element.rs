@@ -8,6 +8,8 @@ use glam::{DVec2, Vec3};
 /// axes are the first edge and the normal crossed with it, so a triangle
 /// wound counter-clockwise about its normal stays counter-clockwise.
 pub(super) struct Element {
+    /// Which of the triangles handed to [`elements`] this is.
+    pub triangle: usize,
     pub corners: [usize; 3],
     pub area: f64,
     pub gradients: [DVec2; 3],
@@ -16,7 +18,7 @@ pub(super) struct Element {
 /// The chart's triangles that have an area; the rest are left out.
 pub(super) fn elements(points: &[Vec3], triangles: &[[u32; 3]]) -> Vec<Element> {
     let mut elements = Vec::with_capacity(triangles.len());
-    for corners in triangles {
+    for (triangle, corners) in triangles.iter().enumerate() {
         let [a, b, c] = corners.map(|corner| points[corner as usize].as_dvec3());
         let (e1, e2) = (b - a, c - a);
         let normal = e1.cross(e2);
@@ -33,6 +35,7 @@ pub(super) fn elements(points: &[Vec3], triangles: &[[u32; 3]]) -> Vec<Element> 
         let m0 = DVec2::new(p11, -p01) / det;
         let m1 = DVec2::new(-p10, p00) / det;
         elements.push(Element {
+            triangle,
             corners: corners.map(|corner| corner as usize),
             area: 0.5 * normal.length(),
             gradients: [-(m0 + m1), m0, m1],

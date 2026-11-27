@@ -7,8 +7,11 @@
 //! packed into the 0-1 square without overlapping.
 //!
 //! Islands are cut where the settings say: where a seam attribute changes (a
-//! CAD face id, say), where the input UVs are already cut, at sharp edges if
-//! asked, and always between materials and along open borders.
+//! CAD face id, say), where the input UVs are already cut (or, by default, only
+//! preferred as the place for a seam), at sharp edges if asked, and always
+//! between materials and along open borders. Seams beyond those are placed by
+//! the unwrap itself, wherever an island will not flatten within the stretch
+//! limit.
 
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +45,54 @@ pub enum SeamSource {
     UvSetU(u32),
 }
 
+/// What the reference UVs' own seams do to the new ones.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub enum ExistingSeams {
+    /// Nothing: the seams are placed as if the model had no UVs.
+    Ignore,
+    /// Seams are placed along them where a cut is needed anyway: an edge the
+    /// reference UVs are cut along costs a seam a fraction of any other.
+    #[default]
+    Prefer,
+    /// Cut wherever the reference UVs are discontinuous, so their islands
+    /// stay apart — which also catches a periodic seam inside one region,
+    /// such as a full cylinder's.
+    Cut,
+}
+
+impl ExistingSeams {
+    pub const ALL: [ExistingSeams; 3] = [
+        ExistingSeams::Prefer,
+        ExistingSeams::Cut,
+        ExistingSeams::Ignore,
+    ];
+}
+
+/// Read as its name, or as the `bool` the setting was before it had three
+/// values (`split_at_reference_seams`, which the field still answers to): a
+/// preset that cut along the existing seams goes on cutting along them.
+impl<'de> Deserialize<'de> for ExistingSeams {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        enum Named {
+            Ignore,
+            Prefer,
+            Cut,
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Named(Named),
+            Legacy(bool),
+        }
+        Ok(match Wire::deserialize(deserializer)? {
+            Wire::Named(Named::Ignore) | Wire::Legacy(false) => ExistingSeams::Ignore,
+            Wire::Named(Named::Prefer) => ExistingSeams::Prefer,
+            Wire::Named(Named::Cut) | Wire::Legacy(true) => ExistingSeams::Cut,
+        })
+    }
+}
+
 /// How each chart is flattened.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Flattening {
@@ -66,13 +117,15 @@ pub struct UnwrapParams {
     /// The UV set written, from 0; a set past the mesh's last is added.
     pub target_set: u32,
     /// The UV set the islands are matched to and compared with, and whose own
-    /// seams cut the surface; `None` for a mesh whose UVs mean nothing.
+    /// seams guide or cut the new ones; `None` for a mesh whose UVs mean
+    /// nothing.
     pub reference_set: Option<u32>,
     /// What else cuts islands.
     pub seams: SeamSource,
-    /// Cut wherever the reference UVs are discontinuous — which catches a
-    /// periodic seam inside one region, such as a full cylinder's.
-    pub split_at_reference_seams: bool,
+    /// What the reference UVs' seams do: guide the seams placed, cut outright,
+    /// or nothing.
+    #[serde(alias = "split_at_reference_seams")]
+    pub existing_seams: ExistingSeams,
     /// Cut along edges sharper than [`Self::crease_angle`].
     pub split_at_creases: bool,
     /// In degrees.
@@ -81,9 +134,10 @@ pub struct UnwrapParams {
     pub flattening: Flattening,
     /// The most a chart may stretch, as the area-weighted mean over its
     /// triangles of each one's worst stretch either way against the chart's
-    /// mean density. An island is kept whole when it flattens within this,
-    /// and cut into as few charts as do otherwise: 1 cuts at any stretch,
-    /// higher keeps charts larger, with fewer seams.
+    /// mean density. An island is kept whole when it flattens within this;
+    /// otherwise seams are run into it from where it stretches most until it
+    /// does, and only an island that seams cannot bring within it is split.
+    /// Nearer 1 gives more seams, higher fewer.
     #[serde(alias = "island_stretch_limit")]
     pub max_stretch: f32,
     /// Tiled: UV units per metre.
@@ -110,11 +164,11 @@ impl Default for UnwrapParams {
             target_set: 0,
             reference_set: Some(0),
             seams: SeamSource::None,
-            split_at_reference_seams: true,
+            existing_seams: ExistingSeams::Prefer,
             split_at_creases: false,
             crease_angle: 60.0,
             flattening: Flattening::MinimumStretch,
-            max_stretch: 1.1,
+            max_stretch: 1.2,
             density: 1.0,
             align_to_reference: true,
             keep_better: true,
@@ -135,6 +189,7 @@ impl UnwrapParams {
         Self {
             layout: UvLayout::Tiled,
             seams: SeamSource::Attribute(attribute.to_owned()),
+            existing_seams: ExistingSeams::Cut,
             ..Self::default()
         }
     }

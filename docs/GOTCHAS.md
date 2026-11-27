@@ -973,6 +973,78 @@ field's test would reject a correct result. The same sheets z-fight when
 back-face rendering is on, and are why the method defaults to generated normals:
 projection would read one side's shading onto both.
 
+### No unwrap seam may run inside a source polygon
+
+The exporter writes a carried quad back with one UV per corner, and
+`Submesh::split_by_corner` makes the corners of one polygon at one vertex agree
+(the first wins). So a seam along a quad's diagonal does not cut the quad: it
+gives the second triangle two corners from the *other* chart's UVs, and that
+triangle stretches across the whole atlas. Measured on the monkey before the
+fix: 14-16 triangles spanning up to the square's full width, and the vertex
+count unchanged at the source's 1966, because the split the seam needed never
+happened. It hid from every test because the suites ran without the
+source-property capture, and without it there are no polygons to unify — the
+viewer always has one. `unwrap/islands.rs` joins the triangles of a polygon
+(and their corners at each point) whatever lies between them, `Cut::face`
+numbers the polygons, and every later cut keeps to edges between faces
+(`Surface::cuttable`) and every split assigns whole faces.
+`polygons_stay_whole_when_unwrapped` runs the monkey *with* its capture.
+
+### An unwrap branch from a saddle overlaps; from a cone it opens
+
+A seam relieves stretch where the surface has *less* than a full turn of angle
+round it — a tip, a dome, a corner — because the cut opens into a gap. Where it
+has *more* (a saddle: between two bones, the base of a horn) the cut's two sides
+lap over each other when laid flat. Tips chosen by stretch alone land on saddles
+as readily as on cones, since compression stretches too. `Surface::cone` (the
+angle deficit summed over a vertex's ring, so noise cannot flip it) gates the
+tips. Measured on the monkey: 18 islands to 14 at the default settings, 19 to
+14 at 1.3, but 17 to 20 with Existing UVs None; on the fossil scan a wash (847
+against about 900). Modest — keep it for the reason, not the numbers.
+
+### Judge an unwrap trial the way the island it would replace was judged
+
+A flap a branch has just freed (an ear cut at its tip) is still swinging into
+place after the four test passes and reads as an overlap; refined fully it lies
+down. The island's current flattening had been refined fully, the trials had
+not, so every trial looked worse and the monkey's head was halved with its mean
+stretch at 1.32 against a limit of 1.3, rounds that had been cutting it from 3.6
+counted as failures. `Planner::judge` refines any trial that overlaps with
+nothing folded before it is compared. The same trace showed the other half of
+it: a mean that falls while a fold elsewhere holds `Settings::excess` at its
+ceiling must still count as progress, which is what `Settings::badness` is for.
+
+An overlap is split at (seeded either side of the crossing) only once the
+stretch is within the limit and the overlap is all that is left — further past
+it, relieving the stretch often lets the flap lie down. On the fossil scan most
+islands still end that way: it has faces doubled back on themselves and saddles
+everywhere, and 26 islands from the fixed cuts come out about 900 (the
+shatter-and-merge this replaced: 445). A crossing at a **pinch** — a point the
+border passes twice — is a real overlap of a few texels; tolerating it took the
+monkey to 7 islands and let the overlap test catch two triangles over each
+other, and setting the faces round each pinch apart scattered 1,850 islands
+over the scan. Both were measured and dropped; the pinch still splits.
+
+### An unwrap split's border slide must stay local
+
+`cuts::settle` moves border faces to whichever half lowers the border's cost.
+A border's cost only falls as a half shrinks, so with 32 passes it ate one half
+down to a single face, the island was re-planned, and the next split peeled one
+more: a 13,900-triangle CAD part was split one face at a time and the atlas test
+went from 1.3 s to 180 s. Four passes and neither half below half its size keep
+it a smoothing. The same part had a handful of needle triangles that collapse
+however they are laid flat; those are set apart on their own
+(`SLIVER_SHARE`), not cut round.
+
+### Two faces back to back share a centroid
+
+A split's seeds are faces, found by distance between centroids, with ties to the
+lower seed. A face doubled back on itself (the monkey has one on its centre line)
+has its twin's centroid, so the second seed was reached at distance 0 and
+relabelled into the first half, leaving the other empty — and the pair, a closed
+two-triangle pillow, fell through to a flattening of nothing, every UV at zero.
+A seed is never relabelled.
+
 ## Remesh
 
 `crates/optimize/src/remesh/` partitions the surface into even regions and

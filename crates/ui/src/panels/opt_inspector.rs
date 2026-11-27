@@ -10,7 +10,7 @@
 use review_labels::opt::{op_description, op_kind};
 use review_model::ModelData;
 use review_optimize::{
-    AoQuality, AoTarget, AttributeWeights, BakeAoParams, BakeSource, BakeWearParams,
+    AoQuality, AoTarget, AttributeWeights, BakeAoParams, BakeSource, BakeWearParams, ExistingSeams,
     ExportFileType, ExportOptions, FbxFormat, Flattening, GlbTangents, HierarchyMode, HullParams,
     LodLevel, LodPackaging, LodParams, NormalMode, NormalParams, NormalWeighting, OpKind,
     ReduceParams, RemeshDensity, RemeshParams, RemeshTopology, SeamSource, ShrinkwrapMethod,
@@ -609,12 +609,22 @@ fn unwrap_params(
         |ui| {
             panel_grid(ui, "opt_unwrap_seams", |ui| {
                 if existing {
-                    labeled_checkbox(
+                    labeled_combo(
                         ui,
-                        Tip::new(keys::ui_opt::UNWRAP_KEEP_SEAMS)
-                            .describe(keys::ui_opt::UNWRAP_KEEP_SEAMS_DESCRIPTION)
+                        Tip::new(keys::ui_opt::UNWRAP_EXISTING_SEAMS)
+                            .describe(keys::ui_opt::UNWRAP_EXISTING_SEAMS_DESCRIPTION)
                             .page(Page::OptUnwrap),
-                        &mut edited.split_at_reference_seams,
+                        "opt_unwrap_existing_seams",
+                        labels::existing_seams(edited.existing_seams),
+                        |ui| {
+                            for choice in ExistingSeams::ALL {
+                                ui.selectable_value(
+                                    &mut edited.existing_seams,
+                                    choice,
+                                    labels::existing_seams(choice),
+                                );
+                            }
+                        },
                     );
                 }
                 labeled_checkbox(
