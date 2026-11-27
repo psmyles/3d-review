@@ -250,9 +250,10 @@ struct App {
     /// workspace's split view. Fixed at press time so a drag that wanders across
     /// the divider keeps moving the camera it began with.
     drag_in_opt_right_view: bool,
-    /// Whether the in-progress drag started in the Aud split's UV half, fixed at
-    /// press time like [`Self::drag_in_opt_right_view`].
-    drag_in_aud_uv: bool,
+    /// Whether the in-progress drag started in a split's UV half (the Aud
+    /// split's, or the Opt UV view's), fixed at press time like
+    /// [`Self::drag_in_opt_right_view`].
+    drag_in_split_uv: bool,
     /// The right-button WASD/QE flycam's held movement keys (`flycam.rs`); its
     /// speed is the Camera panel's, on `ui.camera`. Held here rather than in the renderer
     /// because it is input state — the renderer only ever sees the resulting
@@ -503,7 +504,7 @@ impl Default for App {
             drag_mode: None,
             pending_drag: None,
             drag_in_opt_right_view: false,
-            drag_in_aud_uv: false,
+            drag_in_split_uv: false,
             flycam: FlyCam::default(),
             last_pointer_position: None,
             last_primary_click: None,

@@ -14,6 +14,16 @@ ghost, either see-through or as a wireframe. Press `X` to swap which one is
 solid. This is the most reliable way to see exactly where a simplification
 moved the surface. A small legend tells you which is which.
 
+**UV view** - the processed model on the left under the
+[UV checker](../panels/uv-checker.md), and its UV layout on the right: what an
+[Unwrap UVs](unwrap.md) made, on the model and flat at once. It shows the UV
+set the stack's Unwrap writes (the selected one's, or the last one's); the
+dropdown beside the button shows another set instead, and **Unwrap's set**
+goes back to following it. Adding an Unwrap switches to this view. Drag in the
+layout half to pan it and use the wheel to zoom, as in the UV workspace; the
+half is framed on the layout when you open the view or pick another set. A
+diagnostic view, picked on the toolbar, replaces the checker.
+
 **LOD picker** - which level of the chain to show. Once you pick a level, later
 runs keep showing it.
 

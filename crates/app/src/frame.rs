@@ -350,6 +350,9 @@ impl App {
         // / overlay flags (synced during the egui pass); `projection` the
         // perspective/orthographic toggle; the model + revision drive the mesh.
         let mut debug = self.ui.debug;
+        let workspace_is_opt_uv =
+            self.ui.mode == WorkspaceMode::Opt && self.ui.opt.layout == OptLayout::Uv;
+        let opt_uv_set = self.ui.opt.shown_uv_set(self.ui.uv_checker.uv_channel);
         // Aud's Issues view: the model in neutral clay, so a highlighted
         // finding's severity colours are the only colour on it. It is a tile of
         // its own, one choice with the material tiles (none of which is lit
@@ -377,6 +380,13 @@ impl App {
                     stop(theme::color::HEAT_TARGET),
                     stop(theme::color::HEAT_HIGH),
                 ];
+            }
+            // The Opt UV view shows the processed mesh under the checker, in the
+            // set its layout half lays out - unless a diagnostic view is up,
+            // which is a picture of its own.
+            if workspace_is_opt_uv && !debug.heat_map.is_active() {
+                debug.active_material = ActiveMaterial::UvChecker;
+                debug.uv_channel = opt_uv_set;
             }
             debug.overdraw = self.audit_overdraw_view();
             if debug.overdraw.is_active() {
@@ -666,6 +676,26 @@ impl App {
                             })
                             .zip(opt_revision)
                             .map(|(model, revision)| ProcessedModelRef { model, revision });
+                        // The UV view's layout half: the mesh its 3D half shows.
+                        let opt_uv = (opt_layout == OptLayout::Uv).then(|| {
+                            let (uv_model, uv_revision) = processed
+                                .map_or((model, model_revision), |processed| {
+                                    (processed.model, processed.revision)
+                                });
+                            UvFrame {
+                                model: uv_model,
+                                model_revision: uv_revision,
+                                channel: opt_uv_set,
+                                shading_mode: uv_shading,
+                                anti_aliasing,
+                                background: uv_background,
+                                selected_nodes: &[],
+                                hidden_meshes: &hidden_meshes,
+                                texture: None,
+                                pixels_per_point: full_output.pixels_per_point,
+                                audit: None,
+                            }
+                        });
                         renderer.render_opt_scene(
                             &mut frame,
                             &OptSceneFrame {
@@ -674,6 +704,7 @@ impl App {
                                 viewport: opt_viewport,
                                 view: match opt_layout {
                                     OptLayout::Split => OptView::Split,
+                                    OptLayout::Uv => OptView::Uv,
                                     OptLayout::Overlay => OptView::Overlay {
                                         ghost: opt_ghost.into(),
                                         swap: opt_swap,
@@ -682,6 +713,7 @@ impl App {
                                 },
                                 source_camera,
                                 processed_camera,
+                                uv: opt_uv,
                             },
                         )
                     } else {

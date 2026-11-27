@@ -38,6 +38,10 @@ surface curves: the right choice for a model with no seams worth keeping.
 
 **Layout** - Tiled or Atlas, as above.
 
+Adding the operation switches the comparison to the
+[UV view](comparison.md#layouts): the result under the checker beside its
+layout, in the set the operation writes.
+
 **UV set** - which set to write: one of the model's own, listed by number and
 name and replaced, or **new set**, added after its last. The first set to
 start with; in a glTF file, set 0 is `TEXCOORD_0`.

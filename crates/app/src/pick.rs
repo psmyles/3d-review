@@ -104,6 +104,30 @@ impl App {
         // `in_opt_right_view` — that answers "which camera does a drag move",
         // which is deliberately false while the cameras are synced, and a pick
         // still has to target the processed mesh on that side.
+        // The Opt UV view draws the processed mesh in its left half alone,
+        // through the main camera; its right half is a UV layout.
+        if self.ui.opt.layout == review_ui::OptLayout::Uv
+            && let Some([left, right]) = self.opt_split_halves()
+        {
+            if position.x >= right.0.x {
+                return None;
+            }
+            let (origin, size) = left;
+            let mut camera = renderer.camera;
+            camera.aspect_ratio = size.x / size.y.max(1.0);
+            let (model, bvh) = match self.opt_level_pick() {
+                Some(level) => level,
+                None => (self.scene_model.as_ref(), self.scene_bvh.as_deref()?),
+            };
+            return Some(PickView {
+                camera,
+                model,
+                bvh,
+                origin,
+                size,
+                posed: false,
+            });
+        }
         if let Some([left, right]) = self.opt_split_halves() {
             let right_half = position.x >= right.0.x;
             let (origin, size) = if right_half { right } else { left };

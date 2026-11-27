@@ -218,6 +218,8 @@ impl App {
             self.redraw.requested = true;
         }
 
+        self.frame_opt_uv_view();
+
         // Turning sync back on should snap the second view to the first, not wait
         // for the next drag. Doing it while synced also keeps the two cameras
         // equal through the animated moves (framing, home, the WASD steps, the
@@ -227,6 +229,40 @@ impl App {
         {
             renderer.sync_opt_camera();
         }
+    }
+
+    /// Frame the UV view's layout half on the shown mesh's UVs when the view is
+    /// entered, its set changes, or the first processed mesh arrives in it.
+    fn frame_opt_uv_view(&mut self) {
+        let uv_view = self.ui.opt.layout == review_ui::OptLayout::Uv;
+        let set = self.ui.opt.shown_uv_set(self.ui.uv_checker.uv_channel);
+        let level = self.ui.opt.active_lod;
+        let Some(opt) = self.opt.as_mut() else {
+            return;
+        };
+        if !uv_view {
+            opt.uv_framed = None;
+            return;
+        }
+        let preview = opt.level_mesh(level);
+        let finished = opt.processed.as_ref().and_then(|result| result.lod(level));
+        let key = (set, preview.is_some() || finished.is_some());
+        if opt.uv_framed == Some(key) {
+            return;
+        }
+        opt.uv_framed = Some(key);
+        // The mesh the view shows: the run's preview, its finished level, or the
+        // source before either exists.
+        let model: &ModelData = match (&preview, finished) {
+            (Some(preview), _) => preview,
+            (None, Some(lod)) => &lod.model,
+            (None, None) => &self.scene_model,
+        };
+        let (min, max) = uv_bounds(model, set as usize);
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.fit_opt_uv_camera(min, max);
+        }
+        self.redraw.requested = true;
     }
 
     /// Queue a run for the current stack, or mark one owed if the worker is busy.
@@ -686,6 +722,27 @@ impl App {
             }
         }
         self.opt.as_ref().and_then(|opt| opt.drawn_revision(level))
+    }
+}
+
+/// The box `model`'s UVs in set `channel` cover, or the 0-1 square for a model
+/// with none.
+fn uv_bounds(model: &ModelData, channel: usize) -> (glam::Vec2, glam::Vec2) {
+    let (mut min, mut max) = (
+        glam::Vec2::splat(f32::INFINITY),
+        glam::Vec2::splat(f32::NEG_INFINITY),
+    );
+    for &corner in &model.indices {
+        let uv = model.uv_for_channel(corner as usize, channel);
+        if uv.is_finite() {
+            min = min.min(uv);
+            max = max.max(uv);
+        }
+    }
+    if min.x.is_finite() && max.x >= min.x {
+        (min, max)
+    } else {
+        (glam::Vec2::ZERO, glam::Vec2::ONE)
     }
 }
 

@@ -136,6 +136,12 @@ fn add_menu(ui: &mut egui::Ui, state: &mut UiState) {
                 if matches!(kind, OpKind::Remesh(_) | OpKind::Shrinkwrap(_)) {
                     state.debug.wireframe_overlay = true;
                 }
+                // An unwrap is read on the model and flat at once: the UV view,
+                // following the set it writes. Same rule: on add only.
+                if matches!(kind, OpKind::Unwrap(_)) {
+                    state.opt.layout = crate::opt_state::OptLayout::Uv;
+                    state.opt.uv_set = None;
+                }
                 let id = state.opt.edit_stack_with(|stack| stack.push_op(kind));
                 state.select_stack_item(StackItem::Op(id));
                 ui.close();

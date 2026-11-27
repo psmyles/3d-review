@@ -163,6 +163,8 @@ pub const TOOLBAR_UV_DROPDOWN_WIDTH: f32 = 133.0;
 /// Width of the LOD-level dropdown in the Opt workspace's status-bar group.
 /// Narrower than the UV one: its entries are "LOD 0 (full)" at longest.
 pub const TOOLBAR_OPT_LOD_DROPDOWN_WIDTH: f32 = 80.0;
+/// The Opt UV view's UV set dropdown: room for a set's number and a short name.
+pub const TOOLBAR_OPT_UV_SET_DROPDOWN_WIDTH: f32 = 120.0;
 pub const TOOLBAR_GROUP_HEIGHT: f32 = 32.0;
 pub const TOOLBAR_GROUP_PADDING: f32 = 2.0;
 /// Corner radius shared by toolbar groups, icon tiles and mode segments.

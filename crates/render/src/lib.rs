@@ -129,6 +129,9 @@ pub struct Renderer {
     /// The Aud split's UV half — its own camera, so framing a finding there
     /// leaves the UV workspace's view where the user left it.
     pub aud_uv_camera: UvCamera,
+    /// The Opt workspace's UV view's layout half ([`OptView::Uv`]), its own for
+    /// the same reason.
+    pub opt_uv_camera: UvCamera,
     /// The Opt workspace's *right-hand* camera, used only by the split view with
     /// camera sync off. With sync on it simply mirrors [`Self::camera`], which is
     /// why it needs no transition of its own: the animated moves (framing, home,
@@ -355,6 +358,10 @@ pub enum OptView {
         /// match; the alpha is the renderer's, since it depends on the style.
         tint: [f32; 3],
     },
+    /// The processed mesh (the source until a run lands) in 3D on the left,
+    /// through the source camera, and its UV layout ([`OptSceneFrame::uv`]) on
+    /// the right, through [`Renderer::opt_uv_camera`].
+    Uv,
 }
 
 /// How the ghosted mesh is drawn in [`OptView::Overlay`].
@@ -464,6 +471,9 @@ pub struct OptSceneFrame<'a> {
     /// Camera for the processed view in [`OptView::Split`]. Equal to
     /// `source_camera` while the views are synced.
     pub processed_camera: OrbitCamera,
+    /// The layout [`OptView::Uv`] draws on its right: the shown mesh's UVs.
+    /// `None` in the other views; without one the UV view draws as the split.
+    pub uv: Option<UvFrame<'a>>,
 }
 
 impl Renderer {
@@ -476,6 +486,7 @@ impl Renderer {
             camera: OrbitCamera::default(),
             uv_camera: UvCamera::default(),
             aud_uv_camera: UvCamera::default(),
+            opt_uv_camera: UvCamera::default(),
             opt_camera: OrbitCamera::default(),
             camera_transition: None,
             framing_area: FramingArea::whole(16.0 / 9.0),
@@ -554,11 +565,37 @@ impl Renderer {
     ) -> GpuResult<()> {
         frame.set_clear(scene.base.background.gradient_srgb().0);
         let material_revision = self.material_revision;
+        // Remembered, so a later fit frames the box at the half's own shape.
+        self.opt_uv_camera.aspect_ratio =
+            (scene.viewport.width / 2).max(1) as f32 / scene.viewport.height.max(1) as f32;
+        let uv_camera = self.opt_uv_camera;
         self.ensure_scene(frame, scene.base.anti_aliasing.effective_sample_count())?;
         let Some(scene_gpu) = self.scene.as_mut() else {
             return Ok(());
         };
-        scene_gpu.render_opt(frame, scene, &self.material_states, material_revision)
+        scene_gpu.render_opt(
+            frame,
+            scene,
+            uv_camera,
+            &self.material_states,
+            material_revision,
+        )
+    }
+
+    /// Frame the Opt UV view's layout half on the UV box `min..max`.
+    pub fn fit_opt_uv_camera(&mut self, min: glam::Vec2, max: glam::Vec2) {
+        self.opt_uv_camera = self.opt_uv_camera.fitted_to(min, max, 0.15);
+    }
+
+    /// Zoom the Opt UV view's layout half (the wheel over it).
+    pub fn zoom_opt_uv_camera(&mut self, amount: f32) {
+        self.opt_uv_camera.zoom(amount);
+    }
+
+    /// Pan the Opt UV view's layout half by a pointer drag over it.
+    pub fn pan_opt_uv_camera(&mut self, delta_pixels: glam::Vec2, viewport_size: glam::Vec2) {
+        self.opt_uv_camera
+            .pan_screen_delta(delta_pixels, viewport_size);
     }
 
     /// Drop the processed mesh's GPU buffers (invariant 3). Called when the Opt

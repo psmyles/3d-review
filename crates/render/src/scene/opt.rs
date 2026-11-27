@@ -20,7 +20,7 @@
 use crate::geometry::wireframe_edge_indices;
 use crate::material::MaterialState;
 use crate::rhi::{Frame, GpuResult, StorageBuffer};
-use crate::{GhostStyle, OptSceneFrame, OptView, ProcessedModelRef, SceneFrame};
+use crate::{GhostStyle, OptSceneFrame, OptView, ProcessedModelRef, SceneFrame, UvCamera, UvFrame};
 
 use super::gpu::SceneGpu;
 use super::slot::SlotId;
@@ -40,11 +40,22 @@ impl SceneGpu {
         &mut self,
         frame: &mut Frame<'_>,
         opt: &OptSceneFrame<'_>,
+        uv_camera: UvCamera,
         material_states: &[MaterialState],
         material_revision: u64,
     ) -> GpuResult<()> {
         // Nothing is converging until this frame says so (`idle_ao_history`).
         self.idle_ao_history();
+        if let (OptView::Uv, Some(uv)) = (opt.view, opt.uv.as_ref()) {
+            return self.render_uv_view(
+                frame,
+                opt,
+                uv,
+                uv_camera,
+                material_states,
+                material_revision,
+            );
+        }
         // A 3D comparison: the UV viewport's buffers are off (invariant 3).
         self.release_uv_views();
         match opt.view {
@@ -75,8 +86,79 @@ impl SceneGpu {
             // The split always draws two views. With nothing processed yet both show
             // the source: the layout the user picked is the layout they get, and the
             // right-hand view fills in as soon as a run lands.
-            OptView::Split => self.render_split(frame, opt, material_states, material_revision),
+            // A UV view with no layout to draw is the split's two meshes.
+            OptView::Split | OptView::Uv => {
+                self.render_split(frame, opt, material_states, material_revision)
+            }
         }
+    }
+
+    /// The UV view: the processed mesh in 3D on the left — the source until a
+    /// run lands — and its UV layout on the right, each in its own target set at
+    /// half the viewport, as the Aud split lays out its model and layout. Drawn
+    /// from the processed slot, so the source's buffers stay uploaded for the
+    /// other views.
+    fn render_uv_view(
+        &mut self,
+        frame: &mut Frame<'_>,
+        opt: &OptSceneFrame<'_>,
+        uv: &UvFrame<'_>,
+        uv_camera: UvCamera,
+        material_states: &[MaterialState],
+        material_revision: u64,
+    ) -> GpuResult<()> {
+        self.release_ghost_wireframes();
+        frame.set_clear([0.0; 3]);
+
+        let view = opt.viewport;
+        let height = view.height.max(1);
+        let half = (view.width / 2).max(1);
+        let target = (half, height);
+        let mut camera = opt.source_camera;
+        camera.aspect_ratio = half as f32 / height as f32;
+        let mut uv_camera = uv_camera;
+        uv_camera.aspect_ratio = camera.aspect_ratio;
+
+        let scene = match opt.processed {
+            Some(processed) => {
+                self.activate(SlotId::Processed);
+                opt.base.with_model(processed.model, processed.revision)
+            }
+            None => {
+                self.activate(SlotId::Source);
+                SceneFrame { ..opt.base }
+            }
+        };
+        self.sync_frame(frame, &scene, material_states, material_revision, target)?;
+        self.sync_ao_history(TargetSetId::Primary, camera, &scene);
+        self.sync_split_targets(target)?;
+        self.sync_uv_frame(uv, target)?;
+
+        let left = self.record_view(
+            frame,
+            &scene,
+            camera,
+            self.targets(),
+            BackbufferRect {
+                x: view.x,
+                y: view.y,
+                width: half,
+                height,
+            },
+        );
+        self.record_uv_view(
+            frame,
+            uv,
+            uv_camera,
+            self.split_targets(),
+            BackbufferRect {
+                x: view.x + half,
+                y: view.y,
+                width: view.width.saturating_sub(half).max(1),
+                height,
+            },
+        );
+        left
     }
 
     /// The side-by-side comparison: two views of the same scene, laid out inside the

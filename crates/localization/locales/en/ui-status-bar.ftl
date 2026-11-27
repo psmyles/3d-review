@@ -51,6 +51,13 @@ ui-status-bar-overlay-view = Overlay view
     .description = Shows both models in the same spot, one solid and the other as a faint
         ghost. This is the best way to see exactly where a simplification changed the
         shape.
+ui-status-bar-uv-view = UV view
+    .description = Shows the processed version on the left under the UV checker, and its
+        UV layout on the right: what an Unwrap made, on the model and flat. The set shown
+        follows the one the Unwrap writes; pick another beside the button.
+ui-status-bar-uv-set = { $index }: { $name }
+ui-status-bar-uv-set-unnamed = { $index }: new set
+ui-status-bar-uv-set-follow = Unwrap's set ({ $index })
 ui-status-bar-sync-cameras = Move both views' cameras together
 ui-status-bar-swap-sides = Showing { $side } solid
     .description = Click, or press X, to swap which model is solid and which is the ghost.

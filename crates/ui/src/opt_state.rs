@@ -22,6 +22,9 @@ pub enum OptLayout {
     /// One view, both meshes in the same space — the processed mesh shaded and
     /// the source drawn as a ghost over it.
     Overlay,
+    /// The processed mesh in 3D under the UV checker on the left, and its UV
+    /// layout on the right: what an Unwrap made, on the model and flat.
+    Uv,
 }
 
 /// How the source mesh is drawn in [`OptLayout::Overlay`].
@@ -154,6 +157,9 @@ pub struct OptUiState {
     /// A run is in flight. Drives the toolbar's busy affordance; the viewport
     /// keeps showing the previous result rather than blanking.
     pub processing: bool,
+    /// The UV set [`OptLayout::Uv`] shows, when the user has picked one; `None`
+    /// follows the set the stack's Unwrap writes ([`Self::shown_uv_set`]).
+    pub uv_set: Option<u32>,
 }
 
 impl Default for OptUiState {
@@ -170,11 +176,45 @@ impl Default for OptUiState {
             side: ComparisonSide::default(),
             result: None,
             processing: false,
+            uv_set: None,
         }
     }
 }
 
 impl OptUiState {
+    /// The UV set the stack's Unwrap writes: the selected operation's when it is
+    /// an Unwrap, else the last enabled one's. `None` with no Unwrap.
+    pub fn unwrap_target(&self) -> Option<u32> {
+        use review_optimize::OpKind;
+        let target = |kind: &OpKind| match kind {
+            OpKind::Unwrap(params) => Some(params.target_set),
+            _ => None,
+        };
+        let selected = match self.selected {
+            Some(StackItem::Op(id)) => self
+                .stack
+                .ops
+                .iter()
+                .find(|op| op.id == id)
+                .and_then(|op| target(&op.kind)),
+            _ => None,
+        };
+        selected.or_else(|| {
+            self.stack
+                .ops
+                .iter()
+                .rev()
+                .filter(|op| op.enabled)
+                .find_map(|op| target(&op.kind))
+        })
+    }
+
+    /// The UV set [`OptLayout::Uv`] shows: the one the user picked, else the
+    /// one the Unwrap writes, else `fallback` (the UV checker's own set).
+    pub fn shown_uv_set(&self, fallback: u32) -> u32 {
+        self.uv_set.or(self.unwrap_target()).unwrap_or(fallback)
+    }
+
     /// Mutate the stack through `edit` and bump the revision.
     ///
     /// Every stack edit goes through here so no caller can forget the bump — a

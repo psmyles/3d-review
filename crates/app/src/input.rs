@@ -103,14 +103,14 @@ impl App {
         // in). The 3D scene is LMB orbit / RMB look / MMB pan. The Tex viewport
         // handles its own pan/zoom inside egui (its canvas senses the drag), so
         // an unclaimed press there must not start a 3D-camera drag.
-        // A press in the Aud split's UV half drives that half's 2D camera, with the
-        // UV workspace's own bindings.
-        self.drag_in_aud_uv = self
+        // A press in a split's UV half (Aud's, or the Opt UV view's) drives that
+        // half's 2D camera, with the UV workspace's own bindings.
+        self.drag_in_split_uv = self
             .last_pointer_position
-            .is_some_and(|position| self.in_aud_uv_view(position));
+            .is_some_and(|position| self.in_split_uv_view(position));
         let uv_mode = match self.ui.mode {
             WorkspaceMode::Uv => true,
-            _ if self.drag_in_aud_uv => true,
+            _ if self.drag_in_split_uv => true,
             WorkspaceMode::ThreeD | WorkspaceMode::Opt | WorkspaceMode::Aud => false,
             WorkspaceMode::Texture => return,
         };
@@ -229,7 +229,8 @@ impl App {
         ) {
             let delta = current - last;
             let uv_mode = self.ui.mode == WorkspaceMode::Uv;
-            let aud_uv = self.drag_in_aud_uv;
+            let split_uv = self.drag_in_split_uv;
+            let opt_uv = self.ui.mode == WorkspaceMode::Opt;
             let size = window.inner_size();
             let viewport = Vec2::new(size.width as f32, size.height as f32);
             // In the Opt split view with sync off, the drag belongs to whichever
@@ -256,7 +257,9 @@ impl App {
                 }
                 // Pan drives the 2D UV camera in UV mode, the 3D camera otherwise.
                 DragMode::Pan => {
-                    if aud_uv {
+                    if split_uv && opt_uv {
+                        renderer.pan_opt_uv_camera(delta, half_view.unwrap_or(viewport));
+                    } else if split_uv {
                         renderer.pan_aud_uv_camera(delta, half_view.unwrap_or(viewport));
                     } else if uv_mode {
                         renderer.pan_uv_camera(delta, viewport);
@@ -272,7 +275,9 @@ impl App {
                 // Pointer down (positive screen delta) zooms in, up zooms out —
                 // matching the wheel's positive-is-in sign.
                 DragMode::Zoom => {
-                    if aud_uv {
+                    if split_uv && opt_uv {
+                        renderer.zoom_opt_uv_camera(delta.y * DRAG_ZOOM_SENSITIVITY);
+                    } else if split_uv {
                         renderer.zoom_aud_uv_camera(delta.y * DRAG_ZOOM_SENSITIVITY);
                     } else if uv_mode {
                         renderer.zoom_uv_camera(delta.y * DRAG_ZOOM_SENSITIVITY);
@@ -314,30 +319,30 @@ impl App {
         }
     }
 
-    /// Whether the scene is drawn as two views side by side — the Opt split, or
-    /// the Aud split while a UV finding is focused — rather than one across the
-    /// window. The same tests [`Self::opt_split_halves`] and
+    /// Whether the scene is drawn as two views side by side — the Opt split or
+    /// UV view, or the Aud split while a UV finding is focused — rather than one
+    /// across the window. The same tests [`Self::opt_split_halves`] and
     /// [`Self::aud_split_halves`] make.
     fn scene_is_split(&self) -> bool {
         match self.ui.mode {
-            WorkspaceMode::Opt => self.ui.opt.layout == OptLayout::Split,
+            WorkspaceMode::Opt => matches!(self.ui.opt.layout, OptLayout::Split | OptLayout::Uv),
             WorkspaceMode::Aud => self.ui.aud.split(),
             _ => false,
         }
     }
 
-    /// Whether the Opt workspace is currently showing two views that share a
-    /// camera. False in every other workspace, and in the single-view overlay —
-    /// which has only one camera to begin with.
+    /// Whether the Opt workspace's second camera follows the first: always,
+    /// but in a split with camera sync off. The overlay and the UV view draw
+    /// through one 3D camera only. False in every other workspace.
     pub(crate) fn opt_cameras_synced(&self) -> bool {
         self.ui.mode == WorkspaceMode::Opt
-            && (self.ui.opt.layout == OptLayout::Overlay || self.ui.opt.camera_sync)
+            && (self.ui.opt.layout != OptLayout::Split || self.ui.opt.camera_sync)
     }
 
     /// Whether a pointer position falls in the *right* half of an unsynced Opt
     /// split view — the half driven by the second camera.
     fn in_opt_right_view(&self, position: Vec2) -> bool {
-        if self.ui.opt.camera_sync {
+        if self.ui.opt.camera_sync || self.ui.opt.layout != OptLayout::Split {
             return false;
         }
         self.opt_split_halves()
@@ -393,10 +398,15 @@ impl App {
         }
     }
 
-    /// Whether a pointer position falls in the Aud split's UV half.
-    pub(crate) fn in_aud_uv_view(&self, position: Vec2) -> bool {
-        self.aud_split_halves()
-            .is_some_and(|[_, (right, _)]| position.x >= right.x)
+    /// Whether a pointer position falls in a split's UV half: the Aud split's,
+    /// or the Opt UV view's.
+    pub(crate) fn in_split_uv_view(&self, position: Vec2) -> bool {
+        let halves = match self.ui.mode {
+            WorkspaceMode::Opt if self.ui.opt.layout == OptLayout::Uv => self.opt_split_halves(),
+            WorkspaceMode::Aud => self.aud_split_halves(),
+            _ => None,
+        };
+        halves.is_some_and(|[_, (right, _)]| position.x >= right.x)
     }
 
     /// A scroll-wheel event: zoom the active (2D UV or 3D) camera unless egui claimed
@@ -447,17 +457,22 @@ impl App {
             .last_pointer_position
             .is_some_and(|position| self.in_opt_right_view(position));
         let synced = self.opt_cameras_synced();
-        let aud_uv = self
+        let split_uv = self
             .last_pointer_position
-            .is_some_and(|position| self.in_aud_uv_view(position));
+            .is_some_and(|position| self.in_split_uv_view(position));
+        let opt_uv = self.ui.mode == WorkspaceMode::Opt;
         // The Camera panel's Zoom Speed is the 3D cameras'; the 2D UV ones keep
         // their own step.
         let zoom_3d = amount * self.ui.camera.zoom_speed;
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
-        if aud_uv {
-            renderer.zoom_aud_uv_camera(amount);
+        if split_uv {
+            if opt_uv {
+                renderer.zoom_opt_uv_camera(amount);
+            } else {
+                renderer.zoom_aud_uv_camera(amount);
+            }
             self.redraw.requested = true;
             return;
         }

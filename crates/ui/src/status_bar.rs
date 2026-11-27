@@ -8,7 +8,7 @@
 
 use crate::assets::{
     ICON_ANTI_ALIASING, ICON_AO, ICON_BACKGROUND, ICON_IBL, ICON_INFO, ICON_OPT_OVERLAY,
-    ICON_OPT_SPLIT, ICON_OPT_SWAP, ICON_OPT_SYNC, ICON_TONEMAPPER,
+    ICON_OPT_SPLIT, ICON_OPT_SWAP, ICON_OPT_SYNC, ICON_TONEMAPPER, ICON_UV,
 };
 use crate::docs::Page;
 use crate::keys;
@@ -285,17 +285,28 @@ fn draw_opt_group(ui: &mut egui::Ui, state: &mut UiState, bar_rect: egui::Rect, 
     let has_result = state.opt.has_result();
     let level_count = state.opt.level_count();
     let picker_width = size::TOOLBAR_OPT_LOD_DROPDOWN_WIDTH;
-    let icons_width = size::TOOLBAR_TRIPLE_ICON_GROUP_WIDTH;
+    let uv_layout = state.opt.layout == OptLayout::Uv;
+    // The two comparison layouts and the UV view, then the split's camera sync
+    // or the overlay's swap; the UV view has neither, and a UV set picker after
+    // the group instead.
+    let icons_width = if uv_layout {
+        size::TOOLBAR_TRIPLE_ICON_GROUP_WIDTH
+    } else {
+        size::TOOLBAR_QUAD_ICON_GROUP_WIDTH
+    };
+    let uv_picker_width = size::TOOLBAR_OPT_UV_SET_DROPDOWN_WIDTH;
     let spacing = size::TOOLBAR_GROUP_SPACING;
 
     // The picker appears only once the chain actually has levels to choose
     // between, so the centred width has to account for it either way.
     let show_picker = has_result && level_count > 1;
-    let width = if show_picker {
-        picker_width + spacing + icons_width
-    } else {
-        icons_width
-    };
+    let mut width = icons_width;
+    if show_picker {
+        width += picker_width + spacing;
+    }
+    if uv_layout {
+        width += uv_picker_width + spacing;
+    }
     let rect = bar_group_rect_centered(bar_rect, width, group_height);
     bar_group_scope(ui, rect, group_height, |ui| {
         ui.spacing_mut().item_spacing.x = spacing;
@@ -317,6 +328,7 @@ fn draw_opt_group(ui: &mut egui::Ui, state: &mut UiState, bar_rect: egui::Rect, 
         }
 
         let split = state.opt.layout == OptLayout::Split;
+        let overlay = state.opt.layout == OptLayout::Overlay;
         toolbar_group_shell(ui, icons_width, |ui| {
             if icon_toggle_button(
                 ui,
@@ -333,7 +345,7 @@ fn draw_opt_group(ui: &mut egui::Ui, state: &mut UiState, bar_rect: egui::Rect, 
             if icon_toggle_button(
                 ui,
                 &ICON_OPT_OVERLAY,
-                !split,
+                overlay,
                 Tip::new(keys::ui_status_bar::OVERLAY_VIEW)
                     .describe(keys::ui_status_bar::OVERLAY_VIEW_DESCRIPTION)
                     .page(Page::OptComparison),
@@ -342,8 +354,22 @@ fn draw_opt_group(ui: &mut egui::Ui, state: &mut UiState, bar_rect: egui::Rect, 
             {
                 state.opt.layout = OptLayout::Overlay;
             }
+            if icon_toggle_button(
+                ui,
+                &ICON_UV,
+                uv_layout,
+                Tip::new(keys::ui_status_bar::UV_VIEW)
+                    .describe(keys::ui_status_bar::UV_VIEW_DESCRIPTION)
+                    .page(Page::OptComparison),
+            )
+            .clicked()
+            {
+                state.opt.layout = OptLayout::Uv;
+            }
 
-            if split {
+            if uv_layout {
+                // No second camera to link and no ghost to swap.
+            } else if split {
                 // Camera sync: only the split has a second camera to link.
                 let sync = state.opt.camera_sync;
                 if icon_toggle_button(
@@ -388,7 +414,47 @@ fn draw_opt_group(ui: &mut egui::Ui, state: &mut UiState, bar_rect: egui::Rect, 
                 );
             }
         });
+
+        if uv_layout {
+            uv_set_picker(ui, state, uv_picker_width);
+        }
     });
+}
+
+/// The UV view's set: the one the stack's Unwrap writes to start with (and
+/// whenever "Unwrap's set" is picked again), or any set of the shown level.
+fn uv_set_picker(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
+    let fallback = state.uv_checker.uv_channel;
+    let shown = state.opt.shown_uv_set(fallback);
+    let level_sets = state
+        .opt
+        .result
+        .as_ref()
+        .and_then(|result| result.levels.get(state.opt.active_lod))
+        .map_or(0, |level| level.stats.uv_set_count);
+    let count = (level_sets.max(state.uv_sets.len()) as u32).max(shown + 1);
+    let name = |set: u32| -> String {
+        match state.uv_sets.get(set as usize) {
+            Some(label) => keys::ui_status_bar::uv_set(f64::from(set), label.clone()),
+            None => keys::ui_status_bar::uv_set_unnamed(f64::from(set)),
+        }
+    };
+    let target = state.opt.unwrap_target();
+    let selected = name(shown);
+    let mut picked = state.opt.uv_set;
+    compact_combo(ui, "opt_uv_set_picker", width, selected, |ui| {
+        if let Some(target) = target {
+            ui.selectable_value(
+                &mut picked,
+                None,
+                keys::ui_status_bar::uv_set_follow(f64::from(target)),
+            );
+        }
+        for set in 0..count {
+            ui.selectable_value(&mut picked, Some(set), name(set));
+        }
+    });
+    state.opt.uv_set = picked;
 }
 
 /// `"LOD 0 (full)"` for level 0, `"LOD 1"` and up for the rest — matching the

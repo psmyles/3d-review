@@ -130,6 +130,11 @@ pub(crate) struct OptSubsystem {
     /// part of the AO bake's input — a hidden mesh neither occludes nor bakes —
     /// so toggling an eye while a bake is enabled reruns the stack.
     seen_hidden: Vec<u32>,
+    /// What the UV view's layout half was last framed on: the set shown, and
+    /// whether a processed mesh was there yet. `None` outside the UV view, so
+    /// entering it frames the layout; a new set or the first result does too,
+    /// and nothing else moves a camera the user may have zoomed.
+    uv_framed: Option<(u32, bool)>,
 }
 
 impl Default for OptSubsystem {
@@ -153,6 +158,7 @@ impl Default for OptSubsystem {
             last_progress: None,
             announced_warnings: Vec::new(),
             seen_hidden: Vec::new(),
+            uv_framed: None,
         }
     }
 }

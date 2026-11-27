@@ -238,7 +238,8 @@ pub fn draw_overlay(
 /// hairline the chrome panels are edged with, so the divider reads as part of
 /// the frame rather than as something in the scene.
 fn draw_split_divider(ctx: &egui::Context, state: &UiState, viewport: egui::Rect) {
-    let opt_split = state.mode == WorkspaceMode::Opt && state.opt.layout == OptLayout::Split;
+    let opt_split = state.mode == WorkspaceMode::Opt
+        && matches!(state.opt.layout, OptLayout::Split | OptLayout::Uv);
     let aud_split = state.mode == WorkspaceMode::Aud && state.aud.split();
     if !opt_split && !aud_split {
         return;
@@ -333,6 +334,27 @@ fn dimension_views<'a>(
             })
         })
         .collect();
+    }
+
+    // The Opt UV view draws the processed mesh (the source until a run lands) into
+    // the left half alone, through the source camera; the right half is its layout.
+    if state.mode == WorkspaceMode::Opt && state.opt.layout == OptLayout::Uv {
+        let (left, _) = split_halves(viewport);
+        let (bounds, model, bvh) = match level {
+            Some(level) => (level_bounds.flatten(), level.model, level.bvh),
+            None => (source_bounds, model, bvh),
+        };
+        return bounds
+            .map(|bounds| DimensionView {
+                camera: half_camera(camera, left),
+                model,
+                bvh,
+                bounds,
+                image: left,
+                clamp: left,
+            })
+            .into_iter()
+            .collect();
     }
 
     // The Aud split draws the model into the left half alone — the right half is the
