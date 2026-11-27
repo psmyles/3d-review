@@ -1,6 +1,7 @@
-//! The indexed-colour view's CPU geometry: a vertex buffer parallel to the
-//! mesh's own (as the heat maps' is), each corner coloured by the palette entry
-//! its vertex colour channel names.
+//! The vertex colours views drawn from a buffer of their own: a vertex buffer
+//! parallel to the mesh's own (as the heat maps' is), each corner coloured by
+//! the palette entry its vertex colour channel names, or grey by one channel
+//! alone.
 //!
 //! A game that reads a vertex colour channel as an index into its palette
 //! stores index ÷ 255 there; this shows what the game would draw. A value that
@@ -10,8 +11,8 @@
 use review_model::ModelData;
 use review_model::color::{linear_to_srgb, srgb_to_linear};
 
-use crate::IndexedColor;
 use crate::scene::SceneVertex;
+use crate::{IndexedColor, VertexColorMode};
 
 use super::deform::corner_deform;
 use super::vertex::push_shaded_vertex;
@@ -73,25 +74,39 @@ pub fn default_palette_color(index: u8) -> [f32; 3] {
     [r + base, g + base, b + base]
 }
 
-/// Build the indexed-colour vertex buffer: the mesh's own positions and normals,
-/// each corner in its palette entry (gamma rgb, fully replacing the shaded
-/// base). An empty `palette` is the built-in one.
-pub(crate) fn indexed_color_vertices(
+/// Build the vertex colours view's own buffer: the mesh's own positions and
+/// normals, each corner (fully replacing the shaded base) in its palette entry
+/// for [`VertexColorMode::Indexed`] (an empty `palette` is the built-in one),
+/// or grey by the one channel a single-channel mode names, shown as linear as
+/// the Alpha mode shows alpha.
+pub(crate) fn vertex_color_view_vertices(
     model: &ModelData,
     lanes: &[[u32; 4]],
+    mode: VertexColorMode,
     view: IndexedColor,
     palette: &[[f32; 3]],
 ) -> Vec<SceneVertex> {
+    let grey_channel = match mode {
+        VertexColorMode::Red => Some(0),
+        VertexColorMode::Green => Some(1),
+        VertexColorMode::Blue => Some(2),
+        _ => None,
+    };
     let channel = usize::from(view.channel.min(3));
     let mut vertices = Vec::with_capacity(model.vertices.len());
     for (index, vertex) in model.vertices.iter().enumerate() {
-        let rgb = match palette_index(vertex.vertex_color[channel], view.srgb) {
-            Some(entry) if palette.is_empty() => default_palette_color(entry),
-            Some(entry) => palette
-                .get(usize::from(entry))
-                .copied()
-                .unwrap_or(NOT_AN_INDEX),
-            None => NOT_AN_INDEX,
+        let rgb = match grey_channel {
+            // The value as the Alpha mode shows its channel: a linear grey. The
+            // buffer holds gamma colour, so it goes in encoded.
+            Some(grey) => [linear_to_srgb(vertex.vertex_color[grey].clamp(0.0, 1.0)); 3],
+            None => match palette_index(vertex.vertex_color[channel], view.srgb) {
+                Some(entry) if palette.is_empty() => default_palette_color(entry),
+                Some(entry) => palette
+                    .get(usize::from(entry))
+                    .copied()
+                    .unwrap_or(NOT_AN_INDEX),
+                None => NOT_AN_INDEX,
+            },
         };
         push_shaded_vertex(
             &mut vertices,

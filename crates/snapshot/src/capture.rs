@@ -152,6 +152,14 @@ impl Capture {
                     tolerance: 2.0,
                 };
             }
+            Look::Red | Look::Green | Look::Blue => {
+                debug.active_material = review_render::ActiveMaterial::VertexColors;
+                debug.vertex_color_mode = match look {
+                    Look::Red => review_render::VertexColorMode::Red,
+                    Look::Green => review_render::VertexColorMode::Green,
+                    _ => review_render::VertexColorMode::Blue,
+                };
+            }
             Look::Palette => {
                 debug.active_material = review_render::ActiveMaterial::VertexColors;
                 debug.vertex_color_mode = review_render::VertexColorMode::Indexed;

@@ -80,6 +80,9 @@ pub(crate) fn vertex_color_mode(mode: VertexColorMode) -> Key {
         VertexColorMode::Alpha => keys::ui_enums::VERTEX_COLOR_ALPHA,
         VertexColorMode::RgbAlpha => keys::ui_enums::VERTEX_COLOR_RGB_ALPHA,
         VertexColorMode::Indexed => keys::ui_enums::VERTEX_COLOR_INDEXED,
+        VertexColorMode::Red => keys::ui_enums::VERTEX_COLOR_RED,
+        VertexColorMode::Green => keys::ui_enums::VERTEX_COLOR_GREEN,
+        VertexColorMode::Blue => keys::ui_enums::VERTEX_COLOR_BLUE,
     }
 }
 

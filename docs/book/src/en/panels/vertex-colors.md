@@ -10,6 +10,10 @@ This panel shows those colors instead of the material.
 - *RGB* - the colors as colors.
 - *Alpha* - the alpha (see-through) value as shades of grey.
 - *RGB with alpha* - the colors, with alpha making parts see-through.
+- *Red channel*, *Green channel*, *Blue channel* - that one channel alone, as
+  shades of grey. A bake written into one channel, such as
+  [edge wear](../opt/wear.md), reads clearly here, where in RGB it would only
+  tint the colors.
 - *Palette index* - one channel read as an index into a palette, and each
   part shown in that palette entry's color: what a game that colors its models
   from a palette would draw. See [below](#palette-index).

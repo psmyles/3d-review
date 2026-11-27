@@ -45,6 +45,9 @@ fn color_mode_row(ui: &mut egui::Ui, mode: &mut VertexColorMode) {
                 VertexColorMode::Rgb,
                 VertexColorMode::Alpha,
                 VertexColorMode::RgbAlpha,
+                VertexColorMode::Red,
+                VertexColorMode::Green,
+                VertexColorMode::Blue,
                 VertexColorMode::Indexed,
             ] {
                 ui.selectable_value(mode, choice, labels::vertex_color_mode(choice));

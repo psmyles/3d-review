@@ -114,11 +114,19 @@ fn add_menu(ui: &mut egui::Ui, state: &mut UiState) {
                 // the bake's write target. On add only — switching again on
                 // select or edit would fight a user who deliberately went back
                 // to Shaded.
-                if let OpKind::BakeAo(params) = &kind {
+                let bake_target = match &kind {
+                    OpKind::BakeAo(params) => Some(params.target),
+                    OpKind::BakeWear(params) => Some(params.target),
+                    _ => None,
+                };
+                if let Some(target) = bake_target {
                     state.debug.active_material = ActiveMaterial::VertexColors;
-                    state.vertex_colors.mode = match params.target {
+                    state.vertex_colors.mode = match target {
                         AoTarget::Alpha => VertexColorMode::Alpha,
-                        _ => VertexColorMode::Rgb,
+                        AoTarget::Red => VertexColorMode::Red,
+                        AoTarget::Green => VertexColorMode::Green,
+                        AoTarget::Blue => VertexColorMode::Blue,
+                        AoTarget::Rgb | AoTarget::MultiplyRgb => VertexColorMode::Rgb,
                     };
                 }
                 // The whole point of a remesh — or of a wrap — is the new

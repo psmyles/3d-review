@@ -38,6 +38,9 @@ ui-enums-vertex-color-rgb = RGB channel
 ui-enums-vertex-color-alpha = Alpha channel
 ui-enums-vertex-color-rgb-alpha = RGB+A channel
 ui-enums-vertex-color-indexed = Palette index
+ui-enums-vertex-color-red = Red channel
+ui-enums-vertex-color-green = Green channel
+ui-enums-vertex-color-blue = Blue channel
 
 ## Scopes
 

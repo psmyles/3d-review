@@ -161,11 +161,18 @@ pub struct IndexedColor {
 }
 
 impl SceneDebugOptions {
-    /// Whether the faces show palette colours: the vertex colours view, reading
-    /// a channel as an index.
-    pub fn indexed_colors(&self) -> bool {
+    /// Whether the vertex colours view draws from a vertex buffer of its own,
+    /// built on the CPU as the heat maps are: one channel read as a palette
+    /// index, or one channel alone as grey.
+    pub fn vertex_color_buffer(&self) -> bool {
         self.active_material == ActiveMaterial::VertexColors
-            && self.vertex_color_mode == VertexColorMode::Indexed
+            && matches!(
+                self.vertex_color_mode,
+                VertexColorMode::Indexed
+                    | VertexColorMode::Red
+                    | VertexColorMode::Green
+                    | VertexColorMode::Blue
+            )
     }
 }
 

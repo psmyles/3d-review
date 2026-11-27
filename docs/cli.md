@@ -487,7 +487,8 @@ them all): models (`.fbx`, `.glb`, `.gltf`, each optionally `@<preset.json>` or
 `@lods` to render an operation stack's output, and `#<level>` for one level);
 `--views` (named views or `yaw,pitch[,zoom]`); `--look` (`shaded`, `matte`,
 `normals`, `wire`, `shaded-wire`, `checker`, `texel-density`, `uv-stretch`,
-`palette`);
+`palette`, and `red`, `green` or `blue` for one vertex color channel alone as
+grey, as a bake into it reads);
 `--size`, `--background`, `--grid`, `--transparent`, `--singles` (each cell as
 its own image too); and:
 

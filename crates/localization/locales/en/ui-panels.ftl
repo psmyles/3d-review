@@ -109,9 +109,10 @@ ui-panels-curve-dot-size = Dot Size
 
 ui-panels-color-mode = Color Mode
     .description = Show the stored colors, show the alpha (see-through) value as shades of
-        grey, show the colors with alpha making parts see-through, or read one channel as
-        an index into a palette and show the palette's colors, as a game that colors its
-        models from a palette would.
+        grey, show the colors with alpha making parts see-through, show one color channel
+        alone as shades of grey (what a bake written into it holds), or read one channel
+        as an index into a palette and show the palette's colors, as a game that colors
+        its models from a palette would.
 ui-panels-index-channel = Index channel
     .description = The channel that holds the palette index, as index / 255: a value of
         3/255 is entry 3. A value that is no whole index, or an index past the end of

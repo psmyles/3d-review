@@ -10,9 +10,9 @@ use review_model::{Bounds, ModelData};
 
 use crate::geometry::{
     BoneTint, audit_lines, bounding_box_lines, face_normal_lines, group_triangles, heat_vertices,
-    indexed_color_vertices, model_pivot, node_edge_lines, pivot_half_extent, pivot_lines,
-    skeleton_fill_triangles, skeleton_lines, skin_weight_vertices, trajectory_geometry,
-    trajectory_node_colors, uv_seam_lines, vertex_normal_lines, wireframe_edge_indices,
+    model_pivot, node_edge_lines, pivot_half_extent, pivot_lines, skeleton_fill_triangles,
+    skeleton_lines, skin_weight_vertices, trajectory_geometry, trajectory_node_colors,
+    uv_seam_lines, vertex_color_view_vertices, vertex_normal_lines, wireframe_edge_indices,
 };
 use crate::rhi::{GpuResult, StorageBuffer, VertexBuffer};
 use crate::selection::{Selection, selection_bounds};
@@ -384,10 +384,11 @@ impl SceneGpu {
         Ok(())
     }
 
-    /// Build (or free) the indexed-colour view in the skin-weight map's buffer
-    /// slot, when no heat map or weight map holds it: rebuilt when the model, the
-    /// channel or the palette change, freed when switched off (invariant 3).
-    /// Call after [`Self::sync_heat_map`].
+    /// Build (or free) the vertex colours view's own buffer (a palette index, or
+    /// one channel as grey) in the skin-weight map's buffer slot, when no heat
+    /// map or weight map holds it: rebuilt when the model, the mode, the channel
+    /// or the palette change, freed when switched off (invariant 3). Call after
+    /// [`Self::sync_heat_map`].
     pub(super) fn sync_indexed_colors(
         &mut self,
         model: &ModelData,
@@ -397,7 +398,7 @@ impl SceneGpu {
     ) -> GpuResult<()> {
         let views = &mut self.active.views;
         let held_elsewhere = views.heat_baked.is_some() || views.weights_baked.is_some();
-        if !debug.indexed_colors() || held_elsewhere {
+        if !debug.vertex_color_buffer() || held_elsewhere {
             if views.indexed_baked.take().is_some() && !held_elsewhere {
                 views.weights_buf = None;
             }
@@ -406,17 +407,30 @@ impl SceneGpu {
         if views
             .indexed_baked
             .as_ref()
-            .is_some_and(|(revision, view, baked)| {
-                *revision == model_revision && *view == debug.indexed_color && baked == palette
+            .is_some_and(|(revision, mode, view, baked)| {
+                *revision == model_revision
+                    && *mode == debug.vertex_color_mode
+                    && *view == debug.indexed_color
+                    && baked == palette
             })
         {
             return Ok(());
         }
-        let vertices =
-            indexed_color_vertices(model, self.active.lanes(), debug.indexed_color, palette);
+        let vertices = vertex_color_view_vertices(
+            model,
+            self.active.lanes(),
+            debug.vertex_color_mode,
+            debug.indexed_color,
+            palette,
+        );
         let views = &mut self.active.views;
         views.weights_buf = optional_vertex_buffer(&vertices)?;
-        views.indexed_baked = Some((model_revision, debug.indexed_color, palette.to_vec()));
+        views.indexed_baked = Some((
+            model_revision,
+            debug.vertex_color_mode,
+            debug.indexed_color,
+            palette.to_vec(),
+        ));
         Ok(())
     }
 

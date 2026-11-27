@@ -7,7 +7,10 @@ exactly where a part's edges are, with no texture painted for it.
 
 It works from the shape alone, so it is fast and gives the same result every
 time. Put it below **Generate LODs** and every level gets values from its own
-edges.
+edges. Adding the operation switches the view to the
+[vertex color mode](../panels/vertex-colors.md) that shows the channel it
+writes - the blue channel alone, as grey, to start with - so you see the wear
+right away.
 
 ## How it measures
 

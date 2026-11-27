@@ -39,7 +39,7 @@ pub(crate) use audit::audit_lines;
 pub(crate) use grid::{scene_lines, uv_grid_lines};
 pub(crate) use heat::heat_vertices;
 pub(crate) use hidden::visible_triangle_indices;
-pub(crate) use indexed::indexed_color_vertices;
+pub(crate) use indexed::vertex_color_view_vertices;
 pub use indexed::{NOT_AN_INDEX, default_palette_color, palette_index};
 pub(crate) use markers::{bounding_box_lines, model_pivot, pivot_half_extent, pivot_lines};
 pub(crate) use mesh::{group_triangles, model_mesh};

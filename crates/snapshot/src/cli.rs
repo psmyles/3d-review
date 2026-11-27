@@ -31,7 +31,8 @@ OPTIONS
   --uv-density <n>      UV units per metre the layout is meant to have (default 1):
                         sizes --checker-square, and centres the texel-density look
   --look <list>         ','-separated: shaded, matte, normals, wire, shaded-wire,
-                        checker, texel-density, uv-stretch, palette
+                        checker, texel-density, uv-stretch, palette, and red,
+                        green or blue (that vertex colour channel alone, as grey)
                         (default shaded)
   --index <r|g|b|a>[:srgb]
                         the vertex colour channel the palette look reads as an index
@@ -190,6 +191,10 @@ pub enum Look {
     /// A vertex colour channel read as a palette index (`--index`), each corner
     /// in the built-in palette's entry for it, magenta where it is no index.
     Palette,
+    /// One vertex colour channel alone, as grey: what a bake into it holds.
+    Red,
+    Green,
+    Blue,
 }
 
 impl Look {
@@ -204,6 +209,9 @@ impl Look {
             Look::TexelDensity => "texel-density",
             Look::UvStretch => "uv-stretch",
             Look::Palette => "palette",
+            Look::Red => "red",
+            Look::Green => "green",
+            Look::Blue => "blue",
         }
     }
 }
@@ -454,6 +462,9 @@ fn parse_look(text: &str) -> Result<Look> {
         "texel-density" => Look::TexelDensity,
         "uv-stretch" => Look::UvStretch,
         "palette" => Look::Palette,
+        "red" => Look::Red,
+        "green" => Look::Green,
+        "blue" => Look::Blue,
         _ => bail!("unknown look {text}"),
     })
 }

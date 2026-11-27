@@ -66,6 +66,9 @@ enum_codec!(vertex_color_id, vertex_color_from, VertexColorMode {
     VertexColorMode::Alpha => "alpha",
     VertexColorMode::RgbAlpha => "rgb_alpha",
     VertexColorMode::Indexed => "indexed",
+    VertexColorMode::Red => "red",
+    VertexColorMode::Green => "green",
+    VertexColorMode::Blue => "blue",
 });
 
 enum_codec!(material_mode_id, material_mode_from, MaterialMode {
