@@ -40,7 +40,8 @@ surface curves: the right choice for a model with no seams worth keeping.
 
 Adding the operation switches the comparison to the
 [UV view](comparison.md#layouts): the result under the checker beside its
-layout, in the set the operation writes.
+layout, in the set the operation writes. While it runs, each object appears
+with its new UVs as soon as it is done.
 
 **UV set** - which set to write: one of the model's own, listed by number and
 name and replaced, or **new set**, added after its last. The first set to

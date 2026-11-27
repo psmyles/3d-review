@@ -62,18 +62,31 @@ pub use progress::{OptProgress, OptProgressSink, OptStage, RunContext};
 
 /// A mesh from part way through a run, for a caller that shows one.
 ///
-/// Level 0 only, and measured for nothing: no metrics, no tangents, no
-/// spatial index. It is what the viewport draws while the run finishes, and
-/// everything a finished [`ProcessedResult`] carries beside the mesh is work
-/// that would be thrown away a second later.
+/// Measured for nothing: no metrics, no tangents, no spatial index. It is what
+/// the viewport draws while the run finishes, and everything a finished
+/// [`ProcessedResult`] carries beside the mesh is work that would be thrown
+/// away a second later.
 #[derive(Debug, Clone)]
 pub struct OptPreview {
     pub model: ModelData,
+    /// The level it is a preview of. The operations above the LOD fan-out
+    /// shape level 0; the ones below it preview the level asked for
+    /// ([`OptPreviewRequest::level`]).
+    pub level: usize,
 }
 
 /// What [`process_progressive`] hands its previews to. Called on the run's own
 /// thread, so it must be cheap and must not block.
 pub type OptPreviewSink<'a> = &'a dyn Fn(OptPreview);
+
+/// A caller's wish to watch a run: where previews go, and which level the
+/// operations below the LOD fan-out preview — the one on screen. The ones
+/// above it preview level 0, which every level is made from.
+#[derive(Clone, Copy)]
+pub struct OptPreviewRequest<'a> {
+    pub sink: OptPreviewSink<'a>,
+    pub level: usize,
+}
 
 pub(crate) use assemble::*;
 pub(crate) use carry::*;
@@ -189,7 +202,7 @@ pub fn process_cancellable(
 pub fn process_progressive(
     input: ProcessInput<'_>,
     progress: OptProgressSink<'_>,
-    preview: Option<OptPreviewSink<'_>>,
+    preview: Option<OptPreviewRequest<'_>>,
     cancel: Option<&CancelToken>,
 ) -> Result<ProcessedResult, OptError> {
     let _z = crate::prof::zone!("Process Stack");
@@ -292,14 +305,29 @@ pub fn process_progressive(
     // the model or the tag presence around just in case.
     let watched;
     let watching = match preview {
-        Some(sink) => {
+        Some(request) => {
             watched = move |pieces: &[&submesh::Submesh]| {
                 let (model, _) = assemble(pieces, input.model, tags, 0, &mut Warnings::default());
-                sink(OptPreview { model });
+                (request.sink)(OptPreview { model, level: 0 });
             };
             run.watching(&watched)
         }
         None => run,
+    };
+    // Below the fan-out, the level on screen is the one worth watching: an
+    // Unwrap or a bake there takes as long as one above it.
+    let level_watched;
+    let level_watching = match preview {
+        Some(request) => {
+            let level = request.level;
+            level_watched = move |pieces: &[&submesh::Submesh]| {
+                let (model, _) =
+                    assemble(pieces, input.model, tags, level, &mut Warnings::default());
+                (request.sink)(OptPreview { model, level });
+            };
+            Some((level, run.watching(&level_watched)))
+        }
+        None => None,
     };
 
     let mut base_error = 0.0f32;
@@ -365,8 +393,12 @@ pub fn process_progressive(
     levels[0].submeshes = submeshes;
 
     let reduced_after = runs_reduce(post_ops);
-    for level in &mut levels {
+    for (index, level) in levels.iter_mut().enumerate() {
         level.simplified |= reduced_after;
+        let level_run = match level_watching {
+            Some((watched_level, watching)) if watched_level == index => watching,
+            _ => run,
+        };
         for op in post_ops {
             if run.cancelled() {
                 return Err(OptError::Cancelled);
@@ -378,7 +410,7 @@ pub fn process_progressive(
                 input.model,
                 input.hidden_nodes,
                 &mut warnings,
-                &run,
+                &level_run,
             );
             level.simplify_error = level.simplify_error.max(ran.error);
             // A Reduce below the chain simplifies every level again, toward its
@@ -740,7 +772,10 @@ mod tests {
                 extras: None,
             },
             &|_| {},
-            Some(&|preview| previews.borrow_mut().push(preview.model)),
+            Some(OptPreviewRequest {
+                sink: &|preview| previews.borrow_mut().push(preview.model),
+                level: 0,
+            }),
             None,
         );
 
@@ -1281,6 +1316,51 @@ mod tests {
         }
         model.recompute_bounds();
         model
+    }
+
+    /// An Unwrap below the LOD fan-out previews the level the caller watches,
+    /// object by object: the first object to land is shown with its new UV set
+    /// while the others are still being unwrapped, and no other level is.
+    #[test]
+    fn an_unwrap_below_the_chain_previews_the_watched_level() {
+        if !crate::xatlas::available() {
+            return;
+        }
+        let model = corner_split_grids(4, 6);
+        let mut stack = OptStack::default();
+        stack.push_op(OpKind::SimplifyLod(crate::stack::LodParams::default()));
+        stack.push_op(OpKind::Unwrap(crate::stack::UnwrapParams {
+            target_set: 1,
+            ..crate::stack::UnwrapParams::default()
+        }));
+        let previews = std::cell::RefCell::new(Vec::new());
+        let result = process_progressive(
+            ProcessInput {
+                model: &model,
+                stack: &stack,
+                render_vertex_size: VERTEX_SIZE,
+                hidden_nodes: &[],
+                extras: None,
+            },
+            &|_| {},
+            Some(OptPreviewRequest {
+                sink: &|preview| previews.borrow_mut().push(preview),
+                level: 1,
+            }),
+            None,
+        )
+        .expect("the run finishes");
+        let previews = previews.into_inner();
+        assert!(!previews.is_empty(), "the unwrap showed its progress");
+        assert!(previews.iter().all(|preview| preview.level == 1));
+        // Part way: the new set exists, with the level's triangles.
+        let first = &previews[0].model;
+        assert!(first.uv_channels.len() >= 2, "the new set is there");
+        assert_eq!(
+            first.indices.len(),
+            result.lods[1].model.indices.len(),
+            "it is the watched level"
+        );
     }
 
     /// An excluded object goes through the lossless index pass like any other:

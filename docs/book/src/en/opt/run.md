@@ -54,10 +54,16 @@ slow.
 
 ## Watching a rebuild settle
 
-[Remesh](remesh.md) is the one operation whose work is worth watching. It
-improves its answer in passes, and each pass is a complete mesh, so the viewport
-shows the rebuild converging in place instead of holding the old result until
-the end. What you see is the real thing getting steadily better.
+Two operations show their work as it happens. [Remesh](remesh.md) improves its
+answer in passes, and each pass is a complete mesh, so the viewport shows the
+rebuild converging in place instead of holding the old result until the end.
+[Unwrap UVs](unwrap.md) shows each object with its new UVs as soon as that
+object is done, on the model and in the [UV view](comparison.md#layouts)'s
+layout, while the rest are still being unwrapped. What you see is the real
+thing filling in.
+
+Below **Generate LODs** an operation runs once per level, and it is the level
+on screen that is shown as it works.
 
 The stats card is the exception and deliberately so: it keeps showing the last
 *finished* run until this one lands. A half-measured count is worse than a

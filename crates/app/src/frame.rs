@@ -465,9 +465,10 @@ impl App {
         let opt_result = opt_revision
             .and(self.opt.as_ref())
             .and_then(|opt| opt.processed.clone());
-        // A run in flight publishes level 0 as it improves it, and that is what
-        // the viewport shows until the run lands — so a rebuild is watched
-        // settling rather than waited out. Held as its own `Arc` for the same
+        // A run in flight publishes the level on screen as it improves it (level 0
+        // above the LOD fan-out, the shown level below it), and that is what the
+        // viewport shows until the run lands — so a rebuild or an unwrap is
+        // watched settling rather than waited out. Held as its own `Arc` for the same
         // reason the result is: the borrow below outlives the `self` reborrow.
         let opt_preview = opt_revision
             .and(self.opt.as_ref())

@@ -74,9 +74,9 @@ pub use cancel::CancelToken;
 pub use export::{ExportReport, export, export_fbx, export_glb};
 pub use notice::{ExportNote, OptWarning};
 pub use process::{
-    Aim, AnalysisMetrics, MeshCounts, OptPreview, OptPreviewSink, OptProgress, OptProgressSink,
-    OptStage, ProcessInput, ProcessedLod, ProcessedResult, Shortfall, process, process_cancellable,
-    process_progressive, process_with_progress,
+    Aim, AnalysisMetrics, MeshCounts, OptPreview, OptPreviewRequest, OptPreviewSink, OptProgress,
+    OptProgressSink, OptStage, ProcessInput, ProcessedLod, ProcessedResult, Shortfall, process,
+    process_cancellable, process_progressive, process_with_progress,
 };
 pub use quality::{LevelQuality, QualityLimits};
 pub use replace_file::{Staged, write_bytes_replacing, write_replacing};

@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use review_model::{ModelData, SceneBvh};
 use review_optimize::{
-    CancelToken, OpKind, OptError, OptPreview, OptProgress, OptStack, OptStage, OptWarning,
-    ProcessInput, ProcessedResult, process_progressive,
+    CancelToken, OpKind, OptError, OptPreview, OptPreviewRequest, OptProgress, OptStack, OptStage,
+    OptWarning, ProcessInput, ProcessedResult, process_progressive,
 };
 
 use review_ui::{NoticeKind, OptLevelView, OptResultView};
@@ -48,6 +48,8 @@ pub(crate) struct OptPreviewed {
     /// Matched against the current generation exactly as [`OptProcessed`] is.
     pub(crate) generation: u64,
     pub(crate) model: ModelData,
+    /// The level it stands in for.
+    pub(crate) level: usize,
 }
 
 /// A run reporting where it has got to, posted from the worker thread.
@@ -305,6 +307,9 @@ impl App {
     /// Start a worker for the current stack.
     fn spawn_process(&mut self) {
         let stack = Arc::clone(&self.ui.opt.stack);
+        // The level on screen, for the operations below the LOD fan-out to
+        // preview as they work on it.
+        let preview_level = self.ui.opt.active_lod;
         let model = Arc::clone(&self.scene_model);
         let extras = self.scene_extras.clone();
         let stack_revision = self.ui.opt.stack_revision;
@@ -419,6 +424,7 @@ impl App {
                         OptPreviewed {
                             generation,
                             model: preview.model,
+                            level: preview.level,
                         },
                     )));
                 };
@@ -433,7 +439,10 @@ impl App {
                             extras: extras.as_deref(),
                         },
                         &report,
-                        Some(&show),
+                        Some(OptPreviewRequest {
+                            sink: &show,
+                            level: preview_level,
+                        }),
                         Some(&cancel),
                     )
                 };
@@ -586,6 +595,7 @@ impl App {
         if let Some(opt) = self.opt.as_mut() {
             opt.preview = Some(OptPreviewMesh {
                 model: Arc::new(message.model),
+                level: message.level,
                 revision,
             });
         }
@@ -777,6 +787,7 @@ mod tests {
     fn preview(revision: u64) -> Option<OptPreviewMesh> {
         Some(OptPreviewMesh {
             model: Arc::new(ModelData::default()),
+            level: 0,
             revision,
         })
     }

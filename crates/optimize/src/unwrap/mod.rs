@@ -46,6 +46,9 @@ mod layout;
 #[cfg(test)]
 mod tests;
 
+/// The least time between two previews of an unwrap in progress.
+const PREVIEW_INTERVAL: std::time::Duration = std::time::Duration::from_millis(150);
+
 /// Where a piece's seam ids are read from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SeamKey {
@@ -141,6 +144,11 @@ pub(crate) fn unwrap_submeshes(
     let pieces: &[Submesh] = submeshes;
     let mut results: Vec<Option<Result<Vec<Submesh>, String>>> =
         (0..jobs.len()).map(|_| None).collect();
+    // While someone watches, the scene is shown with each object's new UVs as
+    // it lands — at most every `PREVIEW_INTERVAL`, as a preview costs an
+    // assemble of the level. Only what is shown depends on the timing.
+    let mut last_preview: Option<std::time::Instant> = None;
+    let mut landed = 0;
     crate::parallel::solve_nodes(
         &jobs,
         run.token(),
@@ -148,7 +156,24 @@ pub(crate) fn unwrap_submeshes(
             let own: Vec<&Submesh> = members.iter().map(|&at| &pieces[at]).collect();
             unwrap_node(&own, params, *key, uv_sets)
         },
-        |index, result| results[index] = Some(result),
+        |index, result| {
+            results[index] = Some(result);
+            landed += 1;
+            let due = last_preview.is_none_or(|shown| shown.elapsed() >= PREVIEW_INTERVAL);
+            // The last object's landing is the result itself, a moment later.
+            if run.wants_preview() && due && landed < jobs.len() {
+                last_preview = Some(std::time::Instant::now());
+                let mut scene: Vec<&Submesh> = pieces.iter().collect();
+                for ((members, _, _), landed) in jobs.iter().zip(&results) {
+                    if let Some(Ok(unwrapped)) = landed {
+                        for (&at, piece) in members.iter().zip(unwrapped) {
+                            scene[at] = piece;
+                        }
+                    }
+                }
+                run.preview(&scene);
+            }
+        },
         |_, ()| {},
     );
     for ((members, _, _), result) in jobs.iter().zip(results) {

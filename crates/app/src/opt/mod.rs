@@ -167,6 +167,8 @@ impl Default for OptSubsystem {
 #[derive(Debug)]
 struct OptPreviewMesh {
     model: Arc<ModelData>,
+    /// The level it stands in for.
+    level: usize,
     /// Issued for this mesh alone. The renderer keys its mesh buffers on the
     /// revision, so the finished level behind the preview keeps its own number
     /// and is uploaded again when the preview goes — whether the run finished,
@@ -201,7 +203,9 @@ impl OptSubsystem {
     /// [`Self::level_mesh`] and [`Self::drawn_revision`] share, so the mesh drawn
     /// and the revision it is drawn under cannot disagree.
     fn shown_preview(&self, level: usize) -> Option<&OptPreviewMesh> {
-        self.preview.as_ref().filter(|_| level == 0)
+        self.preview
+            .as_ref()
+            .filter(|preview| preview.level == level)
     }
 
     /// [`Self::preview_of`] as an owned handle, which the renderer's borrow of
