@@ -38,8 +38,9 @@ surface curves: the right choice for a model with no seams worth keeping.
 
 **Layout** - Tiled or Atlas, as above.
 
-**UV set** - which set to write, counting from 0. A set past the model's last is
-added; in a glTF file, set 0 is `TEXCOORD_0`.
+**UV set** - which set to write: one of the model's own, listed by number and
+name and replaced, or **new set**, added after its last. The first set to
+start with; in a glTF file, set 0 is `TEXCOORD_0`.
 
 **Reference UV set** - the set the new islands are turned to match, compared
 with, and cut along. Turn it off for a model whose UVs mean nothing.

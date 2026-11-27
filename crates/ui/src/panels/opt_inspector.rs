@@ -597,14 +597,15 @@ fn unwrap_params(
                 }
             },
         );
-        labeled_slider_with_value(
+        uv_set_row(
             ui,
             Tip::new(keys::ui_opt::UNWRAP_TARGET_SET)
                 .describe(keys::ui_opt::UNWRAP_TARGET_SET_DESCRIPTION)
                 .page(Page::OptUnwrap),
+            "opt_unwrap_target_set",
             &mut edited.target_set,
-            0..=UV_SET_MAX,
-            0,
+            model,
+            true,
         );
         let mut referenced = edited.reference_set.is_some();
         labeled_checkbox(
@@ -616,12 +617,13 @@ fn unwrap_params(
         );
         edited.reference_set = match (referenced, edited.reference_set) {
             (true, Some(mut set)) => {
-                labeled_slider_with_value(
+                uv_set_row(
                     ui,
                     Tip::new(keys::ui_opt::UNWRAP_REFERENCE_SET).page(Page::OptUnwrap),
+                    "opt_unwrap_reference_set",
                     &mut set,
-                    0..=UV_SET_MAX,
-                    0,
+                    model,
+                    false,
                 );
                 Some(set)
             }
@@ -750,6 +752,40 @@ fn unwrap_params(
         }
     });
     (edited != *params).then_some(edited)
+}
+
+/// A UV set dropdown: each of the model's sets by its name, and, where a set
+/// can be written, a new one after its last. A set the stack names that the
+/// model does not have (a preset made for another model) is listed too, so
+/// the dropdown never hides what the operation will do.
+fn uv_set_row(
+    ui: &mut egui::Ui,
+    label: Tip,
+    id: &str,
+    set: &mut u32,
+    model: &ModelData,
+    offer_new: bool,
+) {
+    let count = (model.stats.uv_set_count as u32).min(UV_SET_MAX + 1);
+    let name = |set: u32| -> String {
+        if set < count {
+            keys::ui_opt::unwrap_uv_set(f64::from(set), model.uv_set_label(set as usize))
+        } else {
+            keys::ui_opt::unwrap_new_uv_set(f64::from(set))
+        }
+    };
+    let mut choices: Vec<u32> = (0..count).collect();
+    if offer_new && count <= UV_SET_MAX {
+        choices.push(count);
+    }
+    if !choices.contains(set) {
+        choices.push(*set);
+    }
+    labeled_combo(ui, label, id, name(*set), |ui| {
+        for choice in choices {
+            ui.selectable_value(set, choice, name(choice));
+        }
+    });
 }
 
 fn bake_ao_params(ui: &mut egui::Ui, params: BakeAoParams) -> Option<BakeAoParams> {
