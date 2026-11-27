@@ -39,3 +39,21 @@ P1  The four transcendental functions xatlas calls — `acosf`, `sinf`, `cosf`,
     Modified by the 3D Review project on 2026-11-26, for the reason above (the
     notice OpenNL's license asks a modifier to give; the modified lines are not
     in OpenNL's own code).
+
+P2  An orthogonal projection of a chart is kept only when it is all but exact
+    (`REVIEW_XATLAS_ORTHO_STRETCH`, `REVIEW_XATLAS_ORTHO_MAX_STRETCH`); the rest
+    are flattened by LSCM.
+
+P3  Chart growth's normal-deviation limit and its parameterization check are
+    set per thread (`review_xatlas_set_growth`), so islands can be grown whole.
+
+P4  OpenNL's `nlCoeffCompare`, the comparator the solver's `qsort` sorts each
+    matrix row with, returned 1 or 0 and never a negative value. glibc's sort
+    copes and MSVC's does not (it takes a 0 as "equal to the pivot"), so a row
+    stayed unsorted on Windows and was summed in another order: UVs a rounding
+    apart from Linux. It now returns a true three-way comparison; a row's
+    indices are distinct, so every sort gives the one order.
+
+    Modified by the 3D Review project on 2026-11-27, for the reason above. This
+    change is to OpenNL's own code (BSD 3-Clause, Copyright (c) 2004-2010, Bruno
+    Levy).

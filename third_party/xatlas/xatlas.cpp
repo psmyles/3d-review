@@ -4157,10 +4157,21 @@ static void nlRowColumnClear(NLRowColumn* c)
 	NL_DELETE_ARRAY(c->coeff);
 }
 
+// review patch P4: upstream returned `p2 < p1` (1 or 0, never negative), which
+// is no ordering for qsort to rely on. glibc's merge sort only asks "<= 0" and
+// sorts the row all the same; MSVC's quicksort also takes a 0 as "equal to the
+// pivot" and leaves those out of the next pass, so on Windows a row of more
+// than 8 coefficients could stay unsorted - and the solver sums each row in its
+// order, so the UVs came out a rounding apart. A row's indices are distinct
+// (`nlRowColumnAdd` merges a repeat), so a true ordering gives one order on
+// every OS.
 static int nlCoeffCompare(const void* p1, const void* p2)
 {
-	return (((NLCoeff*)(p2))->index < ((NLCoeff*)(p1))->index);
+	const uint32_t a = ((const NLCoeff*)(p1))->index;
+	const uint32_t b = ((const NLCoeff*)(p2))->index;
+	return (a > b) - (a < b);
 }
+// end review patch P4
 
 static void nlRowColumnSort(NLRowColumn* c)
 {
