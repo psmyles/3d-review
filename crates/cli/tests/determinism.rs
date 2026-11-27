@@ -1,15 +1,14 @@
 //! The same input and settings give the same bytes: on every run, at any thread
-//! count, and on every OS (the pipeline plan, item 2.4).
+//! count, and on every OS (D27).
 //!
-//! `optimize` runs over the CAD kit's fine parts
-//! (`experiments/cad-kit/inputs`) and the committed fixtures,
-//! through stacks that between them take every floating-point path a run has —
-//! welding, both simplifiers, normals, the AO bake, the reorders, the remesher,
-//! the shrinkwrap and the unwrap — the kit once more as glb, written as glb, and every
-//! file written is hashed against
-//! `determinism.sha256`, which was recorded on another OS. A mismatch means this
-//! OS's compiler or maths library rounds something differently from the one
-//! that recorded it, and names the files it shows in.
+//! `optimize` runs over the committed fixtures, through stacks that between them
+//! take every floating-point path a run has — welding, both simplifiers,
+//! normals, the AO bake, the reorders, the remesher, the shrinkwrap and the
+//! unwrap — and over the glb fixture written as glb, cut at its CAD faces. Every
+//! file written is hashed against `determinism.sha256`, which was recorded on
+//! another OS. A mismatch means this OS's compiler or maths library rounds
+//! something differently from the one that recorded it, and names the files it
+//! shows in.
 //!
 //! `REVIEW_RECORD_HASHES=1` rewrites the file instead of checking it. Do that
 //! only for a change that is *meant* to change the output, say so in the commit,
@@ -29,12 +28,6 @@ use sha2::{Digest, Sha256};
 const BINARY: &str = env!("CARGO_BIN_EXE_review3d-cli");
 
 /// Relative to the repository root. All of them are committed, so none skips.
-const KIT: &[&str] = &[
-    "experiments/cad-kit/inputs/link.fbx",
-    "experiments/cad-kit/inputs/shell.fbx",
-    "experiments/cad-kit/inputs/hinge_block.fbx",
-    "experiments/cad-kit/inputs/hinge_pin.fbx",
-];
 const FIXTURES: &[&str] = &[
     "assets/test_models/meter_cube.fbx",
     "assets/test_models/monkey.fbx",
@@ -47,13 +40,9 @@ fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// The kit's parts as glb (`blender_kit_glb.py`), the CAD face id in `_CAD_FACE`.
-const KIT_GLB: &[&str] = &[
-    "experiments/cad-kit/inputs/link.glb",
-    "experiments/cad-kit/inputs/shell.glb",
-    "experiments/cad-kit/inputs/hinge_block.glb",
-    "experiments/cad-kit/inputs/hinge_pin.glb",
-];
+/// The glb fixture (`make_hierarchy_glb.py`): two materials, a 16-bit palette
+/// colour and an integer `_CAD_FACE`, as Blender writes them.
+const GLB: &[&str] = &["assets/test_models/hierarchy.glb"];
 
 /// The stacks, by name, with the models each runs on and the options beside
 /// the preset. Each name is the folder its files are hashed under, so renaming
@@ -100,7 +89,7 @@ fn stacks() -> Vec<(&'static str, OptStack, Vec<&'static str>, Vec<&'static str>
     // The two rebuilds, which are this repository's own parallel code: a closed
     // shell, then retopology of it. Not over the wall, whose 94 separate pieces
     // each get a shell of their own: two minutes in a debug build, and nothing
-    // the kit's parts do not already cover.
+    // the monkey and the cube do not already cover.
     let mut rebuild = OptStack::default();
     rebuild.push_op(OpKind::Shrinkwrap(ShrinkwrapParams::default()));
     rebuild.push_op(OpKind::Remesh(RemeshParams::default()));
@@ -126,17 +115,15 @@ fn stacks() -> Vec<(&'static str, OptStack, Vec<&'static str>, Vec<&'static str>
         ..UnwrapParams::default()
     }));
 
-    let everything = KIT.iter().chain(FIXTURES).copied().collect();
-    let rebuildable = KIT
-        .iter()
-        .copied()
-        .chain(["assets/test_models/monkey.fbx"])
-        .collect();
+    let rebuildable = vec![
+        "assets/test_models/meter_cube.fbx",
+        "assets/test_models/monkey.fbx",
+    ];
     vec![
-        ("chain", chain, everything, Vec::new()),
+        ("chain", chain, FIXTURES.to_vec(), Vec::new()),
         ("rebuild", rebuild, rebuildable, Vec::new()),
         // The glb writer, and custom attributes through every operation.
-        ("glb", glb_chain, KIT_GLB.to_vec(), vec!["--format", "glb"]),
+        ("glb", glb_chain, GLB.to_vec(), vec!["--format", "glb"]),
         (
             "unwrap",
             unwrap,

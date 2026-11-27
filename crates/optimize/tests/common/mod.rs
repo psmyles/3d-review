@@ -78,6 +78,40 @@ pub fn fixture(name: &str) -> Option<ModelData> {
     }
 }
 
+/// The CAD kit's files with `extension` (`glb`, `fbx`), sorted by name.
+///
+/// The kit is a set of fine CAD parts — tessellated per CAD face, the face id in
+/// `_CAD_FACE` and its region (faces joined across straight tangent edges) in
+/// `_CAD_REGION`, or in an FBX as U of UV sets 1 and 2 — beside a
+/// `baseline.json` of per-part budgets and baseline measurements. It is not in
+/// this repository: the tests that need it are `#[ignore]`d, with `cad_kit` in
+/// their names, and read it from the folder `REVIEW_CAD_KIT` names. Run with
+/// `--ignored` and no kit, they fail rather than skip: asking for them is
+/// asking for the kit.
+pub fn cad_kit(extension: &str) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(cad_kit_dir())
+        .expect("REVIEW_CAD_KIT names a folder")
+        .map(|entry| entry.expect("a folder entry").path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == extension))
+        .collect();
+    files.sort();
+    assert!(!files.is_empty(), "the CAD kit has no .{extension} files");
+    files
+}
+
+/// The CAD kit's folder: see [`cad_kit`].
+pub fn cad_kit_dir() -> PathBuf {
+    let dir = std::env::var_os("REVIEW_CAD_KIT")
+        .map(PathBuf::from)
+        .expect("this test needs the CAD kit: set REVIEW_CAD_KIT to its folder");
+    assert!(
+        dir.is_dir(),
+        "REVIEW_CAD_KIT is not a folder: {}",
+        dir.display()
+    );
+    dir
+}
+
 /// A fixture with its source-property capture, or `None` when this checkout
 /// cannot run the test.
 pub fn fixture_full(name: &str) -> Option<(ModelData, SourceExtras)> {

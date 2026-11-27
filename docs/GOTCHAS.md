@@ -52,9 +52,19 @@ its tests at one that still exercises the same property; a test no remaining
 fixture can exercise (a skinned character, today) stays, `#[ignore]`d with the
 reason, rather than passing by skipping.
 
+**The CAD tests need a kit this repository does not hold.** The unwrap's CAD
+baseline, its region seams and the glb round trip of Blender-written CAD parts
+are measured on a set of fine CAD parts (tessellated per CAD face, with
+`_CAD_FACE` and `_CAD_REGION`, and a `baseline.json` of budgets and baseline
+figures) that lives outside this public repository. Those tests are
+`#[ignore]`d with `cad_kit` in their names; point `REVIEW_CAD_KIT` at the kit's
+folder and run them with `cargo test --release -p review-optimize -- --ignored
+cad_kit`. They walk whatever parts the folder holds and name none, so the kit
+can change without a change here. Asked for without the variable, they fail
+rather than skip. Everything else uses the committed fixtures.
+
 **The output's bytes are pinned across OSes** (D27). `review-cli`'s
-`tests/determinism.rs` runs `optimize` through two stacks over the
-CAD kit (`experiments/cad-kit/inputs`) and the committed
+`tests/determinism.rs` runs `optimize` through four stacks over the committed
 fixtures, and compares every file's SHA-256 with `tests/determinism.sha256`.
 The hashes were recorded on one OS and are checked on the others, so a failure
 on one machine only is two toolchains rounding differently: find the operation
@@ -1045,6 +1055,67 @@ relabelled into the first half, leaving the other empty — and the pair, a clos
 two-triangle pillow, fell through to a flattening of nothing, every UV at zero.
 A seed is never relabelled.
 
+### A CAD part's seams belong at its creases and its curved blends, not its straight fillets
+
+One island per CAD face (`cad_islands("_CAD_FACE")`) puts a seam down both sides
+of every fillet, because a fillet is a face of its own: on a filleted machine
+part that was 4.25 m of seam across smooth surface, against 0.41 m inside faces.
+Measured over the CAD kit (see Testing; LOD0, seams classed by the fine
+source's dihedral, which splits cleanly: tangent at 0-5 degrees, creases at 30
+or more, nothing between; the CAD tool's exact test gives 1e-6 degrees against
+90):
+
+- **Existing seams Prefer instead of a seam attribute** is worse on every part:
+  it moves seams *into* faces (the filleted part 1.6 m, a doubly curved shell
+  2.6 m) and stretches more.
+  A preferred seam is only a cost discount; where the planner needs a cut,
+  stretch decides where it goes, not the CAD boundary.
+- **Joining faces across every tangent edge** removes the most seam (visible
+  4.7 m to 1.4 m) but a fillet round a *curved* edge is a torus: a chart of flat
+  top, toroidal fillet and rounded side cannot keep one grain, so the checker
+  swings round the end, and the planner opens the band with a seam down the
+  middle of the rounded face. Density spread goes to +-3 %, stretch p95 to 1.15.
+- **Joining only across tangent edges that are straight lines** halves the
+  visible seam (4.7 m to 2.4 m, 56 islands to 41) at no cost at all: stretch p95
+  1.000 and density 1.000-1.000, as with face islands. Two surfaces tangent
+  along a straight line unroll together without stretch; the toroidal blends
+  keep their own islands, which is where their seams belong.
+
+So the region is decided upstream, by the CAD exporter on the exact geometry
+(two faces join where their normals agree within 0.5 degrees all along the edge
+they share and every sample of that edge lies within 1e-4 mm of its chord), and
+carried as `_CAD_REGION` (in an FBX, as U of a UV set of its own);
+`cad_islands` cuts along it with Existing seams **Prefer**, since **Cut** would
+cut every face of a region apart again at its own CAD UVs. On a part with no
+tangent edges that is the face islands again, except that a face's periodic
+seam is now placed by the planner rather than where the CAD kernel put u = 0:
+on the doubly curved shell the in-face seam halves (0.26 m to 0.13 m) and the
+stretch p95 rises from 1.11 to 1.18, still inside the baseline.
+
+Separately: **Cut sharp edges** judges the angle on the level it unwraps, and a
+coarse level's fillet facets all read as creases — at 30 degrees the filleted
+part's LOD1 came out in 132 islands against 56, and 60 degrees still added some
+at LOD2.
+Sharpness has to be judged on the fine source, which is another reason the
+region is decided upstream.
+
+### A tiled chart turns to its reference only where the reference is one piece
+
+`layout::tiled` fits each chart to its reference UVs by Procrustes and, with
+**Keep existing where better**, swaps in the reference where it stretches less.
+Both assumed the reference covers the chart in one piece, which is true when the
+reference's seams cut (every shipped recipe) and false for a chart cut along an
+attribute coarser than them — a `_CAD_REGION` of several CAD faces, each with
+parameters of its own. Fitted to all the pieces at once the chart lay at whatever
+angle averaged them (45 degrees on a filleted part's sides), and the reference, being
+unstretched on every triangle, always won the swap and cut the chart back into
+its faces, seams and all. `largest_reference_piece` finds the pieces with the
+rule `islands` cuts by (edges matched by position, ends within
+`REFERENCE_SEAM_GAP`); a chart of several is turned to its largest and never
+swapped. Main-face grain error on that part went from 6.7 degrees to 1.0. A chart
+of one piece takes the old arithmetic unchanged, and every file the determinism
+suite writes was checked byte for byte with the new path on and off.
+
 ## Remesh
 
 `crates/optimize/src/remesh/` partitions the surface into even regions and
@@ -1550,6 +1621,23 @@ binary that imports `MSVCP140.dll` starts only where the Visual C++
 redistributable is installed. Because the tracked config is now the repository's,
 a local `[patch]` for an unreleased `asset-rules` goes on the command line, as
 `--config` for that one build (`docs/cli.md`), not in a config file.
+
+### glb fixtures are made with Blender 5.2.5, and nothing older
+
+**Blender 5.2.5 LTS** (glTF I/O 5.2.42) is the one version used to write glb
+fixtures and test inputs. Blender 5.2.0's exporter (I/O 5.2.39) writes
+`COLOR_0` as plain white for every material after a mesh's first, whatever
+`export_vertex_color` says (`ACTIVE`, `NAME`, float or byte colours alike):
+on a part of four pieces in three materials it erased the palette index on a
+third of the vertices, without a warning. The colours are right in Blender
+before the export; only the glb is wrong. A regenerated input is checked against
+the one it replaces vertex by vertex before it is committed.
+
+Blender 5 keeps UV layers in the same namespace as every other attribute, so a
+UV layer cannot take a name an attribute already has: it is renamed `.001`
+silently, and anything that looks it up by name finds nothing. A script that
+carries an integer id out through an FBX UV set must give the face attribute it
+reads from a different name from the UV set it writes.
 
 ---
 

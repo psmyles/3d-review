@@ -167,10 +167,10 @@ the command line:
 
 ```text
 # machine: one line per part
-parts/link.fbx --reduce 1500t --lods 750t,375t
-parts/shell.fbx --reduce 1500t --lods 750t,375t
+parts/frame.fbx --reduce 1500t --lods 750t,375t
+parts/cover.fbx --reduce 1500t --lods 750t,375t
 parts/hinge_block.fbx --reduce 400t --lods 200t,100t --max-volume-change 5%
-"parts/hinge pin.fbx" --reduce 250t --lods 125t,63t --out build/rods
+"parts/hinge pin.fbx" --reduce 250t --lods 125t,63t --out build/pins
 ```
 
 ```text

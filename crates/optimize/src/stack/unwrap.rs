@@ -7,7 +7,7 @@
 //! packed into the 0-1 square without overlapping.
 //!
 //! Islands are cut where the settings say: where a seam attribute changes (a
-//! CAD face id, say), where the input UVs are already cut (or, by default, only
+//! CAD region or face id, say), where the input UVs are already cut (or, by default, only
 //! preferred as the place for a seam), at sharp edges if asked, and always
 //! between materials and along open borders. Seams beyond those are placed by
 //! the unwrap itself, wherever an island will not flatten within the stretch
@@ -38,7 +38,7 @@ pub enum SeamSource {
     #[default]
     None,
     /// Wherever this custom vertex attribute (a glTF `_` attribute, such as
-    /// `_CAD_FACE`) differs between two faces.
+    /// `_CAD_REGION` or `_CAD_FACE`) differs between two faces.
     Attribute(String),
     /// Wherever the U of this UV set differs between two faces: an id carried
     /// the way an FBX export carries one, in a UV set of its own.
@@ -180,16 +180,26 @@ impl Default for UnwrapParams {
 }
 
 impl UnwrapParams {
-    /// The settings that rebuild a CAD part's UVs for a tiling texture (the
-    /// a CAD pipeline's): one island per CAD face, cut again where the
-    /// CAD UVs are and where a face will not flatten within the stretch limit,
-    /// each at one UV unit per metre and turned to lie as the CAD UVs did, the
-    /// CAD UVs kept where they stretch less.
+    /// The settings that rebuild a CAD part's UVs for a tiling texture: one
+    /// island per CAD region — `_CAD_REGION`, as a CAD exporter tags it: the
+    /// CAD faces joined across tangent edges that are straight lines, so a
+    /// fillet along a straight edge lies in one island with the faces it
+    /// blends — cut again where a region will not flatten within the stretch
+    /// limit, each at one UV unit per metre and turned to lie as the CAD UVs
+    /// did (as its largest face's did, for a region of several), the CAD UVs
+    /// kept where they stretch less and cover the island whole.
+    ///
+    /// The CAD UVs' own seams are preferred rather than cut at: every face of
+    /// a region has parameters of its own, so cutting at them would cut the
+    /// region back into its faces. A periodic seam inside a face (a full
+    /// cylinder's) is placed by the planner, preferring the CAD one. Given
+    /// `_CAD_FACE` instead, every face is its own island. Why straight edges
+    /// only, and what each choice measured: `docs/GOTCHAS.md`.
     pub fn cad_islands(attribute: &str) -> Self {
         Self {
             layout: UvLayout::Tiled,
             seams: SeamSource::Attribute(attribute.to_owned()),
-            existing_seams: ExistingSeams::Cut,
+            existing_seams: ExistingSeams::Prefer,
             ..Self::default()
         }
     }

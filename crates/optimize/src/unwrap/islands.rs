@@ -314,7 +314,7 @@ pub(super) fn islands(
     }
 }
 
-fn root(parent: &mut [u32], mut at: u32) -> u32 {
+pub(super) fn root(parent: &mut [u32], mut at: u32) -> u32 {
     while parent[at as usize] != at {
         parent[at as usize] = parent[parent[at as usize] as usize];
         at = parent[at as usize];
@@ -324,7 +324,7 @@ fn root(parent: &mut [u32], mut at: u32) -> u32 {
 
 /// Join two sets; the lower root wins, so the result does not depend on the
 /// order the joins are made in.
-fn union(parent: &mut [u32], a: u32, b: u32) {
+pub(super) fn union(parent: &mut [u32], a: u32, b: u32) {
     let (x, y) = (root(parent, a), root(parent, b));
     if x != y {
         parent[x.max(y) as usize] = x.min(y);
@@ -332,6 +332,6 @@ fn union(parent: &mut [u32], a: u32, b: u32) {
 }
 
 /// `-0.0` and `+0.0` as one position.
-fn canonical(value: f32) -> u32 {
+pub(super) fn canonical(value: f32) -> u32 {
     if value == 0.0 { 0 } else { value.to_bits() }
 }

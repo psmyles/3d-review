@@ -40,7 +40,8 @@ pub fn triangle_uv_area(model: &ModelData, triangle: usize, channel: usize) -> f
 /// How much a triangle's UVs stretch it one way more than the other: the
 /// ratio of the larger to the smaller singular value of the map from the
 /// triangle (in its own plane) to its UVs. 1 where the UVs are a scaled copy of
-/// the shape; capped at 50 (the pipeline plan, section 3).
+/// the shape; capped at 50, so one collapsed sliver cannot swamp an area-weighted
+/// percentile.
 /// `None` for a triangle with no area.
 pub fn uv_stretch(points: [glam::Vec3; 3], uvs: [glam::Vec2; 3]) -> Option<f32> {
     let (e1, e2) = (points[1] - points[0], points[2] - points[0]);

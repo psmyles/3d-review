@@ -5,34 +5,47 @@
 #![cfg(has_meshopt)]
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use review_model::ModelData;
 use review_optimize::{
     AoQuality, AoTarget, BakeAoParams, BakeSource, BakeWearParams, LodLevel, LodParams, OpKind,
-    OptStack, ReduceParams, TargetMode,
+    OptStack, ReduceParams, SimplifyAlgorithm, SimplifySettings, TargetMode, WeldParams,
 };
 
 mod common;
 
-fn link() -> ModelData {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../experiments/cad-kit/inputs/link.glb");
-    review_import::load_model(&path).expect("the kit's link reads")
+/// A surface with ridges for the wear to find and parts that occlude one
+/// another: the monkey, or `None` when this checkout cannot run the test.
+fn part() -> Option<ModelData> {
+    common::fixture("monkey.fbx")
 }
 
-/// A Reduce and a chain, then `bake`.
+/// A position weld, a Reduce and a chain, then `bake`. The monkey is shaded
+/// flat, so its normals split it at every corner, which no simplifier may
+/// cross; welding by position first is what lets the levels shrink at all.
+/// The standard simplifier keeps each survivor where it was, so the levels
+/// share points to compare at (the default refits them to new positions).
 fn stack(bake: OpKind) -> OptStack {
+    let simplify = SimplifySettings {
+        algorithm: SimplifyAlgorithm::Standard,
+        ..SimplifySettings::default()
+    };
     let mut stack = OptStack::default();
+    stack.push_op(OpKind::Weld(WeldParams {
+        compare_normals: false,
+        compare_uvs: false,
+        ..WeldParams::default()
+    }));
     stack.push_op(OpKind::Reduce(ReduceParams {
+        simplify,
         target: LodLevel {
             target_mode: TargetMode::Triangles,
             target_triangles: 1500,
             ..LodLevel::default()
         },
-        ..ReduceParams::default()
     }));
     stack.push_op(OpKind::SimplifyLod(LodParams {
+        simplify,
         levels: vec![
             LodLevel {
                 target_ratio: 0.5,
@@ -45,7 +58,6 @@ fn stack(bake: OpKind) -> OptStack {
                 ..LodLevel::default()
             },
         ],
-        ..LodParams::default()
     }));
     stack.push_op(bake);
     stack
@@ -84,7 +96,9 @@ fn agreement(result: &review_optimize::ProcessedResult, channel: usize) -> (usiz
 
 #[test]
 fn wear_from_the_original_is_the_same_wherever_the_levels_meet() {
-    let model = link();
+    let Some(model) = part() else {
+        return;
+    };
     let original = common::run(
         &model,
         &stack(OpKind::BakeWear(BakeWearParams {
@@ -108,7 +122,9 @@ fn wear_from_the_original_is_the_same_wherever_the_levels_meet() {
 
 #[test]
 fn ao_from_the_original_is_the_same_wherever_the_levels_meet() {
-    let model = link();
+    let Some(model) = part() else {
+        return;
+    };
     let params = BakeAoParams {
         quality: AoQuality::Low,
         target: AoTarget::Alpha,

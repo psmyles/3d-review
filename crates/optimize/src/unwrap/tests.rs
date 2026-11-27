@@ -2,7 +2,89 @@
 
 use glam::{Vec2, Vec3};
 
-use super::layout::stretch;
+use super::charts::Chart;
+use super::layout::{lay_out, stretch};
+use crate::stack::{UnwrapParams, UvLayout};
+
+/// A tiled chart spanning two pieces of its reference UVs — a region of two
+/// CAD faces, each with parameters of its own — stays one piece, lying as its
+/// larger face's reference did. Before, both reference pieces were fitted at
+/// once (a compromise angle), and the reference, unstretched on every
+/// triangle, was "kept" in its place and cut the chart back into the faces.
+#[test]
+fn a_chart_over_two_reference_pieces_lies_as_the_larger_and_stays_whole() {
+    // Two rectangles side by side in the plane: A is 2 x 1, B is 1 x 1, with
+    // vertices of their own along the edge they share (x = 2).
+    let positions: Vec<Vec3> = [
+        (0.0, 0.0),
+        (2.0, 0.0),
+        (2.0, 1.0),
+        (0.0, 1.0),
+        (2.0, 0.0),
+        (3.0, 0.0),
+        (3.0, 1.0),
+        (2.0, 1.0),
+    ]
+    .map(|(x, y)| Vec3::new(x, y, 0.0))
+    .to_vec();
+    let indices = vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
+    // A's reference runs along x; B's is a quarter turn round and elsewhere.
+    let reference: Vec<Vec2> = positions
+        .iter()
+        .enumerate()
+        .map(|(vertex, p)| {
+            if vertex < 4 {
+                Vec2::new(p.x, p.y)
+            } else {
+                Vec2::new(10.0 + p.y, 5.0 - (p.x - 2.0))
+            }
+        })
+        .collect();
+    // The chart as flattened: the plane itself, at 30 degrees.
+    let turn = Vec2::from_angle(30f32.to_radians());
+    let chart = Chart {
+        triangles: vec![0, 1, 2, 3],
+        uvs: indices
+            .chunks(3)
+            .map(|corners| {
+                [0, 1, 2].map(|k| {
+                    let p = positions[corners[k] as usize];
+                    turn.rotate(Vec2::new(p.x, p.y))
+                })
+            })
+            .collect(),
+    };
+    let params = UnwrapParams {
+        layout: UvLayout::Tiled,
+        align_to_reference: true,
+        keep_better: true,
+        density: 1.0,
+        ..UnwrapParams::default()
+    };
+    let uv = lay_out(&[chart], 4, &positions, &indices, Some(&reference), &params)
+        .expect("a tiled layout");
+
+    // Whole: A's and B's corners at x = 2 have one UV each.
+    let corner_of = |vertex: u32| indices.iter().position(|&at| at == vertex).unwrap();
+    for (a, b) in [(1, 4), (2, 7)] {
+        assert!(
+            uv[corner_of(a)].distance(uv[corner_of(b)]) < 1e-4,
+            "the chart was cut at x = 2: {} against {}",
+            uv[corner_of(a)],
+            uv[corner_of(b)]
+        );
+    }
+    // A lies exactly as its reference: the same up to a shift.
+    let shift = uv[0] - reference[0];
+    for corner in 0..6 {
+        let expected = reference[indices[corner] as usize] + shift;
+        assert!(
+            uv[corner].distance(expected) < 1e-4,
+            "A is not turned to its reference: {} against {expected}",
+            uv[corner]
+        );
+    }
+}
 
 #[test]
 fn a_scaled_copy_does_not_stretch_and_a_squash_does() {

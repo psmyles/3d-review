@@ -54,8 +54,10 @@ unwrap places the rest.
 angle, as a hard-surface model wants.
 
 **Cut along attribute** - cut wherever a value the model carries per vertex
-changes: a CAD face id (`_CAD_FACE` in a glTF file), or the U of a UV map when
-a pipeline carries the id that way in an FBX file.
+changes: a CAD face id (`_CAD_FACE` in a glTF file), a CAD region id
+(`_CAD_REGION`: faces joined across smooth, straight edges, such as a fillet
+and the faces either side of it), or the U of a UV map when a pipeline carries
+the id that way in an FBX file.
 
 **Max stretch** - how far an island may stretch the texture before the unwrap
 adds seams to it. The value is an average over the island: 1.20 means a texel
@@ -119,12 +121,16 @@ each along its longest side, to fit them tighter.
 metre of surface.
 
 **Match existing orientation** (Tile) - turn each island, or mirror it, to lie
-as the existing UVs did, centred where they were. Off, the islands are packed
+as the existing UVs did, centred where they were. An island the existing UVs
+cover in several pieces (CAD faces joined into one region, each with UVs of its
+own) is turned to lie as its largest piece did. Off, the islands are packed
 apart at the density.
 
 **Keep existing where better** (Tile) - per island, keep the existing UVs
 instead, scaled to the density, wherever they stretch less than the fresh
 unwrap. A long thin strip often unwraps better from its original parameters.
+Only an island the existing UVs cover in one piece is kept, so keeping them
+never adds a seam.
 
 ## Recipes
 
@@ -140,7 +146,16 @@ each panel its own island.
 resolution and **Padding** at 4 texels or more.
 
 **CAD parts for a tiling texture**: Layout Tile at texel density, Cut along
-attribute `_CAD_FACE`, Use existing UVs from 0 with Existing seams Cut, Match existing
-orientation and Keep existing where better on, Texel density 1.0. Each CAD face
-becomes an island, cut again only where it won't lie flat, laid out at one texel
-density and turned as the CAD UVs ran.
+attribute `_CAD_REGION`, Use existing UVs from 0 with Existing seams Prefer,
+Match existing orientation and Keep existing where better on, Texel density
+1.0. Each CAD region becomes an island, cut again only where it won't lie flat,
+laid out at one texel density and turned as the CAD UVs ran. A fillet along a
+straight edge is in one region with the faces either side of it, so the
+texture runs over it without a seam; on a filleted part this halves the seams
+across smooth surface, with no more stretch. Fillets round a curved edge stay
+islands of their own, since no flat layout keeps a texture's direction through
+them. Existing seams is Prefer, not Cut, because each face of a region has UVs
+of its own, and cutting at them would cut the region apart again.
+
+For a file that carries only `_CAD_FACE`, cut along that with Existing seams
+Cut: every CAD face becomes its own island, fillets included.

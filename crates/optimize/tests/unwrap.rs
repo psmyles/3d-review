@@ -1,30 +1,60 @@
-//! The Unwrap operation over the CAD kit, measured as
-//! the pipeline plan (item 3.1) measures it: stretch (the
-//! ratio of a triangle map's singular values) and texel density
-//! (`sqrt(UV area / 3D area)`), area-weighted percentiles, against the baseline
-//! table Blender's minimum-stretch unwrap set.
+//! The Unwrap operation, measured the way a CAD pipeline measures it: stretch
+//! (the ratio of a triangle map's singular values) and texel density
+//! (`sqrt(UV area / 3D area)`), area-weighted percentiles. The CAD parts are
+//! measured against the baseline Blender's minimum-stretch unwrap set; they are
+//! the CAD kit ([`common::cad_kit`]), which is not in this repository, so those
+//! tests are `#[ignore]`d. The rest run over the committed fixtures.
 
 #![cfg(has_meshopt)]
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use glam::{Vec2, Vec3};
-use review_model::ModelData;
+use review_model::{ComponentType, ModelData};
 use review_optimize::{
-    LodLevel, LodParams, OpKind, OptStack, ReduceParams, SeamSource, SimplifyFlags,
+    ExistingSeams, LodLevel, LodParams, OpKind, OptStack, ReduceParams, SeamSource, SimplifyFlags,
     SimplifySettings, TargetMode, UnwrapParams, UvLayout,
 };
 
 mod common;
 
-fn kit(part: &str, extension: &str) -> ModelData {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../experiments/cad-kit/inputs")
-        .join(format!("{part}.{extension}"));
-    review_import::load_model(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+fn load(path: &Path) -> ModelData {
+    review_import::load_model(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
-/// The baseline's stack (`run_review3d.sh`, `regularize`): a Reduce to
+/// A part's name: its file's stem, as the kit's `baseline.json` keys it.
+fn part_name(path: &Path) -> String {
+    path.file_stem().unwrap().to_string_lossy().into_owned()
+}
+
+/// The CAD kit's `baseline.json`: per part, its LOD0 triangle budget and, per
+/// level, the baseline row.
+fn baseline() -> HashMap<String, (u32, Vec<Row>)> {
+    let path = common::cad_kit_dir().join("baseline.json");
+    let text = std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    let json: serde_json::Value = serde_json::from_slice(&text).expect("baseline.json is JSON");
+    json["parts"]
+        .as_object()
+        .expect("baseline.json has parts")
+        .iter()
+        .map(|(part, entry)| {
+            let triangles = entry["triangles"].as_u64().expect("a budget") as u32;
+            let rows = entry["levels"]
+                .as_array()
+                .expect("levels")
+                .iter()
+                .map(|row| {
+                    let value = |at: usize| row[at].as_f64().expect("a figure") as f32;
+                    (value(0), value(1), value(2))
+                })
+                .collect();
+            (part.clone(), (triangles, rows))
+        })
+        .collect()
+}
+
+/// The stack the CAD baseline was measured with (`regularize`): a Reduce to
 /// `triangles` and a chain at a half and a quarter, the error limit lifted;
 /// then the unwrap.
 fn stack(triangles: u32, unwrap: UnwrapParams) -> OptStack {
@@ -111,94 +141,61 @@ fn measure(model: &ModelData) -> (f32, f32, f32) {
 /// One row of the baseline table: stretch p95, density p5, density p95.
 type Row = (f32, f32, f32);
 
-/// Each part at the baseline's budget, against its table rows: stretch p95 no
-/// more than 0.05 over Blender's, the density spread no wider.
-#[test]
-fn the_kit_unwraps_at_least_as_well_as_the_baseline() {
-    // (part, triangles at LOD0, per level: stretch p95, density p5, density p95)
-    let baseline: [(&str, u32, [Row; 3]); 4] = [
-        (
-            "link",
-            1500,
-            [
-                (1.016, 0.999, 1.001),
-                (1.014, 0.999, 1.001),
-                (1.023, 0.998, 1.000),
-            ],
-        ),
-        (
-            "shell",
-            1500,
-            [
-                (1.259, 0.937, 1.113),
-                (1.285, 0.936, 1.113),
-                (1.325, 0.931, 1.124),
-            ],
-        ),
-        (
-            "hinge_block",
-            400,
-            [
-                (1.015, 0.998, 1.003),
-                (1.021, 0.997, 1.002),
-                (1.019, 0.998, 1.001),
-            ],
-        ),
-        (
-            "hinge_pin",
-            250,
-            [
-                (1.290, 0.998, 1.002),
-                (1.034, 0.996, 1.003),
-                (1.010, 0.999, 1.001),
-            ],
-        ),
-    ];
-    // The glb parts, the CAD face in `_CAD_FACE`.
-    for (part, triangles, rows) in baseline {
-        let model = kit(part, "glb");
-        let result = common::run(
-            &model,
-            &stack(triangles, UnwrapParams::cad_islands("_CAD_FACE")),
-        );
+/// Every kit part in `extension`, at its budget and unwrapped by `unwrap`,
+/// against its baseline rows: stretch p95 no more than 0.05 over Blender's, the
+/// density spread no wider.
+fn assert_kit_meets_baseline(extension: &str, unwrap: &UnwrapParams) {
+    let baseline = baseline();
+    for path in common::cad_kit(extension) {
+        let part = part_name(&path);
+        let (triangles, rows) = baseline
+            .get(&part)
+            .unwrap_or_else(|| panic!("{part} has no row in baseline.json"));
+        let result = common::run(&load(&path), &stack(*triangles, unwrap.clone()));
         assert!(result.warnings.is_empty(), "{part}: {:?}", result.warnings);
-        for (lod, (stretch_p95, density_p5, density_p95)) in result.lods.iter().zip(rows) {
+        for (lod, &(stretch_p95, density_p5, density_p95)) in result.lods.iter().zip(rows) {
             let (stretch, low, high) = measure(&lod.model);
             assert!(
                 stretch <= stretch_p95 + 0.05,
-                "{part} LOD{}: stretch p95 {stretch} against {stretch_p95}",
+                "{part}.{extension} LOD{}: stretch p95 {stretch} against {stretch_p95}",
                 lod.level
             );
             assert!(
                 high - low <= density_p95 - density_p5 + 0.002,
-                "{part} LOD{}: density {low}-{high} against {density_p5}-{density_p95}",
+                "{part}.{extension} LOD{}: density {low}-{high} against {density_p5}-{density_p95}",
                 lod.level
             );
         }
     }
 }
 
-/// The FBX route carries the CAD face id as U of a second UV set, which the
-/// simplifier refits a little: islands still follow the faces.
+/// The kit's glb parts, cut into the CAD regions `_CAD_REGION` carries.
 #[test]
-fn an_id_carried_in_a_uv_set_cuts_islands_too() {
-    let model = kit("hinge_pin", "fbx");
+#[ignore = "needs the CAD kit: set REVIEW_CAD_KIT"]
+fn the_cad_kit_unwraps_at_least_as_well_as_its_baseline() {
+    assert_kit_meets_baseline("glb", &UnwrapParams::cad_islands("_CAD_REGION"));
+}
+
+/// The FBX route carries the CAD face id as U of a second UV set and the
+/// region as U of a third, which the simplifier refits a little: cut along the
+/// third, the FBX parts meet the same baseline.
+#[test]
+#[ignore = "needs the CAD kit: set REVIEW_CAD_KIT"]
+fn the_cad_kit_as_fbx_cuts_islands_along_an_id_in_a_uv_set() {
     let unwrap = UnwrapParams {
-        seams: SeamSource::UvSetU(1),
+        seams: SeamSource::UvSetU(2),
         ..UnwrapParams::cad_islands("unused")
     };
-    let result = common::run(&model, &stack(250, unwrap));
-    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
-    let (stretch, low, high) = measure(&result.lods[0].model);
-    assert!(stretch < 1.05, "stretch p95 {stretch}");
-    assert!(high - low < 0.01, "density {low}-{high}");
+    assert_kit_meets_baseline("fbx", &unwrap);
 }
 
 /// An atlas is in the 0-1 square, in the set asked for, and adds that set to a
 /// model that had none.
 #[test]
 fn an_atlas_fills_the_unit_square_in_its_own_set() {
-    let model = kit("link", "glb");
+    let Some(model) = common::fixture("meter_cube.fbx") else {
+        return;
+    };
     let mut stack = OptStack::default();
     stack.push_op(OpKind::Unwrap(UnwrapParams {
         layout: UvLayout::Atlas,
@@ -233,6 +230,110 @@ fn an_atlas_fills_the_unit_square_in_its_own_set() {
             .map(|vertex| vertex.uv)
             .collect::<Vec<_>>()
     );
+}
+
+/// Per triangle of `level`, its island in UV set 0: triangles are joined
+/// through a corner with the same position and UV.
+fn islands(level: &ModelData) -> Vec<usize> {
+    let count = level.indices.len() / 3;
+    let key = |corner: u32| {
+        let vertex = corner as usize;
+        let p = level.vertices[vertex].position;
+        let uv = level.uv_for_channel(vertex, 0);
+        [p.x, p.y, p.z, uv.x, uv.y].map(f32::to_bits)
+    };
+    let mut parent: Vec<usize> = (0..count).collect();
+    fn root(parent: &mut [usize], mut at: usize) -> usize {
+        while parent[at] != at {
+            parent[at] = parent[parent[at]];
+            at = parent[at];
+        }
+        at
+    }
+    let mut first: std::collections::HashMap<[u32; 5], usize> = Default::default();
+    for triangle in 0..count {
+        for &corner in &level.indices[triangle * 3..triangle * 3 + 3] {
+            let other = *first.entry(key(corner)).or_insert(triangle);
+            let (x, y) = (root(&mut parent, triangle), root(&mut parent, other));
+            parent[x] = y;
+        }
+    }
+    (0..count)
+        .map(|triangle| root(&mut parent, triangle))
+        .collect()
+}
+
+/// How many distinct values custom attribute `name` takes over `model`.
+fn distinct_values(model: &ModelData, name: &str) -> usize {
+    let attribute = model
+        .custom_attributes
+        .iter()
+        .find(|attribute| attribute.name == name)
+        .unwrap_or_else(|| panic!("no {name}"));
+    let mut values: Vec<u32> = (0..model.vertices.len())
+        .map(|vertex| {
+            let bits = attribute.value(vertex)[0];
+            match attribute.format.component {
+                ComponentType::F32 => f32::from_bits(bits).round() as u32,
+                _ => bits,
+            }
+        })
+        .collect();
+    values.sort_unstable();
+    values.dedup();
+    values.len()
+}
+
+/// The CAD regions (faces joined across straight tangent edges) take the seams
+/// off straight fillets: on every kit part where a region joins faces, fewer
+/// islands than one per CAD face, and no more stretch or density spread.
+/// Measured on a filleted part at LOD0: 41 islands against 56, stretch p95
+/// 1.000 and density 1.000-1.000 for both. Joining across *curved* tangent
+/// edges too gave fewer still and twisted the texture through the toroidal
+/// fillets (`docs/GOTCHAS.md`), which is why the regions stop at straight ones.
+#[test]
+#[ignore = "needs the CAD kit: set REVIEW_CAD_KIT"]
+fn the_cad_kit_regions_join_straight_fillets_without_stretch() {
+    let baseline = baseline();
+    let per_face = UnwrapParams {
+        existing_seams: ExistingSeams::Cut,
+        ..UnwrapParams::cad_islands("_CAD_FACE")
+    };
+    let mut joined = 0;
+    for path in common::cad_kit("glb") {
+        let part = part_name(&path);
+        let model = load(&path);
+        // A part whose every region is one face has nothing to compare.
+        if distinct_values(&model, "_CAD_REGION") == distinct_values(&model, "_CAD_FACE") {
+            continue;
+        }
+        joined += 1;
+        let (triangles, _) = baseline[&part];
+        let unwrap = |params: UnwrapParams| {
+            let result = common::run(&model, &stack(triangles, params));
+            assert!(result.warnings.is_empty(), "{part}: {:?}", result.warnings);
+            let level = result.lods[0].model.clone();
+            let mut distinct = islands(&level);
+            distinct.sort_unstable();
+            distinct.dedup();
+            (distinct.len(), measure(&level))
+        };
+        let (faces, (face_stretch, face_low, face_high)) = unwrap(per_face.clone());
+        let (regions, (stretch, low, high)) = unwrap(UnwrapParams::cad_islands("_CAD_REGION"));
+        assert!(
+            regions < faces,
+            "{part}: {regions} region islands against {faces} face islands"
+        );
+        assert!(
+            stretch <= face_stretch + 0.01,
+            "{part}: stretch p95 {stretch} against {face_stretch} cut at faces"
+        );
+        assert!(
+            high - low <= face_high - face_low + 0.002,
+            "{part}: density {low}-{high} against {face_low}-{face_high} cut at faces"
+        );
+    }
+    assert!(joined > 0, "no kit part has a region of several faces");
 }
 
 /// Whether two UV triangles overlap: an edge of one crosses an edge of the
@@ -338,34 +439,13 @@ fn assert_clean(level: &ModelData) {
         );
     }
 
-    // Islands: triangles joined by an edge with the same positions and UVs.
-    let key = |corner: u32| {
-        let vertex = corner as usize;
-        let p = level.vertices[vertex].position;
-        let uv = level.uv_for_channel(vertex, 0);
-        [p.x, p.y, p.z, uv.x, uv.y].map(f32::to_bits)
-    };
-    let mut parent: Vec<usize> = (0..count).collect();
-    fn root(parent: &mut [usize], mut at: usize) -> usize {
-        while parent[at] != at {
-            parent[at] = parent[parent[at]];
-            at = parent[at];
-        }
-        at
-    }
-    let mut first: std::collections::HashMap<[u32; 5], usize> = Default::default();
-    for triangle in 0..count {
-        for &corner in corners(triangle) {
-            let other = *first.entry(key(corner)).or_insert(triangle);
-            let (x, y) = (root(&mut parent, triangle), root(&mut parent, other));
-            parent[x] = y;
-        }
-    }
-    let island: Vec<usize> = (0..count)
-        .map(|triangle| root(&mut parent, triangle))
-        .collect();
-    let islands: std::collections::HashSet<usize> = island.iter().copied().collect();
-    assert!(islands.len() <= MONKEY_ISLANDS, "{} islands", islands.len());
+    let island = islands(level);
+    let distinct: std::collections::HashSet<usize> = island.iter().copied().collect();
+    assert!(
+        distinct.len() <= MONKEY_ISLANDS,
+        "{} islands",
+        distinct.len()
+    );
 
     for a in 0..count {
         for b in a + 1..count {

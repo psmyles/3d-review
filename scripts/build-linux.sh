@@ -11,8 +11,8 @@
 # (`3d-review`) and the console tool (`review3d-cli`, docs/cli.md) at its top, the
 # manual's pictures in `docs/` beside them (where the viewer's Help looks), and the
 # licence notices. There is no installer: unpack it anywhere, put the folder on PATH or
-# point a tool at the binary. A tool that keeps its helpers in a folder of its own
-# (a git-ignored `tools/`) unpacks it there.
+# point a tool at the binary. A project that keeps its helpers in a folder of its own
+# (a git-ignored `tools/`, say) unpacks it there.
 #
 # It edits no tracked files: everything it writes goes to target/ and dist/. The
 # version comes from product.json, the only place it is set; the crates' build.rs files

@@ -5,9 +5,9 @@
 //! Fixtures: `assets/test_models/hierarchy.glb` (a Blender scene with a node
 //! hierarchy, a mirrored node, two materials, a 16-bit palette colour, an
 //! integer `_CAD_FACE` and extras on nodes, meshes and materials; made by
-//! `make_hierarchy_glb.py` beside it) and the CAD kit's parts as glb
-//! (`experiments/cad-kit/inputs/*.glb`, by
-//! `blender_kit_glb.py` there).
+//! `make_hierarchy_glb.py` beside it), and the CAD kit's parts as Blender wrote
+//! them ([`common::cad_kit`]: not in this repository, so those tests are
+//! `#[ignore]`d).
 
 #![cfg(has_meshopt)]
 
@@ -37,12 +37,6 @@ fn load(path: &Path) -> ModelData {
 
 fn hierarchy() -> ModelData {
     load(&repo().join("assets/test_models/hierarchy.glb"))
-}
-
-fn kit(part: &str) -> PathBuf {
-    repo().join(format!(
-        "experiments/cad-kit/inputs/{part}.glb"
-    ))
 }
 
 /// A stack that changes nothing a lossless index has not already: an exact weld.
@@ -112,14 +106,27 @@ fn a_cancelled_export_replaces_nothing() {
 
 #[test]
 fn a_glb_through_a_no_op_stack_comes_out_byte_for_byte_the_same() {
-    let dir = temp_dir("glb_idempotent");
-    for source in [
-        repo().join("assets/test_models/hierarchy.glb"),
-        kit("link"),
-        kit("hinge_block"),
-    ] {
+    assert_no_op_reproduces(
+        "glb_idempotent",
+        &[repo().join("assets/test_models/hierarchy.glb")],
+    );
+}
+
+/// The same for CAD parts as Blender wrote them: tens of thousands of vertices,
+/// a 16-bit palette colour and two float custom attributes.
+#[test]
+#[ignore = "needs the CAD kit: set REVIEW_CAD_KIT"]
+fn a_cad_kit_glb_through_a_no_op_stack_comes_out_byte_for_byte_the_same() {
+    assert_no_op_reproduces("glb_idempotent_cad_kit", &common::cad_kit("glb"));
+}
+
+/// Each of `sources` written through a no-op stack, then that file written
+/// again: the second pass changes nothing.
+fn assert_no_op_reproduces(folder: &str, sources: &[PathBuf]) {
+    let dir = temp_dir(folder);
+    for source in sources {
         let name = source.file_name().unwrap().to_string_lossy().into_owned();
-        let first = write(&load(&source), &no_op(), &glb(), &dir.join("first"), &name);
+        let first = write(&load(source), &no_op(), &glb(), &dir.join("first"), &name);
         let second = write(
             &load(&first[0]),
             &no_op(),
@@ -211,9 +218,12 @@ fn the_values_the_file_stored_come_back_as_they_were() {
     assert_eq!(corners(&written), corners(&source));
 }
 
+/// Every CAD kit part cut to a budget and a quarter of it: both levels keep the
+/// face and region ids, as Blender wrote them, and no triangle of either reaches
+/// across two values of one.
 #[test]
-fn custom_attributes_keep_their_seams_through_a_lod_chain() {
-    let source = load(&kit("link"));
+#[ignore = "needs the CAD kit: set REVIEW_CAD_KIT"]
+fn cad_kit_attributes_keep_their_seams_through_a_lod_chain() {
     let mut stack = OptStack::default();
     stack.push_op(OpKind::Reduce(ReduceParams {
         target: LodLevel {
@@ -234,31 +244,39 @@ fn custom_attributes_keep_their_seams_through_a_lod_chain() {
         packaging: LodPackaging::FilePerLod,
         ..glb()
     };
-    let files = write(
-        &source,
-        &stack,
-        &options,
-        &temp_dir("glb_seams"),
-        "link.glb",
-    );
-    assert_eq!(files.len(), 2);
+    let dir = temp_dir("glb_seams");
+    let files: Vec<PathBuf> = common::cad_kit("glb")
+        .iter()
+        .flat_map(|source| {
+            let name = source.file_name().unwrap().to_string_lossy().into_owned();
+            let written = write(&load(source), &stack, &options, &dir, &name);
+            assert_eq!(written.len(), 2, "{name}: a level per file");
+            written
+        })
+        .collect();
     for file in files {
         let level = load(&file);
-        let [cad] = level.custom_attributes.as_slice() else {
-            panic!("{}: one custom attribute", file.display());
-        };
-        assert_eq!(cad.name, "_CAD_FACE");
-        // Blender writes an integer attribute as float; it comes back as it went.
-        assert_eq!(cad.format.component, ComponentType::F32);
-        // No triangle reaches across a CAD face: the line between two was a
-        // seam, and the simplifier kept it.
-        for triangle in level.indices.as_chunks::<3>().0 {
-            let ids = triangle.map(|corner| cad.value(corner as usize)[0]);
-            assert!(
-                ids[0] == ids[1] && ids[1] == ids[2],
-                "{}: a triangle straddles CAD faces {ids:?}",
-                file.display()
-            );
+        let names: Vec<&str> = level
+            .custom_attributes
+            .iter()
+            .map(|attribute| attribute.name.as_str())
+            .collect();
+        assert_eq!(names, ["_CAD_FACE", "_CAD_REGION"], "{}", file.display());
+        for cad in &level.custom_attributes {
+            // Blender writes an integer attribute as float; it comes back as it
+            // went.
+            assert_eq!(cad.format.component, ComponentType::F32);
+            // No triangle reaches across a CAD face or region: the line between
+            // two was a seam, and the simplifier kept it.
+            for triangle in level.indices.as_chunks::<3>().0 {
+                let ids = triangle.map(|corner| cad.value(corner as usize)[0]);
+                assert!(
+                    ids[0] == ids[1] && ids[1] == ids[2],
+                    "{}: a triangle straddles {} values {ids:?}",
+                    file.display(),
+                    cad.name
+                );
+            }
         }
     }
 }
@@ -362,7 +380,7 @@ fn a_single_file_chain_names_each_level() {
 
 #[test]
 fn mikktspace_tangents_are_written_where_asked() {
-    let source = load(&kit("link"));
+    let source = hierarchy();
     assert!(
         !source.gltf.as_deref().unwrap().tangents,
         "Blender wrote no tangents"
@@ -377,7 +395,7 @@ fn mikktspace_tangents_are_written_where_asked() {
             &no_op(),
             &options,
             &temp_dir("glb_mikk"),
-            "link.glb",
+            "hierarchy.glb",
         )[0],
     );
     assert!(
@@ -397,7 +415,7 @@ fn mikktspace_tangents_are_written_where_asked() {
             &no_op(),
             &glb(),
             &temp_dir("glb_plain"),
-            "link.glb",
+            "hierarchy.glb",
         )[0],
     );
     assert!(!plain.gltf.as_deref().unwrap().tangents);

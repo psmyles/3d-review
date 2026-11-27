@@ -4,19 +4,19 @@
 #![cfg(has_meshopt)]
 
 use std::collections::HashSet;
-use std::path::Path;
 
 use review_model::ModelData;
 use review_optimize::{HullParams, OpKind, OptStack};
 
 mod common;
 
-fn link_named(name: &str) -> ModelData {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../experiments/cad-kit/inputs/link.glb");
-    let mut model = review_import::load_model(&path).expect("the kit's link reads");
-    model.nodes[0].name = name.to_owned();
-    model
+/// The monkey, its one mesh node renamed `name`, or `None` when this checkout
+/// cannot run the test.
+fn part_named(name: &str) -> Option<ModelData> {
+    let mut model = common::fixture("monkey.fbx")?;
+    let node = model.triangles.node[0] as usize;
+    model.nodes[node].name = name.to_owned();
+    Some(model)
 }
 
 fn hull(params: HullParams) -> OptStack {
@@ -35,7 +35,9 @@ fn positions(model: &ModelData) -> HashSet<[u32; 3]> {
 
 #[test]
 fn a_selected_object_becomes_a_hull_within_its_vertex_limit() {
-    let model = link_named("link_hull");
+    let Some(model) = part_named("part_hull") else {
+        return;
+    };
     let result = common::run(&model, &hull(HullParams::default()));
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     let level = &result.lods[0].model;
@@ -54,7 +56,9 @@ fn a_selected_object_becomes_a_hull_within_its_vertex_limit() {
 
 #[test]
 fn a_higher_limit_keeps_more_and_other_objects_pass_through() {
-    let model = link_named("link_hull");
+    let Some(model) = part_named("part_hull") else {
+        return;
+    };
     let result = common::run(
         &model,
         &hull(HullParams {
@@ -64,7 +68,9 @@ fn a_higher_limit_keeps_more_and_other_objects_pass_through() {
     );
     assert_eq!(positions(&result.lods[0].model).len(), 64);
 
-    let plain = link_named("link");
+    let Some(plain) = part_named("part") else {
+        return;
+    };
     let result = common::run(&plain, &hull(HullParams::default()));
     assert_eq!(
         result.lods[0].model.indices.len(),
