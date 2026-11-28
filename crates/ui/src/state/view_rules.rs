@@ -47,6 +47,9 @@ pub enum ViewControl {
     Pivot,
     Grid,
     Skeleton,
+    /// The Colliders tile: the collision meshes' edges, or their surfaces
+    /// while they are shown shaded.
+    Colliders,
     /// The viewport background, the status bar's tile.
     Background,
     /// Background in the Environment options: the environment drawn behind the
@@ -390,6 +393,7 @@ mod tests {
             ViewControl::FaceNormals,
             ViewControl::BoundingBox,
             ViewControl::Grid,
+            ViewControl::Colliders,
             ViewControl::Background,
             ViewControl::Ibl,
             ViewControl::Tonemap,

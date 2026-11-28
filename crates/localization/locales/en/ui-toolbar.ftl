@@ -35,6 +35,11 @@ ui-toolbar-menu-remember-settings = Remember Settings
         such as colors, sizes, the environment and the ambient occlusion settings, are kept
         and come back the next time you start the viewer.
 
+ui-toolbar-menu-colliders = Colliders...
+    .description = Opens the Colliders options: how collision meshes are drawn and which
+        names mark one. It opens whatever is loaded, so names can be added for a model
+        whose collision meshes go by others - the toolbar's Colliders button only appears
+        once a part's name matches.
 ui-toolbar-menu-reload-changed-files = Reload Changed Files
     .description = When this is ticked, the model is opened again when its file changes on
         disk, so a new export from your modelling program shows at once. The view, the
@@ -115,6 +120,10 @@ ui-toolbar-uv-seams = UV Seams
 ui-toolbar-skeleton = Skeleton
     .description = Draws the bones inside a rigged model, with small markers at the joints.
         It follows the animation as it plays.
+ui-toolbar-colliders = Colliders
+    .description = Shows or hides the collision meshes: the simple shapes a game uses for
+        physics rather than to show, picked out by their names. How they are drawn, and
+        which names mark one, are in its options.
 
 ## Display
 

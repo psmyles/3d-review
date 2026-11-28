@@ -38,6 +38,11 @@ workspace, and has four parts.
   has stopped changing for a moment, so an export written in several goes is
   read once, whole. Textures reload on their own whatever this says. The
   switch is kept between sessions, whether or not Remember Settings is on.
+- **Colliders...** opens the [Colliders](panels/colliders.md) options: how
+  collision meshes are drawn, and the names that mark one. It is here as well
+  as on the toolbar because the toolbar's button only appears once a part's
+  name matches, so this is where to add the names a model's collision meshes
+  go by.
 
 ## Debug
 
@@ -106,6 +111,7 @@ start it. That covers everything those windows set:
 
 - the colors, lengths and sizes of the wireframe, bounding box, normals,
   UV seams and skeleton, and which meshes the bounding box wraps;
+- how collision meshes are drawn, their color, and the names that mark one;
 - the UV checker's pattern and how many times it repeats;
 - which channels vertex colors show, the material mode and the buffer shown;
 - the background, the environment and its strength and turn, and whether the

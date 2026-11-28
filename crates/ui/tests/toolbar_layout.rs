@@ -19,11 +19,13 @@ use review_ui::theme::size;
 fn the_right_cluster_fits_its_reserved_width() {
     let spacing = size::TOOLBAR_GROUP_SPACING;
 
-    // The view group gains a tile for the skeleton toggle on a rigged model, so
-    // the wider of the two is what has to fit.
+    // The view group gains a tile for the skeleton toggle on a rigged model and
+    // another for the colliders toggle on one with collision meshes, so the
+    // widest of the three is what has to fit.
     for view_group in [
         size::TOOLBAR_QUAD_ICON_GROUP_WIDTH,
         size::TOOLBAR_QUINT_ICON_GROUP_WIDTH,
+        size::TOOLBAR_SEXT_ICON_GROUP_WIDTH,
     ] {
         let needed = size::TOOLBAR_SINGLE_ICON_GROUP_WIDTH
             + spacing
@@ -103,6 +105,7 @@ fn every_icon_group_width_holds_its_tiles() {
         (4, size::TOOLBAR_QUAD_ICON_GROUP_WIDTH),
         (4, size::TOOLBAR_SHADING_GROUP_WIDTH),
         (5, size::TOOLBAR_QUINT_ICON_GROUP_WIDTH),
+        (6, size::TOOLBAR_SEXT_ICON_GROUP_WIDTH),
     ];
 
     for (tiles, width) in cases {

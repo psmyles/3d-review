@@ -19,6 +19,8 @@ it go when you switch it off, so the plain view stays light.
 - **Pivot marker** - the model's own center point.
 - **[Skeleton](panels/skeleton.md)** - the bones of a rigged model, with
   markers at the joints.
+- **[Colliders](panels/colliders.md)** - the collision meshes a game model
+  carries for physics. The button only appears when the model has some.
 - **Axis gizmo** and **grid**, both in the toolbar's display group.
 
 Every overlay that is built from the model moves with it, so if the model is

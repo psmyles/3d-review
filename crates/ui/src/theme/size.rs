@@ -95,14 +95,14 @@ pub const TILE_ICON_INSET_RATIO: f32 = 8.0 / 42.0;
 /// Right toolbar cluster (3D and Opt): Help (32) + the view group + projection
 /// (32) + the side-panels toggle (32), with three group spacings.
 ///
-/// Sized for the **widest** case, which is a rigged model: the view group gains a
-/// tile for the skeleton toggle there (152 rather than 122), so
-/// 152 + 9 + 32 + 9 + 32 + 9 + 32 + 9 + 32 = 316, plus a little slack. Sizing it
-/// for the unrigged case instead left the outermost group hanging off the bar the
-/// moment a skinned mesh was opened - `tests/toolbar_layout.rs` is what now says
-/// so. It grows leftward from the right edge, away from the centered mode
-/// segments.
-pub const TOOLBAR_RIGHT_WIDTH: f32 = 325.0;
+/// Sized for the **widest** case, a rigged model with collision meshes: the view
+/// group gains a tile for the skeleton toggle and another for the colliders' (182
+/// rather than 122), so 182 + 9 + 32 + 9 + 32 + 9 + 32 + 9 + 32 = 346, plus a
+/// little slack. Sizing it for the plain case instead left the outermost group
+/// hanging off the bar the moment a skinned mesh was opened -
+/// `tests/toolbar_layout.rs` is what now says so. It grows leftward from the
+/// right edge, away from the centered mode segments.
+pub const TOOLBAR_RIGHT_WIDTH: f32 = 355.0;
 /// Width of the Aud workspace's heat-map legend card.
 pub const AUD_LEGEND_WIDTH: f32 = 260.0;
 /// Height of the legend's colour bar.
@@ -141,6 +141,10 @@ pub const TOOLBAR_QUAD_ICON_GROUP_WIDTH: f32 = 122.0;
 /// Tonemapper / Anti-aliasing rendering-quality cluster): 4 padding + 5×28 icons
 /// + 4×2 gaps.
 pub const TOOLBAR_QUINT_ICON_GROUP_WIDTH: f32 = 152.0;
+/// Width of a six-icon toolbar group (the view group on a rigged model with
+/// collision meshes, which adds the skeleton and colliders toggles to its four):
+/// 4 padding + 6×28 icons + 5×2 gaps.
+pub const TOOLBAR_SEXT_ICON_GROUP_WIDTH: f32 = 182.0;
 /// Width of the centered workspace-mode group: 4 padding + 5×37 segments
 /// (3D / UV / Tex / Opt / Aud) + 4×2 gaps. The group grows by
 /// [`AUD_BUBBLE_ROOM`] to its right while the Aud segment shows a count.

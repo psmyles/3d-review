@@ -11,21 +11,29 @@ ui-panels-wireframe-width = Line width
 ui-panels-wireframe-color = Wireframe color
     .description = The color of the edge lines. Feel free to drag it around: changing the
         color is instant, even on a very big model.
+
+## Colliders
+
 ui-panels-colliders = Colliders
     .description = How collision meshes are drawn: the parts a game uses for physics
         rather than to show, picked out by their names. As wireframe draws their edges
         only, faint where the model hides them, whether the wireframe is on or not.
-        They cannot be clicked while they are not shaded.
+        They cannot be clicked while they are not shaded. The Colliders button in the
+        toolbar shows or hides them.
 ui-panels-colliders-wireframe = As wireframe
 ui-panels-colliders-shaded = Shaded
-ui-panels-colliders-hidden = Hidden
-ui-panels-collider-names = Collider names
-    .description = The name patterns that mark a collision mesh: * matches any run of
-        characters and ? any one. To start with, the _box, _sphere, _capsule, _hull and
-        _convex suffixes, Unreal's UBX_, USP_, UCP_ and UCX_ prefixes, and Godot's -col
-        and -convcol suffixes.
 ui-panels-collider-color = Collider color
     .description = The color of a collision mesh's edges.
+ui-panels-collider-names = Collider names
+    .description = The name patterns that mark a collision mesh, one to a row: * matches
+        any run of characters and ? any one. Edit a row in place, X removes it, and the
+        field at the end adds one. To start with, the _box, _sphere, _capsule, _hull and
+        _convex suffixes, Unreal's UBX_, USP_, UCP_ and UCX_ prefixes, and Godot's -col
+        and -convcol suffixes.
+# The hint in the empty field under the last name, which adds one.
+ui-panels-collider-names-add = Add new
+# The tooltip of the X beside a name.
+ui-panels-collider-name-remove = Remove this name
 
 ## Material mode
 

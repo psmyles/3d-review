@@ -220,6 +220,11 @@ pub struct UiState {
     pub camera: CameraPanelState,
     pub show_grid: bool,
     pub show_axis_gizmo: bool,
+    /// Whether collision meshes are drawn at all — the toolbar's Colliders tile.
+    /// How they are drawn while they are is the Colliders panel's
+    /// [`ColliderDisplay`]. On to start with; like the other toolbar toggles,
+    /// not remembered.
+    pub show_colliders: bool,
     /// Whether the model-stats overlay is shown in the viewport. Toggled by the
     /// info button in the status bar.
     pub show_stats: bool,
@@ -284,6 +289,7 @@ pub struct UiState {
     /// and the insets are genuinely zero.
     pub chrome_insets: ChromeInsets,
     pub wireframe: WireframePanelState,
+    pub colliders: CollidersPanelState,
     pub bounding_box: BoundingBoxPanelState,
     pub face_normals: NormalPanelState,
     pub vertex_normals: NormalPanelState,
@@ -394,6 +400,12 @@ pub struct UiState {
     /// Whether the loaded model carries skin weights. Gates the Skin Weights
     /// material-mode button. Set by `app` on load.
     pub has_skin: bool,
+    /// Whether any of the loaded model's parts is a collision mesh: its name
+    /// matches one of the Colliders panel's names. Gates the Colliders toolbar
+    /// button (hidden entirely when there is none), as [`Self::has_bones`] gates
+    /// the skeleton's. Set by `app` every frame rather than on load, because the
+    /// names can be edited with the model open.
+    pub has_colliders: bool,
     /// Mesh nodes the user has hidden via the Outliner's per-row visibility
     /// checkbox (node indices into [`review_model::ModelData::nodes`]). The scene
     /// callback filters these meshes' triangles out of the viewport draw + GTAO.
@@ -473,6 +485,7 @@ impl Default for UiState {
             camera: CameraPanelState::default(),
             show_grid: true,
             show_axis_gizmo: true,
+            show_colliders: true,
             show_stats: true,
             panels_open: PanelsOpen::default(),
             opt: OptUiState::default(),
@@ -488,6 +501,7 @@ impl Default for UiState {
             scene_viewport: None,
             chrome_insets: ChromeInsets::default(),
             wireframe: WireframePanelState::default(),
+            colliders: CollidersPanelState::default(),
             bounding_box: BoundingBoxPanelState::default(),
             face_normals: NormalPanelState {
                 length: DEFAULT_NORMAL_LENGTH,
@@ -522,6 +536,7 @@ impl Default for UiState {
             row_anchor: None,
             has_bones: false,
             has_skin: false,
+            has_colliders: false,
             hidden_meshes: HashSet::new(),
             side_panels_open: true,
             bounds: None,
@@ -918,7 +933,7 @@ pub(crate) fn sync_debug_state(state: &mut UiState) {
     state.debug.uv_seam_channel = state.uv_seams.uv_channel;
     state.debug.wireframe_color = theme::color32_to_rgba(state.wireframe.color);
     state.debug.wireframe_width = state.wireframe.width;
-    state.debug.wire_mesh_color = theme::color32_to_rgba(state.wireframe.collider_color);
+    state.debug.wire_mesh_color = theme::color32_to_rgba(state.colliders.color);
     state.debug.bounding_box_color = theme::color32_to_rgba(state.bounding_box.color);
     state.debug.bounding_box_scope = match state.bounding_box.scope {
         BoundsScope::AllMeshes => BoundingBoxScope::AllMeshes,

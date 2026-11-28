@@ -140,6 +140,12 @@ impl App {
         // The animation curves follow the toggle and the clip the pass may just
         // have changed, so they draw in the frame that was clicked.
         self.sync_animation_paths();
+        // The pass may have edited the collider names after the toolbar was
+        // drawn; when that adds or removes the Colliders tile, draw again rather
+        // than wait for the next event to show it.
+        if self.note_colliders() {
+            self.redraw.requested = true;
+        }
         // The pass may have opened or closed the Log window.
         self.watch_log_window();
 
@@ -186,6 +192,10 @@ impl App {
             .then(|| self.opt_processed_revision())
             .flatten();
         let active_lod = self.ui.opt.active_lod;
+        // Whether the Colliders tile is on the toolbar, settled before the chrome
+        // is drawn, so a model that has collision meshes shows it on its first
+        // frame. (`render` settles it again after the pass, for the names.)
+        self.note_colliders();
         let (full_output, ui_output) = {
             let egui_state = self.egui_state.as_mut()?;
             let renderer = self.renderer.as_ref()?;

@@ -137,18 +137,11 @@ impl CurvesPanelState {
 /// Editable state backing the Wireframe options panel. The renderer applies the
 /// line colour and width as uniforms at draw time via [`SceneDebugOptions`], so
 /// neither rebuilds anything.
-///
-/// It also says how collision meshes are drawn: the parts whose names match
-/// `collider_names`, which a game uses for physics rather than to show.
 #[derive(Debug, Clone)]
 pub struct WireframePanelState {
     pub color: egui::Color32,
     /// Line width in points.
     pub width: f32,
-    pub colliders: ColliderDisplay,
-    /// Name patterns (globs) that mark a collision mesh.
-    pub collider_names: Vec<String>,
-    pub collider_color: egui::Color32,
 }
 
 impl Default for WireframePanelState {
@@ -156,12 +149,36 @@ impl Default for WireframePanelState {
         Self {
             color: theme::color::WIREFRAME_DEFAULT,
             width: DEFAULT_WIREFRAME_WIDTH,
-            colliders: ColliderDisplay::default(),
-            collider_names: DEFAULT_COLLIDER_NAMES
+        }
+    }
+}
+
+/// Editable state backing the Colliders options panel: how collision meshes are
+/// drawn, in what colour, and which names mark one - the parts a game uses for
+/// physics rather than to show.
+///
+/// Whether they are drawn at all is the toolbar's Colliders tile,
+/// [`super::UiState::show_colliders`], so this panel's reset leaves it alone.
+#[derive(Debug, Clone)]
+pub struct CollidersPanelState {
+    pub display: ColliderDisplay,
+    /// The colour of their edges while they are drawn as wireframe.
+    pub color: egui::Color32,
+    /// Name patterns (globs) that mark a collision mesh, in the order they were
+    /// added. Each one parses, and none is there twice: the panel takes nothing
+    /// else.
+    pub names: Vec<String>,
+}
+
+impl Default for CollidersPanelState {
+    fn default() -> Self {
+        Self {
+            display: ColliderDisplay::default(),
+            color: theme::color::COLLIDER_DEFAULT,
+            names: DEFAULT_COLLIDER_NAMES
                 .iter()
                 .map(|&name| name.to_owned())
                 .collect(),
-            collider_color: theme::color::COLLIDER_DEFAULT,
         }
     }
 }
@@ -185,7 +202,8 @@ pub const DEFAULT_COLLIDER_NAMES: [&str; 13] = [
     "*-convcolonly",
 ];
 
-/// How the parts the Wireframe panel's collider names match are drawn.
+/// How the parts the Colliders panel's names match are drawn, while the
+/// toolbar's Colliders tile shows them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ColliderDisplay {
     /// Their edges only, in the collider colour, faint where something hides
@@ -194,8 +212,6 @@ pub enum ColliderDisplay {
     Wireframe,
     /// Like every other part.
     Shaded,
-    /// Not at all.
-    Hidden,
 }
 
 /// Which geometry the bounding box wraps: the whole model, or only the meshes

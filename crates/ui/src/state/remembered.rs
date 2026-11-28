@@ -58,7 +58,6 @@ enum_codec!(checker_id, checker_from, CheckerTexture {
 enum_codec!(collider_id, collider_from, ColliderDisplay {
     ColliderDisplay::Wireframe => "wireframe",
     ColliderDisplay::Shaded => "shaded",
-    ColliderDisplay::Hidden => "hidden",
 });
 
 enum_codec!(vertex_color_id, vertex_color_from, VertexColorMode {
@@ -201,16 +200,22 @@ const ENTRIES: &[Entry] = &[
             )
         },
     },
+    // Colliders
     Entry {
-        key: "wireframe.colliders",
-        save: |s| collider_id(s.wireframe.colliders),
-        load: |s, v| set(&mut s.wireframe.colliders, collider_from(v)),
+        key: "colliders.display",
+        save: |s| collider_id(s.colliders.display),
+        load: |s, v| set(&mut s.colliders.display, collider_from(v)),
     },
     Entry {
-        key: "wireframe.collider_names",
-        save: |s| s.wireframe.collider_names.join(","),
+        key: "colliders.color",
+        save: |s| color_text(s.colliders.color),
+        load: |s, v| set(&mut s.colliders.color, color_from(v)),
+    },
+    Entry {
+        key: "colliders.names",
+        save: |s| s.colliders.names.join(","),
         load: |s, v| {
-            s.wireframe.collider_names = v
+            s.colliders.names = v
                 .split(',')
                 .map(str::trim)
                 .filter(|name| !name.is_empty())
@@ -218,11 +223,6 @@ const ENTRIES: &[Entry] = &[
                 .collect();
             Some(())
         },
-    },
-    Entry {
-        key: "wireframe.collider_color",
-        save: |s| color_text(s.wireframe.collider_color),
-        load: |s, v| set(&mut s.wireframe.collider_color, color_from(v)),
     },
     // Material Mode
     Entry {
@@ -587,6 +587,17 @@ const ENTRIES: &[Entry] = &[
     },
 ];
 
+/// Keys a value was once remembered under, each with the key it is read as now,
+/// so a settings file written before a value moved still brings it back. Only
+/// read: the next save writes the new key.
+const RENAMED: [(&str, &str); 3] = [
+    // The collider options were the Wireframe panel's before they had a panel
+    // of their own.
+    ("wireframe.colliders", "colliders.display"),
+    ("wireframe.collider_color", "colliders.color"),
+    ("wireframe.collider_names", "colliders.names"),
+];
+
 impl UiState {
     /// Every remembered option-window value as a `(key, value)` pair, in a fixed
     /// order, for `app` to write.
@@ -601,6 +612,10 @@ impl UiState {
     /// whether it was applied: `false` for a key this build does not remember or a
     /// value it cannot read, both of which leave the state as it was.
     pub fn restore_remembered_option(&mut self, key: &str, value: &str) -> bool {
+        let key = RENAMED
+            .iter()
+            .find(|(old, _)| *old == key)
+            .map_or(key, |&(_, new)| new);
         ENTRIES
             .iter()
             .find(|entry| entry.key == key)
@@ -619,9 +634,9 @@ mod tests {
         let mut state = UiState::default();
         state.wireframe.color = Color32::from_rgb(1, 2, 3);
         state.wireframe.width = 2.5;
-        state.wireframe.colliders = ColliderDisplay::Hidden;
-        state.wireframe.collider_names = vec!["COL_*".into(), "*_phys".into()];
-        state.wireframe.collider_color = Color32::from_rgb(19, 20, 21);
+        state.colliders.display = ColliderDisplay::Shaded;
+        state.colliders.names = vec!["COL_*".into(), "*_phys".into()];
+        state.colliders.color = Color32::from_rgb(19, 20, 21);
         state.debug.material_mode = MaterialMode::Unique;
         state.debug.buffer_view = BufferView::Tangent;
         state.bounding_box.color = Color32::from_rgb(4, 5, 6);
@@ -678,6 +693,25 @@ mod tests {
         assert_eq!(restored.remembered_options(), saved);
     }
 
+    /// A file from before the collider options had a panel of their own holds
+    /// them under the Wireframe panel's keys; they still come back.
+    #[test]
+    fn a_value_under_a_key_it_has_since_moved_from_still_reads() {
+        let mut state = UiState::default();
+        assert!(state.restore_remembered_option("wireframe.colliders", "shaded"));
+        assert!(state.restore_remembered_option("wireframe.collider_color", "#010203ff"));
+        assert!(state.restore_remembered_option("wireframe.collider_names", "COL_*, *_phys"));
+        assert_eq!(state.colliders.display, ColliderDisplay::Shaded);
+        assert_eq!(state.colliders.color, Color32::from_rgb(1, 2, 3));
+        assert_eq!(state.colliders.names, ["COL_*", "*_phys"]);
+
+        // Every old key names a key that is still remembered, and none is.
+        for (old, new) in RENAMED {
+            assert!(ENTRIES.iter().any(|entry| entry.key == new), "{new}");
+            assert!(ENTRIES.iter().all(|entry| entry.key != old), "{old}");
+        }
+    }
+
     #[test]
     fn every_key_is_distinct() {
         let mut keys: Vec<&str> = ENTRIES.iter().map(|entry| entry.key).collect();
@@ -698,6 +732,11 @@ mod tests {
         assert!(!state.restore_remembered_option("tonemapper.operator", "filmic"));
         assert!(!state.restore_remembered_option("wireframe.color", "#zzzzzz"));
         assert!(!state.restore_remembered_option("ambient_occlusion.radius", "NaN"));
+        // Hiding colliders was once this setting's third value; it is the
+        // toolbar's Colliders toggle now, which is not remembered, so a file from
+        // then reads as the default style with the colliders shown.
+        assert!(!state.restore_remembered_option("colliders.display", "hidden"));
+        assert!(!state.restore_remembered_option("wireframe.colliders", "hidden"));
         assert_eq!(state.remembered_options(), before);
 
         assert!(state.restore_remembered_option("ambient_occlusion.radius", "1e9"));

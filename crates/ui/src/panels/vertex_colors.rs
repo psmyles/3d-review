@@ -18,8 +18,8 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut UiState) {
         color_mode_row(ui, &mut state.vertex_colors.mode);
     });
     if state.vertex_colors.mode == VertexColorMode::Indexed {
-        // Its own grid, as the Wireframe panel's colliders are: rows that come
-        // and go with the mode must not change the width the mode row measured.
+        // Its own grid: rows that come and go with the mode must not change the
+        // width the mode row measured.
         panel_grid(ui, "vertex_colors_index", |ui| {
             index_rows(ui, &mut state.vertex_colors);
         });

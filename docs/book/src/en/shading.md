@@ -88,9 +88,9 @@ settings also wait until then.
 - **Unlit** uses no lighting, so IBL and Ambient Occlusion are greyed out.
 - The **Overdraw** and **Quad overdraw** views replace the whole view with
   their count, so everything else that draws into the view is greyed out:
-  the shading modes, the overlays, the grid, the skeleton, the background and
-  the rendering-quality buttons. Backface Rendering stays on, because the
-  count depends on it.
+  the shading modes, the overlays, the grid, the skeleton, the colliders, the
+  background and the rendering-quality buttons. Backface Rendering stays on,
+  because the count depends on it.
 - The environment is drawn behind the model only while IBL is on and
   **Background** is ticked in the [Environment](panels/environment.md)
   options. It then covers the viewport background, so the **Viewport

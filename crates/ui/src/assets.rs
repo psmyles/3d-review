@@ -144,6 +144,13 @@ pub(crate) const ICON_BBOX: AppIcon = AppIcon {
     id: "icon_bbox",
     png_bytes: include_bytes!("../../../assets/icons/icon_bbox.png"),
 };
+/// "Colliders" — shows or hides the collision meshes. A wire cube with a broken
+/// outline: a stand-in shape the game uses rather than shows. Only shown for a
+/// model that has collision meshes.
+pub(crate) const ICON_COLLIDERS: AppIcon = AppIcon {
+    id: "icon_colliders",
+    png_bytes: include_bytes!("../../../assets/icons/icon_colliders.png"),
+};
 /// "Pivot" — toggles the object pivot marker (a 3-axis cross at the model's
 /// origin) in the 3D scene. A plain on/off toggle (no options).
 pub(crate) const ICON_PIVOT: AppIcon = AppIcon {

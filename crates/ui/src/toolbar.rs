@@ -7,9 +7,9 @@
 use review_render::{ActiveMaterial, ShadingMode, UvShadingMode};
 
 use crate::assets::{
-    ICON_AXIS_GIZMO, ICON_BACKFACE, ICON_BBOX, ICON_BUFFERS, ICON_GRID, ICON_HELP, ICON_MENU,
-    ICON_NODE_BONE, ICON_NORMALS_FACE, ICON_NORMALS_VERTEX, ICON_OUTLINER, ICON_PIVOT, ICON_SELECT,
-    ICON_SHADING_SHADED, ICON_SHADING_TEXTURE, ICON_SHADING_UNLIT, ICON_SHADING_WIRE,
+    ICON_AXIS_GIZMO, ICON_BACKFACE, ICON_BBOX, ICON_BUFFERS, ICON_COLLIDERS, ICON_GRID, ICON_HELP,
+    ICON_MENU, ICON_NODE_BONE, ICON_NORMALS_FACE, ICON_NORMALS_VERTEX, ICON_OUTLINER, ICON_PIVOT,
+    ICON_SELECT, ICON_SHADING_SHADED, ICON_SHADING_TEXTURE, ICON_SHADING_UNLIT, ICON_SHADING_WIRE,
     ICON_SHADING_WIRE_ONLY, ICON_SKIN_WEIGHTS, ICON_UV, ICON_UV_ISLANDS, ICON_UV_SEAM,
     ICON_UV_SHADED, ICON_UV_WIRE, ICON_VERTEX_COLORS, ICON_VIEW_ORTHO, ICON_VIEW_PERSPECTIVE,
 };
@@ -166,12 +166,15 @@ pub(crate) fn draw(root: &mut egui::Ui, state: &mut UiState, output: &mut UiOutp
                     ui.spacing_mut().item_spacing.x = group_spacing;
                     match state.mode {
                         WorkspaceMode::ThreeD | WorkspaceMode::Opt | WorkspaceMode::Aud => {
-                            // The skeleton toggle only exists for a rigged model, so
-                            // the group is one tile narrower without it.
-                            let view_group_width = if state.has_bones {
-                                quint_icon_group_width
-                            } else {
-                                quad_icon_group_width
+                            // The skeleton toggle only exists for a rigged model and
+                            // the colliders toggle for one with collision meshes, so
+                            // the group is a tile narrower for each it goes without.
+                            let view_group_width = match usize::from(state.has_bones)
+                                + usize::from(state.has_colliders)
+                            {
+                                0 => quad_icon_group_width,
+                                1 => quint_icon_group_width,
+                                _ => size::TOOLBAR_SEXT_ICON_GROUP_WIDTH,
                             };
                             // Laid out right to left, so the first call is the
                             // rightmost tile: Help anchors the end of the bar.
@@ -316,8 +319,9 @@ fn recent_files_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) 
     }
 }
 
-/// Preferences: the Remember Settings and Reload Changed Files switches.
-fn preferences_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
+/// Preferences: the Remember Settings and Reload Changed Files switches, and
+/// the Colliders options, which say what the viewer treats as a collision mesh.
+fn preferences_menu(ui: &mut egui::Ui, state: &mut UiState, output: &mut UiOutput) {
     // A copy, not the field: flipping it is `app`'s job, because flipping it is
     // also what writes the settings file.
     let mut remember = state.remember_settings;
@@ -344,6 +348,22 @@ fn preferences_menu(ui: &mut egui::Ui, state: &UiState, output: &mut UiOutput) {
     .clicked()
     {
         output.menu = Some(MenuIntent::ToggleReloadChangedFiles);
+    }
+
+    ui.separator();
+    // The Colliders options, whatever is loaded: the toolbar's tile that also
+    // opens them only appears once a part's name matches one of their names,
+    // so a model whose collision meshes go by others needs this way in.
+    let colliders = ui.button(keys::ui_toolbar::MENU_COLLIDERS);
+    if tip(
+        colliders,
+        Tip::new(keys::ui_toolbar::MENU_COLLIDERS)
+            .describe(keys::ui_toolbar::MENU_COLLIDERS_DESCRIPTION)
+            .page(Page::PanelsColliders),
+    )
+    .clicked()
+    {
+        state.panels_open.set(OptionPanel::Colliders, true);
     }
 }
 
@@ -724,11 +744,14 @@ fn draw_geometry_debug_group(ui: &mut egui::Ui, state: &mut UiState, width: f32)
 }
 
 /// View group: the bounding box (with its options panel), the object pivot marker,
-/// the axis gizmo, and the floor grid. The bounding box and pivot draw in the 3D
-/// scene; the gizmo and grid are independent display toggles.
+/// the axis gizmo, and the floor grid, with the skeleton after the bounding box
+/// for a rigged model and the colliders at the end for one with collision
+/// meshes. The bounding box and pivot draw in the 3D scene; the gizmo and grid
+/// are independent display toggles.
 fn draw_view_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
     let box_overridden = state.override_reason(ViewControl::BoundingBox);
     let skeleton_overridden = state.override_reason(ViewControl::Skeleton);
+    let colliders_overridden = state.override_reason(ViewControl::Colliders);
     toolbar_group_shell(ui, width, |ui| {
         option_toggle(
             ui,
@@ -798,6 +821,25 @@ fn draw_view_group(ui: &mut egui::Ui, state: &mut UiState, width: f32) {
         )
         .clicked()
         .then(|| state.show_grid = !state.show_grid);
+
+        // Collision meshes — like the skeleton, hidden entirely for a model with
+        // none. The menu's Preferences > Colliders opens the same options panel,
+        // because the names that make this tile appear have to be reachable
+        // while it is not there.
+        if state.has_colliders {
+            option_toggle(
+                ui,
+                &ICON_COLLIDERS,
+                &mut state.show_colliders,
+                &mut state.panels_open,
+                OptionPanel::Colliders,
+                Tip::new(keys::ui_toolbar::COLLIDERS)
+                    .describe(keys::ui_toolbar::COLLIDERS_DESCRIPTION)
+                    .with_options()
+                    .page(Page::PanelsColliders),
+                colliders_overridden,
+            );
+        }
     });
 }
 

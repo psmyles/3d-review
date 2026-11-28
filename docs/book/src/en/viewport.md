@@ -63,7 +63,9 @@ off:
 - the pivot marker, which shows the model's own center point,
 - the [bounding box](panels/bounding-box.md), a box drawn tightly around the
   model with its size on the edges,
-- the [skeleton overlay](panels/skeleton.md), for models that have bones.
+- the [skeleton overlay](panels/skeleton.md), for models that have bones,
+- the [collision meshes](panels/colliders.md), for models that
+  have them.
 
 ## Background
 

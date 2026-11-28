@@ -23,30 +23,8 @@ thinner.
 model, so feel free to drag the color around until it stands out well against
 your surface.
 
-## Collision meshes
-
-A game model often carries collision meshes: simple shapes, such as a box, a
-capsule or a convex hull, that the game uses for physics and never shows. The
-viewer picks them out by their names and draws them apart from the model.
-
-**Colliders** - how collision meshes are drawn. **As wireframe**, to start
-with, draws their edges only, in their own color: solid where you can see
-them, and faint where the model hides them, so a hull inside the model still
-shows. This does not depend on the wireframe being on. **Shaded** draws them
-like any other part, and **Hidden** leaves them out. While they are not
-shaded they cannot be clicked in the view; the Outliner still lists them.
-
-**Collider names** - the name patterns that mark a collision mesh, separated by
-commas. `*` matches any run of characters and `?` any one. To start with:
-`*_box`, `*_sphere`, `*_capsule`, `*_hull` and `*_convex`; Unreal's `UBX_*`,
-`USP_*`, `UCP_*` and `UCX_*`; and Godot's `*-col`, `*-colonly`, `*-convcol` and
-`*-convcolonly`. A pattern that does not parse turns red, and the field is not
-taken until it does.
-
-**Collider color** - the color of the collision meshes' edges.
-
-`review3d-cli render --colliders "*_hull,UCX_*"` draws them the same way in a
-render.
+Collision meshes are drawn from a panel of their own: see
+[Colliders](colliders.md).
 
 ## Notes
 

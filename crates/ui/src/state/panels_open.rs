@@ -24,6 +24,9 @@ pub enum OptionPanel {
     VertexNormals,
     UvSeams,
     Skeleton,
+    /// The Colliders tile's, and the menu's Preferences > Colliders: it has to
+    /// open while no part matches the names, when the tile is not there.
+    Colliders,
     /// The transport's animation-curve toggle.
     AnimationCurves,
     VertexColors,
@@ -38,7 +41,7 @@ pub enum OptionPanel {
 impl OptionPanel {
     /// Every panel, in toolbar order. Iterated each frame to draw the open ones
     /// (and to give each a stable cascade slot), so the order is deterministic.
-    pub(crate) const ALL: [OptionPanel; 17] = [
+    pub(crate) const ALL: [OptionPanel; 18] = [
         OptionPanel::Wireframe,
         OptionPanel::MaterialMode,
         OptionPanel::BufferView,
@@ -48,6 +51,7 @@ impl OptionPanel {
         OptionPanel::VertexNormals,
         OptionPanel::UvSeams,
         OptionPanel::Skeleton,
+        OptionPanel::Colliders,
         OptionPanel::AnimationCurves,
         OptionPanel::VertexColors,
         OptionPanel::Camera,
@@ -71,6 +75,7 @@ impl OptionPanel {
             OptionPanel::VertexNormals => keys::ui_panel_titles::VERTEX_NORMALS,
             OptionPanel::UvSeams => keys::ui_panel_titles::UV_SEAMS,
             OptionPanel::Skeleton => keys::ui_panel_titles::SKELETON,
+            OptionPanel::Colliders => keys::ui_panel_titles::COLLIDERS,
             OptionPanel::AnimationCurves => keys::ui_panel_titles::ANIMATION_CURVES,
             OptionPanel::VertexColors => keys::ui_panel_titles::VERTEX_COLORS,
             OptionPanel::Camera => keys::ui_panel_titles::CAMERA,
@@ -98,6 +103,7 @@ impl OptionPanel {
             OptionPanel::VertexNormals => Page::PanelsVertexNormals,
             OptionPanel::UvSeams => Page::PanelsUvSeams,
             OptionPanel::Skeleton => Page::PanelsSkeleton,
+            OptionPanel::Colliders => Page::PanelsColliders,
             OptionPanel::AnimationCurves => Page::PanelsAnimationCurves,
             OptionPanel::VertexColors => Page::PanelsVertexColors,
             OptionPanel::Camera => Page::PanelsCamera,
@@ -122,6 +128,7 @@ impl OptionPanel {
             OptionPanel::VertexNormals => "panel_vertex_normals",
             OptionPanel::UvSeams => "panel_uv_seams",
             OptionPanel::Skeleton => "panel_skeleton",
+            OptionPanel::Colliders => "panel_colliders",
             OptionPanel::AnimationCurves => "panel_animation_curves",
             OptionPanel::VertexColors => "panel_vertex_colors",
             OptionPanel::Camera => "panel_camera",
