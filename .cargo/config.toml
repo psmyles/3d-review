@@ -1,3 +1,8 @@
+# `cargo xtask <command>` (xtask/): the project's automation that needs more than a
+# script, such as `cargo xtask register` (`docs/ARCHITECTURE.md`, D32).
+[alias]
+xtask = "run --quiet --package xtask --"
+
 # The static CRT on Windows (FD20 in fire-decode's `fire-decode-plan.md`).
 #
 # Every Windows binary - `3d-review.exe`, `review3d-cli.exe`, the Explorer shell

@@ -15,6 +15,12 @@
 //! as it does for a saved placement no connected monitor can show any more
 //! ([`placement_is_visible`]). The monitor refresh-rate query the redraw pacing
 //! uses lives here too, beside the rest of the monitor geometry.
+//!
+//! On Wayland the placement has no position. A client there can neither read
+//! where its window is nor choose where it goes, because the compositor places
+//! every window, so winit answers `outer_position` with an error and ignores
+//! `with_position`. The size and the maximized state are saved and restored as
+//! everywhere else.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -31,8 +37,9 @@ use crate::{App, FALLBACK_REFRESH_HZ};
 /// maximize) bounds so un-maximizing returns to a sensible window.
 #[derive(Debug, Clone, Copy)]
 pub struct WindowPlacement {
-    pub x: i32,
-    pub y: i32,
+    /// The outer position, `(x, y)`, or `None` where the platform does not report
+    /// one (Wayland; see the module docs).
+    pub position: Option<(i32, i32)>,
     pub width: u32,
     pub height: u32,
     pub maximized: bool,
@@ -67,9 +74,11 @@ pub fn load() -> Option<WindowPlacement> {
 }
 
 /// The placement a `window.cfg` describes, or `None` when it describes none.
-/// Every figure but `maximized` is required, so a partial file reads as absent,
-/// and so does a zero size — a corrupt file must not open a window with no area.
-/// Unknown keys and unparseable lines are skipped rather than failing the read.
+/// The size is required, and so is a position with both its figures or with
+/// neither (a Wayland placement), so a partial file reads as absent. So does a
+/// figure that does not parse, and a zero size: a corrupt file must not open a
+/// window with no area. Unknown keys and lines with no `=` are skipped rather
+/// than failing the read.
 fn parse(contents: &str) -> Option<WindowPlacement> {
     let mut x = None;
     let mut y = None;
@@ -83,19 +92,23 @@ fn parse(contents: &str) -> Option<WindowPlacement> {
         };
         let value = value.trim();
         match key.trim() {
-            "x" => x = value.parse().ok(),
-            "y" => y = value.parse().ok(),
-            "width" => width = value.parse().ok(),
-            "height" => height = value.parse().ok(),
+            "x" => x = Some(value.parse().ok()?),
+            "y" => y = Some(value.parse().ok()?),
+            "width" => width = Some(value.parse().ok()?),
+            "height" => height = Some(value.parse().ok()?),
             "maximized" => maximized = value == "true",
             _ => {}
         }
     }
 
-    // Position and size are all required; a partial file is treated as absent.
+    // Half a position is treated as absent, like a missing size.
+    let position = match (x, y) {
+        (Some(x), Some(y)) => Some((x, y)),
+        (None, None) => None,
+        _ => return None,
+    };
     let placement = WindowPlacement {
-        x: x?,
-        y: y?,
+        position,
         width: width?,
         height: height?,
         maximized,
@@ -110,9 +123,13 @@ fn parse(contents: &str) -> Option<WindowPlacement> {
 
 /// The `window.cfg` text for `placement` — what [`parse`] reads back.
 fn serialize(placement: WindowPlacement) -> String {
+    let position = placement
+        .position
+        .map(|(x, y)| format!("x={x}\ny={y}\n"))
+        .unwrap_or_default();
     format!(
-        "x={}\ny={}\nwidth={}\nheight={}\nmaximized={}\n",
-        placement.x, placement.y, placement.width, placement.height, placement.maximized,
+        "{position}width={}\nheight={}\nmaximized={}\n",
+        placement.width, placement.height, placement.maximized,
     )
 }
 
@@ -149,10 +166,11 @@ impl App {
     /// Snapshot the window's maximized state, and its current outer position +
     /// inner size while it isn't maximized, so the persisted placement describes a
     /// real window. The bounds are skipped while maximized (they then cover the
-    /// whole monitor) and when winit can't report the outer position. Nothing is
-    /// sampled while minimized: that is neither state, and the window keeps the
-    /// one restoring it gives back — so a maximized window closed from the taskbar
-    /// still reopens maximized.
+    /// whole monitor). When winit can't report the outer position, as on Wayland
+    /// always, the size is still recorded, with the last position known (none, on
+    /// Wayland). Nothing is sampled while minimized: that is neither state, and the
+    /// window keeps the one restoring it gives back — so a maximized window closed
+    /// from the taskbar still reopens maximized.
     pub(crate) fn record_windowed_bounds(&mut self) {
         let Some(window) = self.window.as_ref() else {
             return;
@@ -164,15 +182,24 @@ impl App {
         if self.placement.maximized {
             return;
         }
-        let Ok(position) = window.outer_position() else {
-            return;
-        };
         let size = window.inner_size();
         if size.width == 0 || size.height == 0 {
             return;
         }
-        self.placement.last_windowed_bounds =
-            Some(((position.x, position.y), (size.width, size.height)));
+        let position = window
+            .outer_position()
+            .ok()
+            .map(|position| (position.x, position.y))
+            .or_else(|| {
+                self.placement
+                    .last_windowed_bounds
+                    .and_then(|bounds| bounds.position)
+            });
+        self.placement.last_windowed_bounds = Some(WindowBounds {
+            position,
+            width: size.width,
+            height: size.height,
+        });
     }
 
     /// Persist the current window placement on exit. Uses the last
@@ -188,15 +215,14 @@ impl App {
         // been recorded yet.
         self.record_windowed_bounds();
 
-        let Some(((x, y), (width, height))) = self.placement.last_windowed_bounds else {
+        let Some(bounds) = self.placement.last_windowed_bounds else {
             return;
         };
 
         save(WindowPlacement {
-            x,
-            y,
-            width,
-            height,
+            position: bounds.position,
+            width: bounds.width,
+            height: bounds.height,
             maximized: self.placement.maximized,
         });
     }
@@ -276,6 +302,8 @@ pub(crate) fn reveal_startup_window(window: &Window, first: FirstShow) {
 /// layout changed, which would otherwise reopen the window off-screen. A
 /// placement counts as visible if its rectangle overlaps any available monitor;
 /// when winit reports no monitors we trust the placement rather than discard it.
+/// So does a placement with no position: the compositor puts that window on a
+/// monitor itself.
 pub(crate) fn placement_is_visible(
     event_loop: &ActiveEventLoop,
     placement: &WindowPlacement,
@@ -298,16 +326,16 @@ fn overlaps(
     position: PhysicalPosition<i32>,
     size: PhysicalSize<u32>,
 ) -> bool {
+    let Some((x, y)) = placement.position else {
+        return true;
+    };
     // The placement is read from a file, so its figures are not trusted to stay
     // in range: saturate rather than overflow.
-    let win_right = placement.x.saturating_add_unsigned(placement.width);
-    let win_bottom = placement.y.saturating_add_unsigned(placement.height);
+    let win_right = x.saturating_add_unsigned(placement.width);
+    let win_bottom = y.saturating_add_unsigned(placement.height);
     let mon_right = position.x.saturating_add_unsigned(size.width);
     let mon_bottom = position.y.saturating_add_unsigned(size.height);
-    placement.x < mon_right
-        && win_right > position.x
-        && placement.y < mon_bottom
-        && win_bottom > position.y
+    x < mon_right && win_right > position.x && y < mon_bottom && win_bottom > position.y
 }
 
 /// Whether a placement's rect covers essentially a whole monitor — the signature
@@ -328,7 +356,9 @@ pub(crate) fn placement_fills_monitor(
 }
 
 /// Whether `placement` covers the monitor at `position` of `size` the way
-/// maximized geometry does — see [`placement_fills_monitor`].
+/// maximized geometry does — see [`placement_fills_monitor`]. Never for a
+/// placement with no position: only a build from before the position became
+/// optional wrote maximized geometry, and it always wrote a position.
 fn fills(
     placement: &WindowPlacement,
     position: PhysicalPosition<i32>,
@@ -339,7 +369,10 @@ fn fills(
     const MIN_WIDTH_FRACTION: f32 = 0.9;
     const MIN_HEIGHT_FRACTION: f32 = 0.85;
 
-    let at_origin = placement.x <= position.x && placement.y <= position.y;
+    let Some((x, y)) = placement.position else {
+        return false;
+    };
+    let at_origin = x <= position.x && y <= position.y;
     at_origin
         && placement.width as f32 >= size.width as f32 * MIN_WIDTH_FRACTION
         && placement.height as f32 >= size.height as f32 * MIN_HEIGHT_FRACTION
@@ -369,8 +402,10 @@ pub(crate) fn default_windowed_placement(
     let width = (size.width as f32 * SIZE_FRACTION) as u32;
     let height = (size.height as f32 * SIZE_FRACTION) as u32;
     WindowPlacement {
-        x: pos.x + (size.width.saturating_sub(width) / 2) as i32,
-        y: pos.y + (size.height.saturating_sub(height) / 2) as i32,
+        position: Some((
+            pos.x + (size.width.saturating_sub(width) / 2) as i32,
+            pos.y + (size.height.saturating_sub(height) / 2) as i32,
+        )),
         width,
         height,
         maximized: fallback.maximized,
@@ -428,8 +463,7 @@ mod tests {
 
     fn placement(x: i32, y: i32, width: u32, height: u32) -> WindowPlacement {
         WindowPlacement {
-            x,
-            y,
+            position: Some((x, y)),
             width,
             height,
             maximized: false,
@@ -444,8 +478,25 @@ mod tests {
         };
         let read = parse(&serialize(saved)).expect("a whole file parses");
         assert_eq!(
-            (read.x, read.y, read.width, read.height, read.maximized),
-            (-1920, 40, 1280, 720, true)
+            (read.position, read.width, read.height, read.maximized),
+            (Some((-1920, 40)), 1280, 720, true)
+        );
+    }
+
+    /// Wayland's placement: a size and a maximized state, and no position.
+    #[test]
+    fn a_placement_with_no_position_reads_back_as_itself() {
+        let saved = WindowPlacement {
+            position: None,
+            maximized: true,
+            ..placement(0, 0, 1600, 900)
+        };
+        let text = serialize(saved);
+        assert!(!text.contains("x=") && !text.contains("y="), "{text}");
+        let read = parse(&text).expect("a size alone is a placement");
+        assert_eq!(
+            (read.position, read.width, read.height, read.maximized),
+            (None, 1600, 900, true)
         );
     }
 
@@ -460,6 +511,14 @@ mod tests {
             parse("x=0\ny=zero\nwidth=800\nheight=600\n").is_none(),
             "bad y"
         );
+        assert!(
+            parse("x=zero\ny=zero\nwidth=800\nheight=600\n").is_none(),
+            "a position that does not parse is not a missing one"
+        );
+        assert!(
+            parse("x=0\nwidth=800\nheight=600\n").is_none(),
+            "half a position"
+        );
         assert!(parse("").is_none());
     }
 
@@ -467,7 +526,7 @@ mod tests {
     fn unknown_keys_and_stray_lines_are_skipped() {
         let read = parse("# comment\nx = 10\nfuture=1\ny=20\nwidth=300\nheight=200\n")
             .expect("the four figures are there");
-        assert_eq!((read.x, read.y), (10, 20));
+        assert_eq!(read.position, Some((10, 20)));
         assert!(!read.maximized, "absent reads as not maximized");
     }
 
@@ -509,6 +568,20 @@ mod tests {
         ));
     }
 
+    /// The compositor places a window with no position, so it is on a monitor
+    /// whatever its size, and is never mistaken for maximized geometry.
+    #[test]
+    fn a_placement_with_no_position_is_always_on_screen_and_never_maximized_geometry() {
+        let origin = PhysicalPosition::new(0, 0);
+        let size = PhysicalSize::new(1920, 1080);
+        let unplaced = WindowPlacement {
+            position: None,
+            ..placement(0, 0, 1920, 1080)
+        };
+        assert!(overlaps(&unplaced, PhysicalPosition::new(5000, 0), size));
+        assert!(!fills(&unplaced, origin, size));
+    }
+
     #[test]
     fn maximized_geometry_is_told_from_a_real_window() {
         let origin = PhysicalPosition::new(0, 0);
@@ -519,6 +592,16 @@ mod tests {
         // A snapped half-width window is at the origin but not full width.
         assert!(!fills(&placement(0, 0, 960, 1040), origin, size));
     }
+}
+
+/// A window's restored (non-maximized) bounds, as [`PlacementTracker`] samples them.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WindowBounds {
+    /// The outer position, or `None` where the platform reports none (Wayland).
+    pub(crate) position: Option<(i32, i32)>,
+    /// The inner (client) size.
+    pub(crate) width: u32,
+    pub(crate) height: u32,
 }
 
 /// The window-placement tracker: the maximized state and the windowed bounds
@@ -533,7 +616,7 @@ pub(crate) struct PlacementTracker {
     /// size), tracked from `Moved`/`Resized` events so it's available to persist
     /// on exit. Recorded only while the window isn't maximized, so un-maximizing
     /// a restored session returns to a real window rather than a fullscreen rect.
-    pub(crate) last_windowed_bounds: Option<((i32, i32), (u32, u32))>,
+    pub(crate) last_windowed_bounds: Option<WindowBounds>,
     /// Set when a `Moved`/`Resized` event arrives; the windowed bounds are then
     /// sampled once in `about_to_wait`, after the event burst has settled. This
     /// deferral matters for maximize: winit dispatches `Moved` (from

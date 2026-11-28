@@ -180,6 +180,14 @@ the lighting maps. It needs a real GPU.
 - `scripts/build-linux.sh` packages the Linux build as a tarball,
   `dist/3d-review-<version>-linux-x86_64.tar.gz`. Unpack it anywhere: the
   console tool is at the top of the folder it holds.
+- `cargo xtask register` installs the release build on Linux for the current
+  user, with no root: it builds, puts the folder the tarball holds in
+  `~/.local/lib/3d-review`, links `3d-review` and `review3d-cli` into
+  `~/.local/bin`, adds a menu entry, and makes the viewer the default
+  application for `.fbx`, `.glb` and `.gltf` files. Run it again after a
+  rebuild to update the install (`--no-build` reuses the binaries in
+  `target/release`). `cargo xtask unregister` takes it all out, leaving the
+  settings and logs.
 - `scripts/gate.ps1` and `scripts/gate.sh` measure the startup time, frame
   time and memory of two builds against each other, to catch a slowdown before
   it ships. There is no cross-platform comparison: a Mac and a PC are two

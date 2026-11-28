@@ -75,8 +75,8 @@ use texture_manager::TextureSubsystem;
 use undo::UndoStack;
 use window_state::PlacementTracker;
 use window_state::{
-    FirstShow, default_windowed_placement, monitor_refresh_interval, placement_fills_monitor,
-    placement_is_visible, reveal_startup_window,
+    FirstShow, WindowBounds, default_windowed_placement, monitor_refresh_interval,
+    placement_fills_monitor, placement_is_visible, reveal_startup_window,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -708,17 +708,20 @@ impl App {
         }
         if let Some(placement) = restore_bounds {
             // Position/size are the restored (non-maximized) bounds; setting them
-            // even when maximized gives un-maximize a sensible target.
-            attributes = attributes
-                .with_position(winit::dpi::PhysicalPosition::new(placement.x, placement.y))
-                .with_inner_size(winit::dpi::PhysicalSize::new(
-                    placement.width,
-                    placement.height,
-                ));
-            self.placement.last_windowed_bounds = Some((
-                (placement.x, placement.y),
-                (placement.width, placement.height),
+            // even when maximized gives un-maximize a sensible target. A placement
+            // saved on Wayland has no position: the compositor places the window.
+            attributes = attributes.with_inner_size(winit::dpi::PhysicalSize::new(
+                placement.width,
+                placement.height,
             ));
+            if let Some((x, y)) = placement.position {
+                attributes = attributes.with_position(winit::dpi::PhysicalPosition::new(x, y));
+            }
+            self.placement.last_windowed_bounds = Some(WindowBounds {
+                position: placement.position,
+                width: placement.width,
+                height: placement.height,
+            });
         }
 
         let window = Arc::new(
@@ -728,14 +731,21 @@ impl App {
         );
         // A window created normal is the better source for the restored bounds: it
         // is what un-maximize returns to, after any clamping to the minimum size, and
-        // it gives a launch with no saved placement bounds to save at all.
-        if !first.create_maximized()
-            && let Ok(position) = window.outer_position()
-        {
+        // it gives a launch with no saved placement bounds to save at all. On
+        // Wayland it has no position to give, so the restored one (none) stays.
+        if !first.create_maximized() {
             let size = window.inner_size();
             if size.width > 0 && size.height > 0 {
-                self.placement.last_windowed_bounds =
-                    Some(((position.x, position.y), (size.width, size.height)));
+                let position = window
+                    .outer_position()
+                    .ok()
+                    .map(|position| (position.x, position.y))
+                    .or_else(|| restore_bounds.and_then(|placement| placement.position));
+                self.placement.last_windowed_bounds = Some(WindowBounds {
+                    position,
+                    width: size.width,
+                    height: size.height,
+                });
             }
         }
         reveal_startup_window(&window, first);

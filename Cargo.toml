@@ -18,6 +18,7 @@ members = [
     "crates/shell-windows",
     "crates/snapshot",
     "crates/ui",
+    "xtask",
 ]
 # `vendor/sokol-rust` is a pinned upstream copy (`docs/ARCHITECTURE.md`, Platform
 # decisions D21), not our code, but it sits inside the workspace directory and cargo

@@ -1,0 +1,21 @@
+[package]
+name = "xtask"
+# The project's automation that needs more than a script: `cargo xtask register` /
+# `unregister` (`docs/ARCHITECTURE.md`, Platform decisions D32). The `xtask` alias that
+# runs it is in `.cargo/config.toml`. Never shipped; its version is cargo's alone.
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Linux only, because only Linux registers through here: Windows has Setup and macOS
+# the .dmg. Both crates are in the graph already, so the xtask adds no new ones.
+[target.'cfg(target_os = "linux")'.dependencies]
+# The menu's and the FBX type's icons, scaled from the 1024 px logo.
+image.workspace = true
+# product.json, the one place the product's name and file type are set.
+serde_json.workspace = true
+
+[lints]
+workspace = true

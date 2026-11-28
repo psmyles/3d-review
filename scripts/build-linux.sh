@@ -6,15 +6,19 @@
 #   scripts/build-linux.sh               build in release, write dist/<exe>-<version>-linux-x86_64.tar.gz
 #   scripts/build-linux.sh --no-build    re-wrap the binaries already in target/release
 #   scripts/build-linux.sh --out <dir>   where the tarball goes (default: dist/)
+#   scripts/build-linux.sh --stage <dir> lay the folder out at <dir> instead of packing
+#                                        it; <dir> must not exist yet
 #
 # The tarball unpacks to one folder, `<exe>-<version>-linux-x86_64/`, with the viewer
 # (`3d-review`) and the console tool (`review3d-cli`, docs/cli.md) at its top, the
 # manual's pictures in `docs/` beside them (where the viewer's Help looks), and the
 # licence notices. There is no installer: unpack it anywhere, put the folder on PATH or
 # point a tool at the binary. A project that keeps its helpers in a folder of its own
-# (a git-ignored `tools/`, say) unpacks it there.
+# (a git-ignored `tools/`, say) unpacks it there. `cargo xtask register` installs the
+# same folder for the current user, through --stage (D32).
 #
-# It edits no tracked files: everything it writes goes to target/ and dist/. The
+# It edits no tracked files: everything it writes goes to target/ and dist/, or to the
+# --stage folder. The
 # version comes from product.json, the only place it is set; the crates' build.rs files
 # read the same file.
 #
@@ -31,13 +35,15 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 do_build=1
 out_dir="$repo/dist"
+stage_to=""
 
-usage() { sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-build) do_build=0; shift ;;
         --out)      out_dir="$2"; shift 2 ;;
+        --stage)    stage_to="$2"; shift 2 ;;
         -h|--help)  usage; exit 0 ;;
         *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -57,6 +63,11 @@ meta() {
 version="$(meta version)"
 exe="$(meta exeName)"
 [[ -n "$version" && -n "$exe" ]] || die "could not read version / exeName from product.json"
+# Before the build, so a wrong folder costs nothing. The script never deletes one it
+# was handed: whoever names it decides what may be replaced.
+if [[ -n "$stage_to" && -e "$stage_to" ]]; then
+    die "--stage $stage_to already exists"
+fi
 
 if [[ $do_build -eq 1 ]]; then
     say "build $exe, review3d-cli and its render engine $version"
@@ -77,16 +88,21 @@ built="$("$cli" --version)"
 say "stage"
 name="$exe-$version-linux-x86_64"
 stage="$repo/target/package-linux"
-rm -rf "$stage"
-mkdir -p "$stage/$name/licenses"
-cp "$viewer" "$stage/$name/$exe"
-cp "$cli" "$stage/$name/review3d-cli"
-cp "$engine" "$stage/$name/review3d-render"
+if [[ -n "$stage_to" ]]; then
+    folder="$stage_to"
+else
+    rm -rf "$stage"
+    folder="$stage/$name"
+fi
+mkdir -p "$folder/licenses"
+cp "$viewer" "$folder/$exe"
+cp "$cli" "$folder/review3d-cli"
+cp "$engine" "$folder/review3d-render"
 # The manual's pictures, when it has any (its text is compiled into the viewer); the
 # Windows installer skips them the same way when there are none.
 if [[ -d "$repo/docs/book/src/en/images" ]]; then
-    mkdir -p "$stage/$name/docs/en"
-    cp -R "$repo/docs/book/src/en/images" "$stage/$name/docs/en/"
+    mkdir -p "$folder/docs/en"
+    cp -R "$repo/docs/book/src/en/images" "$folder/docs/en/"
 fi
 
 # The licence notices. The binary carries code from every project in
@@ -94,9 +110,15 @@ fi
 for notice in LICENSE docs/THIRD-PARTY-NOTICES.md docs/CREDITS.md; do
     [[ -f "$repo/$notice" ]] || die "missing licence file the package must ship: $notice"
 done
-cp "$repo/LICENSE" "$stage/$name/LICENSE.txt"
-cp "$repo/docs/THIRD-PARTY-NOTICES.md" "$repo/docs/CREDITS.md" "$stage/$name/"
-cp "$repo"/licenses/*.txt "$stage/$name/licenses/"
+cp "$repo/LICENSE" "$folder/LICENSE.txt"
+cp "$repo/docs/THIRD-PARTY-NOTICES.md" "$repo/docs/CREDITS.md" "$folder/"
+cp "$repo"/licenses/*.txt "$folder/licenses/"
+
+floor="$(objdump -T "$viewer" "$cli" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -n 1)"
+if [[ -n "$stage_to" ]]; then
+    say "done — $stage_to"
+    exit 0
+fi
 
 say "tarball"
 mkdir -p "$out_dir"
@@ -104,6 +126,5 @@ tarball="$out_dir/$name.tar.gz"
 tar --create --directory "$stage" --sort=name --owner=0 --group=0 --numeric-owner \
     --mtime=@0 --mode='u+rwX,go+rX,go-w' "$name" | gzip -9 -n > "$tarball"
 
-floor="$(objdump -T "$viewer" "$cli" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -n 1)"
 say "done — $tarball"
 echo "needs glibc $floor or newer, libstdc++, and for the viewer a Vulkan 1.3 driver"

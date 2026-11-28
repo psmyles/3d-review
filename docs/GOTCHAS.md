@@ -1586,6 +1586,19 @@ driver). Left to `App`'s drop, each crashed the exit on a dead connection.
 connection is up; the `Gpu` shuts sokol down as it goes, which turns every other
 GPU-holding field's `Drop` into a no-op through its `sg::isvalid()` guard.
 
+### On Wayland a window has no position
+
+A Wayland client cannot read where its window is or choose where it goes: the
+compositor places every window. winit 0.30 answers `outer_position` with an error
+there, every time, and ignores `with_position`. The saved window placement once
+treated that error as "nothing to record", so on Wayland it never wrote
+`window.cfg`, and the viewer forgot its size and maximized state on every launch.
+The position is now optional (`window_state.rs`): a placement with none still
+saves and restores the size and the maximized state, and always counts as on
+screen. The size is in physical pixels, which round-trips at fractional scales,
+because winit converts the initial size with the output's scale at the first
+configure.
+
 ### intel_tex_2's C++ needs the C++ runtime on Linux
 
 `render`'s build script links intel_tex_2 for the UV checker's BC7 bake, and the
